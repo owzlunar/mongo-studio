@@ -6,10 +6,12 @@ use bson::{doc, oid::ObjectId, Bson, DateTime};
 use mongo_studio::core::{
     AppCommand, AppError, AppEvent, AppState, PendingDeleteDocument, PendingDropIndex,
 };
-use mongo_studio::database::{CreateIndexRequest, DocumentPageResult, TransferFormat};
+use mongo_studio::database::{
+    ConnectionManager, CreateIndexRequest, DocumentPageResult, TransferFormat,
+};
 use mongo_studio::models::{
-    CollectionInfo, DocumentRow, MongoUser, QueryStore, SavedQuery, UserRole, COMMON_ROLES,
-    MAX_QUERY_HISTORY,
+    CollectionInfo, ConnectionConfig, ConnectionStatus, DocumentRow, MongoUser, QueryStore,
+    SavedQuery, SshAuthMethod, SshTunnelConfig, UserRole, COMMON_ROLES, MAX_QUERY_HISTORY,
 };
 use mongo_studio::query::AggregationStage;
 use mongo_studio::theme::{palette, ThemeMode};
@@ -982,4 +984,223 @@ fn app_state_phase5_defaults_events_and_syntax_highlight_smoke_check() {
         assert!(non_empty_sections > 0);
         assert_eq!(empty_sections, 0);
     }
+}
+
+#[test]
+fn app_state_ssh_modal_populate_reset_and_build_config_transitions() {
+    // Arrange
+    let mut state = AppState::default();
+
+    // Assert default SSH modal state
+    assert!(!state.new_conn_ssh_enabled);
+    assert!(state.new_conn_ssh_endpoint.is_empty());
+    assert!(state.new_conn_ssh_username.is_empty());
+    assert_eq!(state.new_conn_ssh_auth_method, SshAuthMethod::Password);
+    assert_eq!(
+        state.new_conn_ssh_key_path,
+        SshTunnelConfig::DEFAULT_PRIVATE_KEY_PATH
+    );
+    assert!(state.new_conn_ssh_secret.is_empty());
+    assert!(!state.new_conn_ssh_save_secret);
+
+    // Arrange a profile with saved MongoDB + SSH tunnel metadata
+    let mut profile = ConnectionConfig::new_profile(
+        "Prod Bastion",
+        "mongodb://dbadmin:mongoSecret@10.0.1.50:27017/app?authSource=admin",
+    )
+    .expect("valid profile");
+    profile.has_saved_password = true;
+    profile.ssh_tunnel = SshTunnelConfig {
+        enabled: true,
+        endpoint: "bastion.internal:2222".to_string(),
+        username: "ops".to_string(),
+        auth_method: SshAuthMethod::PrivateKey,
+        private_key_path: String::new(),
+        has_saved_secret: true,
+    };
+    state.connections[0] = profile.clone();
+
+    // Act: populate modal from profile with empty key path (falls back to default key path)
+    state.populate_connection_modal(0, &profile);
+
+    // Assert
+    assert!(state.show_new_connection_modal);
+    assert_eq!(state.editing_connection_idx, Some(0));
+    assert_eq!(state.new_conn_name, "Prod Bastion");
+    assert_eq!(
+        state.new_conn_uri,
+        "mongodb://10.0.1.50:27017/app?authSource=admin"
+    );
+    assert_eq!(state.new_conn_username, "dbadmin");
+    assert_eq!(state.new_conn_password, "mongoSecret");
+    assert!(state.new_conn_save_password);
+    assert!(state.new_conn_ssh_enabled);
+    assert_eq!(state.new_conn_ssh_endpoint, "bastion.internal:2222");
+    assert_eq!(state.new_conn_ssh_username, "ops");
+    assert_eq!(state.new_conn_ssh_auth_method, SshAuthMethod::PrivateKey);
+    assert_eq!(
+        state.new_conn_ssh_key_path,
+        SshTunnelConfig::DEFAULT_PRIVATE_KEY_PATH
+    );
+    assert!(state.new_conn_ssh_secret.is_empty());
+    assert!(state.new_conn_ssh_save_secret);
+
+    // Act: build_ssh_tunnel_config preserves previous_has_saved when save toggle remains checked
+    state.new_conn_ssh_endpoint = "  bastion.internal:2222  ".to_string();
+    state.new_conn_ssh_username = "  ops  ".to_string();
+    state.new_conn_ssh_key_path = "  ~/.ssh/custom_ecdsa  ".to_string();
+    let built_preserved = state.build_ssh_tunnel_config();
+    assert_eq!(
+        built_preserved,
+        SshTunnelConfig {
+            enabled: true,
+            endpoint: "bastion.internal:2222".to_string(),
+            username: "ops".to_string(),
+            auth_method: SshAuthMethod::PrivateKey,
+            private_key_path: "~/.ssh/custom_ecdsa".to_string(),
+            has_saved_secret: true,
+        }
+    );
+
+    // Unchecking save clears has_saved_secret even if previous_has_saved was true
+    state.new_conn_ssh_save_secret = false;
+    assert!(!state.build_ssh_tunnel_config().has_saved_secret);
+
+    // Explicit build_ssh_tunnel_config_with_saved with a new secret & save enabled
+    state.new_conn_ssh_save_secret = true;
+    state.new_conn_ssh_secret = "new-passphrase".to_string();
+    assert!(
+        state
+            .build_ssh_tunnel_config_with_saved(false)
+            .has_saved_secret
+    );
+
+    // Disabling SSH forces has_saved_secret to false
+    state.new_conn_ssh_enabled = false;
+    assert!(
+        !state
+            .build_ssh_tunnel_config_with_saved(true)
+            .has_saved_secret
+    );
+
+    // Act: reset_connection_modal_fields restores clean defaults
+    state.test_conn_status = Some(Ok("Connected".to_string()));
+    state.is_testing_connection = true;
+    state.reset_connection_modal_fields();
+
+    // Assert
+    assert_eq!(state.editing_connection_idx, None);
+    assert_eq!(state.new_conn_name, "Production ReplicaSet");
+    assert_eq!(state.new_conn_uri, "mongodb://localhost:27017");
+    assert!(state.new_conn_username.is_empty());
+    assert!(state.new_conn_password.is_empty());
+    assert!(!state.new_conn_save_password);
+    assert!(!state.new_conn_ssh_enabled);
+    assert!(state.new_conn_ssh_endpoint.is_empty());
+    assert!(state.new_conn_ssh_username.is_empty());
+    assert_eq!(state.new_conn_ssh_auth_method, SshAuthMethod::Password);
+    assert_eq!(
+        state.new_conn_ssh_key_path,
+        SshTunnelConfig::DEFAULT_PRIVATE_KEY_PATH
+    );
+    assert!(state.new_conn_ssh_secret.is_empty());
+    assert!(!state.new_conn_ssh_save_secret);
+    assert_eq!(state.test_conn_status, None);
+    assert!(!state.is_testing_connection);
+}
+
+#[test]
+fn connection_config_legacy_deserialization_and_secret_free_profile_json_roundtrip() {
+    // Arrange: legacy JSON missing ssh_tunnel and newer auth fields
+    let legacy_json = json!({
+        "id": "00000000-0000-0000-0000-000000000099",
+        "name": "Legacy Profile",
+        "uri": "mongodb://localhost:27017",
+        "host": "localhost:27017",
+        "status": "Disconnected",
+        "expanded": false,
+        "databases": []
+    })
+    .to_string();
+
+    // Act
+    let legacy_conn: ConnectionConfig =
+        serde_json::from_str(&legacy_json).expect("legacy ConnectionConfig should deserialize");
+
+    // Assert
+    assert_eq!(legacy_conn.name, "Legacy Profile");
+    assert_eq!(legacy_conn.ssh_tunnel, SshTunnelConfig::default());
+    assert!(!legacy_conn.ssh_tunnel.enabled);
+    assert_eq!(legacy_conn.ssh_tunnel.auth_method, SshAuthMethod::Password);
+    assert!(legacy_conn.is_admin);
+    assert!(legacy_conn.users_expanded);
+
+    // Arrange: profile with inline MongoDB password + SSH tunnel metadata (simulating save_profiles sanitization)
+    let mut profile = ConnectionConfig::new_profile(
+        "Tunnel Cluster",
+        "mongodb://appuser:ultra_secret_mongo_pw@10.20.0.15:27017/prod?authSource=admin",
+    )
+    .expect("valid profile");
+    profile.status = ConnectionStatus::Connected;
+    profile.has_saved_password = true;
+    profile.ssh_tunnel = SshTunnelConfig {
+        enabled: true,
+        endpoint: "203.0.113.10:2222".to_string(),
+        username: "bastion_user".to_string(),
+        auth_method: SshAuthMethod::PrivateKey,
+        private_key_path: "~/.ssh/id_ecdsa".to_string(),
+        has_saved_secret: true,
+    };
+
+    // Act: apply exact sanitization used by ConnectionManager::save_profiles
+    let mut sanitized = profile.clone();
+    sanitized.clear_session_password();
+    let json_text =
+        serde_json::to_string_pretty(&vec![sanitized]).expect("profile list should serialize");
+
+    // Assert: neither MongoDB password nor SSH secret leaks into JSON
+    assert!(!json_text.contains("ultra_secret_mongo_pw"));
+    assert!(!json_text.contains("ssh_secret"));
+
+    let restored_list: Vec<ConnectionConfig> =
+        serde_json::from_str(&json_text).expect("sanitized profile list should deserialize");
+    assert_eq!(restored_list.len(), 1);
+    let restored = &restored_list[0];
+    assert_eq!(
+        restored.uri,
+        "mongodb://10.20.0.15:27017/prod?authSource=admin"
+    );
+    assert_eq!(restored.username, "appuser");
+    assert!(restored.has_saved_password);
+    assert_eq!(restored.ssh_tunnel, profile.ssh_tunnel);
+
+    // Assert: profiles_file_path points to connections.json if available
+    if let Some(path) = ConnectionManager::profiles_file_path() {
+        assert_eq!(
+            path.file_name().and_then(|n| n.to_str()),
+            Some("connections.json")
+        );
+    }
+
+    // Assert: SSH AppEvent variants construct & match cleanly
+    let add_evt = AppEvent::AddConnection {
+        name: "SSH Profile".to_string(),
+        uri: "mongodb://10.0.0.2:27017".to_string(),
+        ssh_tunnel: profile.ssh_tunnel.clone(),
+        ssh_secret: "ephemeral-passphrase".to_string(),
+    };
+    let secret_evt = AppEvent::SshSecretLoaded {
+        index: 0,
+        open_edit_modal: true,
+        result: Ok(Some("loaded-secret".to_string())),
+    };
+    assert!(matches!(add_evt, AppEvent::AddConnection { .. }));
+    assert!(matches!(
+        secret_evt,
+        AppEvent::SshSecretLoaded {
+            open_edit_modal: true,
+            result: Ok(Some(_)),
+            ..
+        }
+    ));
 }

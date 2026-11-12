@@ -1,3 +1,5 @@
+use std::fmt::Write as _;
+
 use egui::{text::LayoutJob, CursorIcon, FontFamily, FontId, RichText, TextFormat, Ui};
 use egui_phosphor::regular;
 
@@ -38,7 +40,7 @@ pub fn render_connection_tree(
             regular::CARET_RIGHT
         };
 
-        let hover_details = if let Some(err) = &conn.last_error {
+        let mut hover_details = if let Some(err) = &conn.last_error {
             format!("{} ({})\nError: {err}", conn.status.label(), conn.host)
         } else if conn.status.is_connected() {
             format!(
@@ -53,6 +55,15 @@ pub fn render_connection_tree(
                 conn.host
             )
         };
+        if conn.ssh_tunnel.enabled {
+            let _ = write!(
+                hover_details,
+                "\nSSH Tunnel: {}@{} ({})",
+                conn.ssh_tunnel.username,
+                conn.ssh_tunnel.endpoint,
+                conn.ssh_tunnel.auth_method.label()
+            );
+        }
 
         let display_name = ConnectionConfig::clamp_profile_name(&conn.name);
 
@@ -84,6 +95,17 @@ pub fn render_connection_tree(
                 ..Default::default()
             },
         );
+        if conn.ssh_tunnel.enabled {
+            profile_job.append(
+                " [SSH]",
+                0.0,
+                TextFormat {
+                    font_id: FontId::new(11.0, FontFamily::Monospace),
+                    color: palette.accent_color,
+                    ..Default::default()
+                },
+            );
+        }
 
         ui.horizontal(|ui| {
             let toggle_resp = ui

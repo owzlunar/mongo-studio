@@ -14,7 +14,7 @@ use crate::database::schema_analyzer::SchemaAnalyzer;
 use crate::database::user_service::UserService;
 use crate::models::{
     CollectionInfo, CollectionStats, ConnectionConfig, ConnectionStatus, DatabaseInfo, DocumentRow,
-    MongoUser, SchemaField,
+    MongoUser, SchemaField, SshTunnelConfig,
 };
 
 #[derive(Debug, Clone)]
@@ -92,6 +92,7 @@ impl ConnectionClient {
                 is_admin: true,
                 users_expanded: true,
                 users: MongoUser::mock_users(),
+                ssh_tunnel: SshTunnelConfig::default(),
             },
         })
     }

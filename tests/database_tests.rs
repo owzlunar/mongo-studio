@@ -1,4 +1,5 @@
 use std::fs;
+use std::net::TcpListener;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
@@ -8,11 +9,12 @@ use mongo_studio::core::{AppError, AppState};
 use mongo_studio::database::connection::ConnectionClient;
 use mongo_studio::database::{
     CollectionService, ConnectionManager, CreateIndexRequest, DatabaseService, DocumentQueryParams,
-    DocumentService, IndexService, SchemaAnalyzer, ShellService, TransferFormat, TransferService,
-    UserService,
+    DocumentService, IndexService, SchemaAnalyzer, ShellService, SshTunnelRegistry, TransferFormat,
+    TransferService, UserService,
 };
 use mongo_studio::models::{
-    CollectionInfo, ConnectionConfig, ConnectionStatus, DatabaseInfo, DocumentRow, UserRole,
+    CollectionInfo, ConnectionConfig, ConnectionStatus, DatabaseInfo, DocumentRow, SshAuthMethod,
+    SshTunnelConfig, UserRole,
 };
 use mongo_studio::query::{AggregationStage, QueryFilter};
 use serde_json::Value;
@@ -2231,4 +2233,437 @@ fn live_phase5_shell_commands_on_192_168_100_243_27017() {
     .expect("shell runCommand ping");
     let ping_json: Value = serde_json::from_str(&ping_out).expect("valid ping JSON");
     assert!(ping_json.get("ok").is_some());
+}
+
+#[test]
+fn ssh_tunnel_config_parse_endpoint_handles_valid_formats_and_rejects_injection() {
+    // Valid IPv4, hostname, IPv6, and ssh:// / user@ forms
+    assert_eq!(
+        SshTunnelConfig::parse_endpoint(" 192.168.1.50:2222 ").expect("IPv4 with port"),
+        ("192.168.1.50".to_string(), 2222)
+    );
+    assert_eq!(
+        SshTunnelConfig::parse_endpoint("bastion.internal").expect("hostname defaults to 22"),
+        ("bastion.internal".to_string(), 22)
+    );
+    assert_eq!(
+        SshTunnelConfig::parse_endpoint("[::1]:2222").expect("bracketed IPv6 with port"),
+        ("::1".to_string(), 2222)
+    );
+    assert_eq!(
+        SshTunnelConfig::parse_endpoint("[2001:db8::1]").expect("bracketed IPv6 default port"),
+        ("2001:db8::1".to_string(), 22)
+    );
+    assert_eq!(
+        SshTunnelConfig::parse_endpoint("::1").expect("bare IPv6 default port"),
+        ("::1".to_string(), 22)
+    );
+    assert_eq!(
+        SshTunnelConfig::parse_endpoint("ssh://ops@10.0.0.5:2200").expect("ssh:// prefix"),
+        ("10.0.0.5".to_string(), 2200)
+    );
+    assert_eq!(
+        SshTunnelConfig::parse_endpoint("SSH://ops@bastion.local")
+            .expect("case-insensitive ssh://"),
+        ("bastion.local".to_string(), 22)
+    );
+
+    assert_eq!(
+        SshTunnelConfig::parse_endpoint("2001:db8::1:22").expect("bare IPv6 address default port"),
+        ("2001:db8::1:22".to_string(), 22)
+    );
+
+    // Invalid / option-injection inputs must be rejected
+    for invalid in [
+        "",
+        "   ",
+        "-oProxyCommand=id:22",
+        "-evil",
+        "[-oProxyCommand=id]:22",
+        "bad host:22",
+        "host\n:22",
+        "host\t:22",
+        "[::1\x00]:22",
+        "host:0",
+        "host:65536",
+        "host:abc",
+        "host:",
+        "[::1",
+        "[::1]extra",
+        "[]:22",
+        "2001:db8::1::22",
+        "ubuntu@",
+        "host/path",
+        "host?foo=bar",
+    ] {
+        assert!(
+            matches!(
+                SshTunnelConfig::parse_endpoint(invalid),
+                Err(AppError::Connection(_))
+            ),
+            "expected endpoint `{invalid}` to be rejected"
+        );
+    }
+}
+
+#[test]
+fn ssh_tunnel_config_validate_offline_and_expanded_key_path_guards() {
+    // Disabled tunnel passes through cleanly
+    let disabled = SshTunnelConfig::default();
+    assert_eq!(
+        disabled
+            .validate_offline("")
+            .expect("disabled tunnel passes"),
+        (String::new(), SshTunnelConfig::DEFAULT_PORT)
+    );
+    assert!(!disabled.needs_secret_prompt(""));
+
+    // Username injection & empty username checks
+    for bad_user in ["", "   ", "-oProxyCommand=calc", "bad user", "bad\nuser"] {
+        let cfg = SshTunnelConfig {
+            enabled: true,
+            endpoint: "10.0.0.5:22".to_string(),
+            username: bad_user.to_string(),
+            auth_method: SshAuthMethod::Password,
+            private_key_path: String::new(),
+            has_saved_secret: false,
+        };
+        assert!(
+            matches!(cfg.validate_offline("secret"), Err(AppError::Connection(_))),
+            "expected username `{bad_user}` to be rejected"
+        );
+    }
+
+    // Password auth validation & prompt logic
+    let pwd_cfg = SshTunnelConfig {
+        enabled: true,
+        endpoint: "10.0.0.5:22".to_string(),
+        username: "ubuntu".to_string(),
+        auth_method: SshAuthMethod::Password,
+        private_key_path: String::new(),
+        has_saved_secret: false,
+    };
+    assert!(pwd_cfg.needs_secret_prompt(""));
+    assert!(!pwd_cfg.needs_secret_prompt("s3cr3t"));
+    assert!(pwd_cfg.validate_offline("").is_err());
+    assert_eq!(
+        pwd_cfg
+            .validate_offline("s3cr3t")
+            .expect("valid password config"),
+        ("10.0.0.5".to_string(), 22)
+    );
+
+    let saved_pwd_cfg = SshTunnelConfig {
+        has_saved_secret: true,
+        ..pwd_cfg
+    };
+    assert!(!saved_pwd_cfg.needs_secret_prompt(""));
+
+    // PrivateKey auth: passphrase optional, control chars rejected, ~ expansion works
+    let key_cfg = SshTunnelConfig {
+        enabled: true,
+        endpoint: "bastion.internal:2222".to_string(),
+        username: "ops".to_string(),
+        auth_method: SshAuthMethod::PrivateKey,
+        private_key_path: String::new(),
+        has_saved_secret: false,
+    };
+    assert!(!key_cfg.needs_secret_prompt(""));
+    assert_eq!(
+        key_cfg
+            .validate_offline("")
+            .expect("private key without passphrase passes offline validation"),
+        ("bastion.internal".to_string(), 2222)
+    );
+    let default_expanded = key_cfg.expanded_key_path();
+    assert_eq!(default_expanded, key_cfg.resolved_key_path());
+    assert!(
+        default_expanded.ends_with(PathBuf::from(".ssh").join("id_ecdsa")),
+        "expected default key path to end with .ssh/id_ecdsa, got {}",
+        default_expanded.display()
+    );
+
+    let custom_tilde_cfg = SshTunnelConfig {
+        private_key_path: "~/keys/mongo_ecdsa".to_string(),
+        ..key_cfg.clone()
+    };
+    assert!(custom_tilde_cfg
+        .expanded_key_path()
+        .ends_with(PathBuf::from("keys").join("mongo_ecdsa")));
+
+    let ctrl_key_cfg = SshTunnelConfig {
+        private_key_path: "/tmp/bad\nkey".to_string(),
+        ..key_cfg
+    };
+    assert!(matches!(
+        ctrl_key_cfg.validate_offline(""),
+        Err(AppError::Connection(_))
+    ));
+}
+
+#[test]
+fn connection_config_mongo_target_extraction_and_tunnel_uri_rewriting() {
+    // Target extraction
+    assert_eq!(
+        ConnectionConfig::extract_mongo_target_host_port(
+            "mongodb://db.internal:27018/prod?authSource=admin"
+        )
+        .expect("standard URI target"),
+        ("db.internal".to_string(), 27018)
+    );
+    assert_eq!(
+        ConnectionConfig::extract_mongo_target_host_port("mongodb://user:pass@10.0.0.5/app")
+            .expect("default mongo port"),
+        ("10.0.0.5".to_string(), 27017)
+    );
+    assert_eq!(
+        ConnectionConfig::extract_mongo_target_host_port("mongodb://[::1]:27019/app")
+            .expect("IPv6 mongo target"),
+        ("::1".to_string(), 27019)
+    );
+
+    for bad_uri in [
+        "",
+        "mongodb+srv://cluster.example.net/prod",
+        "http://localhost:27017",
+        "mongodb://n1:27017,n2:27017/prod",
+        "mongodb://-evilhost:27017/prod",
+    ] {
+        assert!(
+            matches!(
+                ConnectionConfig::extract_mongo_target_host_port(bad_uri),
+                Err(AppError::Connection(_))
+            ),
+            "expected URI `{bad_uri}` to be rejected"
+        );
+    }
+
+    // URI rewriting preserves credentials, path, and query options + ensures directConnection=true
+    assert_eq!(
+        ConnectionConfig::rewrite_uri_for_tunnel(
+            "mongodb://admin:s3cr3t@10.20.30.40:27018/appdb?authSource=admin&tls=true",
+            51234
+        )
+        .expect("rewrite with creds and query"),
+        "mongodb://admin:s3cr3t@127.0.0.1:51234/appdb?authSource=admin&tls=true&directConnection=true"
+    );
+    assert_eq!(
+        ConnectionConfig::rewrite_uri_for_tunnel(
+            "mongodb://10.20.30.40?DirectConnection=true&replicaSet=rs0",
+            51234
+        )
+        .expect("rewrite without duplicate directConnection"),
+        "mongodb://127.0.0.1:51234/?DirectConnection=true&replicaSet=rs0"
+    );
+    assert!(matches!(
+        ConnectionConfig::rewrite_uri_for_tunnel("mongodb://10.0.0.1:27017", 0),
+        Err(AppError::Connection(_))
+    ));
+    assert!(matches!(
+        ConnectionConfig::rewrite_uri_for_tunnel("mongodb+srv://cluster.example.net/db", 51234),
+        Err(AppError::Connection(_))
+    ));
+
+    // Redact URI masks password and preserves query params containing '@'
+    assert_eq!(
+        ConnectionConfig::redact_uri("mongodb://admin:supersecret@10.0.0.5:27017/admin"),
+        "mongodb://admin:****@10.0.0.5:27017/admin"
+    );
+    assert_eq!(
+        ConnectionConfig::redact_uri("mongodb://admin:p@ss:1@10.0.0.5:27017/app?appName=a@b"),
+        "mongodb://admin:****@10.0.0.5:27017/app?appName=a@b"
+    );
+    assert_eq!(
+        ConnectionConfig::redact_uri("mongodb://10.0.0.5:27017/app?appName=a@b"),
+        "mongodb://10.0.0.5:27017/app?appName=a@b"
+    );
+}
+
+#[test]
+fn ssh_tunnel_registry_disabled_passthrough_and_fail_fast_offline_guards() {
+    let runtime = build_test_runtime();
+    let registry = SshTunnelRegistry::new();
+    let conn_id = Uuid::new_v4();
+    let raw_uri = "mongodb://10.0.0.10:27017/prod".to_string();
+
+    // Disabled tunnel passes URI through untouched
+    let passthrough = runtime
+        .block_on(registry.ensure_tunnel_and_rewrite_uri_async(
+            conn_id,
+            raw_uri.clone(),
+            SshTunnelConfig::default(),
+            String::new(),
+            Duration::from_secs(2),
+        ))
+        .expect("disabled tunnel must pass through");
+    assert_eq!(passthrough, raw_uri);
+    assert_eq!(registry.active_local_port(conn_id), None);
+    registry.close_tunnel(conn_id);
+    registry.close_all();
+
+    // Missing private key fails fast
+    let missing_key_cfg = SshTunnelConfig {
+        enabled: true,
+        endpoint: "127.0.0.1:22".to_string(),
+        username: "ops".to_string(),
+        auth_method: SshAuthMethod::PrivateKey,
+        private_key_path: format!("/tmp/mongo_studio_missing_key_{}", Uuid::new_v4()),
+        has_saved_secret: false,
+    };
+    let missing_err = runtime
+        .block_on(registry.ensure_tunnel_and_rewrite_uri_async(
+            conn_id,
+            raw_uri.clone(),
+            missing_key_cfg,
+            String::new(),
+            Duration::from_millis(500),
+        ))
+        .expect_err("missing private key must fail");
+    assert!(matches!(missing_err, AppError::Connection(_)));
+
+    // Directory passed as private key path fails fast
+    let temp_dir = std::env::temp_dir().join(format!("mongo_studio_keydir_{}", Uuid::new_v4()));
+    let _dir_guard = TempDirGuard(temp_dir.clone());
+    fs::create_dir_all(&temp_dir).expect("create temp key dir");
+    let dir_key_cfg = SshTunnelConfig {
+        enabled: true,
+        endpoint: "127.0.0.1:22".to_string(),
+        username: "ops".to_string(),
+        auth_method: SshAuthMethod::PrivateKey,
+        private_key_path: temp_dir.display().to_string(),
+        has_saved_secret: false,
+    };
+    let dir_err = runtime
+        .block_on(registry.ensure_tunnel_and_rewrite_uri_async(
+            conn_id,
+            raw_uri.clone(),
+            dir_key_cfg,
+            String::new(),
+            Duration::from_millis(500),
+        ))
+        .expect_err("directory as key path must fail");
+    assert!(dir_err.to_string().contains("not a regular file"));
+
+    // Empty password fails fast
+    let empty_pwd_cfg = SshTunnelConfig {
+        enabled: true,
+        endpoint: "127.0.0.1:22".to_string(),
+        username: "ops".to_string(),
+        auth_method: SshAuthMethod::Password,
+        private_key_path: String::new(),
+        has_saved_secret: false,
+    };
+    assert!(matches!(
+        runtime.block_on(registry.ensure_tunnel_and_rewrite_uri_async(
+            conn_id,
+            raw_uri,
+            empty_pwd_cfg.clone(),
+            String::new(),
+            Duration::from_millis(500),
+        )),
+        Err(AppError::Connection(_))
+    ));
+
+    // SRV URI fails fast
+    assert!(matches!(
+        runtime.block_on(SshTunnelRegistry::ping_through_ssh_async(
+            "mongodb+srv://cluster.example.net/prod".to_string(),
+            empty_pwd_cfg,
+            "secret".to_string(),
+            Duration::from_millis(500),
+        )),
+        Err(AppError::Connection(_))
+    ));
+}
+
+#[cfg(unix)]
+#[test]
+fn ssh_tunnel_registry_unix_private_key_permission_check_and_closed_port_fail_fast() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let runtime = build_test_runtime();
+    let registry = SshTunnelRegistry::new();
+    let conn_id = Uuid::new_v4();
+
+    let temp_dir = std::env::temp_dir().join(format!("mongo_studio_keyperm_{}", Uuid::new_v4()));
+    let _dir_guard = TempDirGuard(temp_dir.clone());
+    fs::create_dir_all(&temp_dir).expect("create temp dir");
+    let key_path = temp_dir.join("id_ecdsa");
+    fs::write(&key_path, "dummy-private-key-material").expect("write dummy key");
+
+    // 0o644 must be rejected before spawning ssh
+    let mut perms_644 = fs::metadata(&key_path).expect("metadata").permissions();
+    perms_644.set_mode(0o644);
+    fs::set_permissions(&key_path, perms_644).expect("set 0644");
+
+    let key_cfg = SshTunnelConfig {
+        enabled: true,
+        endpoint: "127.0.0.1:22".to_string(),
+        username: "ops".to_string(),
+        auth_method: SshAuthMethod::PrivateKey,
+        private_key_path: key_path.display().to_string(),
+        has_saved_secret: false,
+    };
+    let perm_err = runtime
+        .block_on(registry.ensure_tunnel_and_rewrite_uri_async(
+            conn_id,
+            "mongodb://127.0.0.1:27017/app".to_string(),
+            key_cfg,
+            String::new(),
+            Duration::from_millis(500),
+        ))
+        .expect_err("0644 key must be rejected");
+    let perm_msg = perm_err.to_string();
+    assert!(perm_msg.contains("insecure permissions"));
+    assert!(perm_msg.contains("chmod 600"));
+
+    // 0o600 passes permission validation and fails fast against a closed loopback port
+    let mut perms_600 = fs::metadata(&key_path).expect("metadata").permissions();
+    perms_600.set_mode(0o600);
+    fs::set_permissions(&key_path, perms_600).expect("set 0600");
+
+    let closed_listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind ephemeral port");
+    let closed_port = closed_listener.local_addr().expect("local_addr").port();
+    drop(closed_listener);
+
+    let closed_port_cfg = SshTunnelConfig {
+        enabled: true,
+        endpoint: format!("127.0.0.1:{closed_port}"),
+        username: "ops".to_string(),
+        auth_method: SshAuthMethod::PrivateKey,
+        private_key_path: key_path.display().to_string(),
+        has_saved_secret: false,
+    };
+    let tunnel_err = runtime
+        .block_on(registry.ensure_tunnel_and_rewrite_uri_async(
+            conn_id,
+            "mongodb://127.0.0.1:27017/app".to_string(),
+            closed_port_cfg,
+            String::new(),
+            Duration::from_millis(500),
+        ))
+        .expect_err("closed loopback SSH port must fail");
+    let tunnel_msg = tunnel_err.to_string();
+    assert!(!tunnel_msg.contains("insecure permissions"));
+    assert!(!tunnel_msg.contains("chmod 600"));
+    assert_eq!(registry.active_local_port(conn_id), None);
+}
+
+#[test]
+fn connection_manager_ssh_keyring_async_handles_nonexistent_entry_without_panicking() {
+    let runtime = build_test_runtime();
+    let random_conn_id = Uuid::new_v4();
+
+    let load_res = runtime.block_on(ConnectionManager::load_ssh_secret_from_keyring_async(
+        random_conn_id,
+    ));
+    let delete_res = runtime.block_on(ConnectionManager::delete_ssh_secret_from_keyring_async(
+        random_conn_id,
+    ));
+
+    assert!(
+        matches!(load_res, Ok(None) | Err(_)),
+        "expected Ok(None) or Err for missing SSH keyring entry, got {load_res:?}"
+    );
+    assert_eq!(delete_res, Ok(()));
 }

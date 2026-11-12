@@ -9,7 +9,7 @@ use crate::database::{
 };
 use crate::models::{
     CollectionInfo, DatabaseInfo, DocumentRow, IndexInfo, MongoUser, SavedQuery, SchemaField,
-    UserRole,
+    SshTunnelConfig, UserRole,
 };
 use crate::query::AggregationStage;
 use crate::theme::ThemeMode;
@@ -36,18 +36,29 @@ pub enum AppEvent {
         open_edit_modal: bool,
         result: Result<Option<String>, String>,
     },
+    SshSecretLoaded {
+        index: usize,
+        open_edit_modal: bool,
+        result: Result<Option<String>, String>,
+    },
     AddConnection {
         name: String,
         uri: String,
+        ssh_tunnel: SshTunnelConfig,
+        ssh_secret: String,
     },
     UpdateConnection {
         index: usize,
         name: String,
         uri: String,
+        ssh_tunnel: SshTunnelConfig,
+        ssh_secret: String,
     },
     TestConnection {
         name: String,
         uri: String,
+        ssh_tunnel: SshTunnelConfig,
+        ssh_secret: String,
     },
     ConnectProfile {
         index: usize,

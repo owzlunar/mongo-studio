@@ -6,6 +6,7 @@ pub mod document_service;
 pub mod index_service;
 pub mod schema_analyzer;
 pub mod shell_service;
+pub mod ssh_tunnel;
 pub mod transfer_service;
 pub mod user_service;
 
@@ -18,5 +19,6 @@ pub use document_service::{
 pub use index_service::{CreateIndexRequest, IndexService};
 pub use schema_analyzer::SchemaAnalyzer;
 pub use shell_service::ShellService;
+pub use ssh_tunnel::SshTunnelRegistry;
 pub use transfer_service::{ExportStats, ImportStats, TransferFormat, TransferService};
 pub use user_service::UserService;

@@ -22,6 +22,39 @@ impl ConnectionManager {
             .map_err(|err| AppError::Connection(format!("failed to build async runtime: {err}")))
     }
 
+    fn ssh_keyring_account(conn_id: Uuid) -> String {
+        format!("{conn_id}:ssh")
+    }
+
+    fn save_secret_to_keyring_for_account(account: &str, secret: &str) -> AppResult<()> {
+        let entry = keyring::Entry::new(KEYRING_SERVICE, account)
+            .map_err(|err| AppError::Persistence(format!("keyring init failed: {err}")))?;
+        entry
+            .set_password(secret)
+            .map_err(|err| AppError::Persistence(format!("keyring save failed: {err}")))
+    }
+
+    fn load_secret_from_keyring_for_account(account: &str) -> AppResult<Option<String>> {
+        let entry = keyring::Entry::new(KEYRING_SERVICE, account)
+            .map_err(|err| AppError::Persistence(format!("keyring init failed: {err}")))?;
+        match entry.get_password() {
+            Ok(secret) => Ok(Some(secret)),
+            Err(keyring::Error::NoEntry) => Ok(None),
+            Err(err) => Err(AppError::Persistence(format!("keyring load failed: {err}"))),
+        }
+    }
+
+    fn delete_secret_from_keyring_for_account(account: &str) -> AppResult<()> {
+        let entry = keyring::Entry::new(KEYRING_SERVICE, account)
+            .map_err(|err| AppError::Persistence(format!("keyring init failed: {err}")))?;
+        match entry.delete_password() {
+            Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
+            Err(err) => Err(AppError::Persistence(format!(
+                "keyring delete failed: {err}"
+            ))),
+        }
+    }
+
     /// Creates a new mock-populated [`ConnectionConfig`] from a connection profile name and URI.
     ///
     /// # Errors
@@ -74,24 +107,11 @@ impl ConnectionManager {
     }
 
     fn load_password_from_keyring_inner(conn_id: Uuid) -> AppResult<Option<String>> {
-        let entry = keyring::Entry::new(KEYRING_SERVICE, &conn_id.to_string())
-            .map_err(|err| AppError::Persistence(format!("keyring init failed: {err}")))?;
-        match entry.get_password() {
-            Ok(password) => Ok(Some(password)),
-            Err(keyring::Error::NoEntry) => Ok(None),
-            Err(err) => Err(AppError::Persistence(format!("keyring load failed: {err}"))),
-        }
+        Self::load_secret_from_keyring_for_account(&conn_id.to_string())
     }
 
     fn delete_password_from_keyring_inner(conn_id: Uuid) -> AppResult<()> {
-        let entry = keyring::Entry::new(KEYRING_SERVICE, &conn_id.to_string())
-            .map_err(|err| AppError::Persistence(format!("keyring init failed: {err}")))?;
-        match entry.delete_password() {
-            Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
-            Err(err) => Err(AppError::Persistence(format!(
-                "keyring delete failed: {err}"
-            ))),
-        }
+        Self::delete_secret_from_keyring_for_account(&conn_id.to_string())
     }
 
     /// Saves a connection password in the OS credential keyring.
@@ -100,11 +120,7 @@ impl ConnectionManager {
     ///
     /// Returns [`AppError::Persistence`] if the keyring entry cannot be created or written.
     pub fn save_password_to_keyring(conn_id: Uuid, password: &str) -> AppResult<()> {
-        let entry = keyring::Entry::new(KEYRING_SERVICE, &conn_id.to_string())
-            .map_err(|err| AppError::Persistence(format!("keyring init failed: {err}")))?;
-        entry
-            .set_password(password)
-            .map_err(|err| AppError::Persistence(format!("keyring save failed: {err}")))
+        Self::save_secret_to_keyring_for_account(&conn_id.to_string(), password)
     }
 
     /// Asynchronously saves a connection password in the OS credential keyring
@@ -164,6 +180,55 @@ impl ConnectionManager {
         tokio::task::spawn_blocking(move || Self::delete_password_from_keyring_inner(conn_id))
             .await
             .map_err(|err| AppError::Persistence(format!("keyring delete task failed: {err}")))?
+    }
+
+    /// Asynchronously saves an SSH tunnel password or key passphrase in the OS credential keyring
+    /// under account key `{conn_id}:ssh` on Tokio's blocking thread pool.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AppError::Persistence`] if the keyring write or blocking task fails.
+    pub async fn save_ssh_secret_to_keyring_async(conn_id: Uuid, secret: String) -> AppResult<()> {
+        tokio::task::spawn_blocking(move || {
+            let account = Self::ssh_keyring_account(conn_id);
+            Self::save_secret_to_keyring_for_account(&account, &secret)
+        })
+        .await
+        .map_err(|err| AppError::Persistence(format!("SSH keyring save task failed: {err}")))?
+    }
+
+    /// Asynchronously loads a saved SSH tunnel secret from the OS credential keyring
+    /// under account key `{conn_id}:ssh` on Tokio's blocking thread pool.
+    ///
+    /// Returns `Ok(None)` when no entry exists for `conn_id`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AppError::Persistence`] if the keyring backend or blocking task fails.
+    pub async fn load_ssh_secret_from_keyring_async(conn_id: Uuid) -> AppResult<Option<String>> {
+        tokio::task::spawn_blocking(move || {
+            let account = Self::ssh_keyring_account(conn_id);
+            Self::load_secret_from_keyring_for_account(&account)
+        })
+        .await
+        .map_err(|err| AppError::Persistence(format!("SSH keyring load task failed: {err}")))?
+    }
+
+    /// Asynchronously deletes a saved SSH tunnel secret from the OS credential keyring
+    /// under account key `{conn_id}:ssh` on Tokio's blocking thread pool.
+    ///
+    /// Missing entries (`keyring::Error::NoEntry`) are treated as `Ok(())`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AppError::Persistence`] if the keyring backend or blocking task fails.
+    pub async fn delete_ssh_secret_from_keyring_async(conn_id: Uuid) -> AppResult<()> {
+        tokio::task::spawn_blocking(move || {
+            let account = Self::ssh_keyring_account(conn_id);
+            Self::delete_secret_from_keyring_for_account(&account)
+        })
+        .await
+        .map_err(|err| AppError::Persistence(format!("SSH keyring delete task failed: {err}")))?
     }
 
     /// Returns the path to `connections.json` inside the platform config directory.

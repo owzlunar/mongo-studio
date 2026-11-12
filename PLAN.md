@@ -12,8 +12,8 @@
 | **Phase 2** | Live MongoDB Connection & Security | ✅ เสร็จสิ้น | `5e282ef` |
 | **Phase 3** | Database Explorer (Lazy-Loading) & Admin RBAC | ✅ เสร็จสิ้น | `fdc60e3`, `0d9f910`, `905ec2d` (Polish) |
 | **Phase 4** | Live Document Manager & Full CRUD / Query | ✅ เสร็จสิ้น | `596ac1c` (41/41 tests ผ่าน) |
-| **Phase 5** | Advanced Features, Export/Import & Release | ✅ เสร็จสิ้น | รอ `git commit` (70/70 tests ผ่าน) |
-| **Feature+** | SSH Tunnel Connection (`ip:port`, `user/pass`, `id_ecdsa`) | 🔄 กำลังดำเนินการ | รองรับเชื่อมต่อ MongoDB ผ่าน SSH Tunnel |
+| **Phase 5** | Advanced Features, Export/Import & Release | ✅ เสร็จสิ้น | `2bcda74` (70/70 tests ผ่าน) |
+| **Feature+** | SSH Tunnel Connection (`ip:port`, `user/pass`, `id_ecdsa`) | ✅ เสร็จสิ้น | รองรับ `ssh ip:port` (`user/pass`, `id_ecdsa` + Keychain, 88/88 tests ผ่าน) |
 
 ---
 
@@ -136,9 +136,9 @@
 
 ---
 
-## Feature+ — SSH Tunnel Connection (`ip:port`, `user/pass`, `id_ecdsa`) 🔄
+## Feature+ — SSH Tunnel Connection (`ip:port`, `user/pass`, `id_ecdsa`) ✅
 
-- [ ] `core-dev`: เพิ่ม `SshTunnelConfig`, `SshAuthMethod` (`Password` / `PrivateKey` เริ่มต้น `~/.ssh/id_ecdsa`), `SshTunnelManager` จัดการ port forwarding แบบ async บน Tokio พร้อม OS Keychain สำหรับ SSH password/passphrase
-- [ ] `ui-dev`: เพิ่มส่วนตั้งค่า SSH Tunnel (`Enable SSH Tunnel`, `SSH Host:Port`, `SSH User`, Auth: `Password` / `SSH Key (id_ecdsa)` + Browse key / Passphrase, Save in Keychain) ใน Modal เพิ่ม/แก้ไข Connection และปิด Tunnel เมื่อ Disconnect
-- [ ] `qa-tester`: เขียน Unit/Integration Tests สำหรับ Validation, URI Rewriteผ่าน Local Port, Redaction, Serde Backward Compatibility และ Lifecycle ของ SSH Tunnel
+- [x] `core-dev`: เพิ่ม `SshTunnelConfig`, `SshAuthMethod` (`Password` / `PrivateKey` เริ่มต้น `~/.ssh/id_ecdsa`), `SshTunnelRegistry` (`src/database/ssh_tunnel.rs`) จัดการ `ssh -N -T` port forwarding แบบ async บน Tokio พร้อม OS Keychain (`{conn_id}:ssh`), `AskpassTempDir` (`0o700`) และ URI rewriting (`directConnection=true`)
+- [x] `ui-dev`: เพิ่มส่วนตั้งค่า SSH Tunnel (`Connect via SSH Tunnel (ip:port)`, `SSH Host (ip:port)`, `SSH Username`, Auth: `Password` / `SSH Key (id_ecdsa)` + Browse key / Passphrase, Save in Keychain) ใน Modal เพิ่ม/แก้ไข Connection, `[SSH]` badge ใน sidebar tree และปิด Tunnel อัตโนมัติเมื่อ Disconnect/Remove/Drop
+- [x] `qa-tester`: ตรวจสอบความปลอดภัย (0 `.unwrap()` ใน `src/`, ล้าง secrets เมื่อสลับ Auth mode/ปิด modal, `redact_uri` IPv4/Query `@` fix) และเพิ่ม Tests ผ่านครบ 88/88 (31 lib + 16 `core_workspace_tests` + 30 `database_tests` + 11 `query_tests`)
 

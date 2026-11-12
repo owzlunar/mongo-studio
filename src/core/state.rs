@@ -2,7 +2,8 @@ use bson::Bson;
 use egui_dock::DockState;
 
 use crate::models::{
-    CollectionInfo, ConnectionConfig, MongoUser, QueryStore, SavedQuery, UserRole,
+    CollectionInfo, ConnectionConfig, MongoUser, QueryStore, SavedQuery, SshAuthMethod,
+    SshTunnelConfig, UserRole,
 };
 use crate::theme::ThemeMode;
 use crate::ui::activity_bar::ActivityView;
@@ -43,6 +44,13 @@ pub struct AppState {
     pub new_conn_username: String,
     pub new_conn_password: String,
     pub new_conn_save_password: bool,
+    pub new_conn_ssh_enabled: bool,
+    pub new_conn_ssh_endpoint: String,
+    pub new_conn_ssh_username: String,
+    pub new_conn_ssh_auth_method: SshAuthMethod,
+    pub new_conn_ssh_key_path: String,
+    pub new_conn_ssh_secret: String,
+    pub new_conn_ssh_save_secret: bool,
     pub test_conn_status: Option<Result<String, String>>,
     pub is_testing_connection: bool,
     pub show_create_db_modal: bool,
@@ -152,6 +160,13 @@ impl AppState {
             new_conn_username: String::new(),
             new_conn_password: String::new(),
             new_conn_save_password: false,
+            new_conn_ssh_enabled: false,
+            new_conn_ssh_endpoint: String::new(),
+            new_conn_ssh_username: String::new(),
+            new_conn_ssh_auth_method: SshAuthMethod::Password,
+            new_conn_ssh_key_path: SshTunnelConfig::DEFAULT_PRIVATE_KEY_PATH.to_string(),
+            new_conn_ssh_secret: String::new(),
+            new_conn_ssh_save_secret: false,
             test_conn_status: None,
             is_testing_connection: false,
             show_create_db_modal: false,
@@ -211,6 +226,85 @@ impl AppState {
             shell_current_db: "admin".to_string(),
             is_transferring: false,
             show_about_modal: false,
+        }
+    }
+
+    /// Resets all New/Edit Connection modal fields (including SSH tunnel fields) to their defaults.
+    pub fn reset_connection_modal_fields(&mut self) {
+        self.editing_connection_idx = None;
+        self.new_conn_name = "Production ReplicaSet".to_string();
+        self.new_conn_uri = "mongodb://localhost:27017".to_string();
+        self.new_conn_username.clear();
+        self.new_conn_password.clear();
+        self.new_conn_save_password = false;
+        self.new_conn_ssh_enabled = false;
+        self.new_conn_ssh_endpoint.clear();
+        self.new_conn_ssh_username.clear();
+        self.new_conn_ssh_auth_method = SshAuthMethod::Password;
+        self.new_conn_ssh_key_path = SshTunnelConfig::DEFAULT_PRIVATE_KEY_PATH.to_string();
+        self.new_conn_ssh_secret.clear();
+        self.new_conn_ssh_save_secret = false;
+        self.test_conn_status = None;
+        self.is_testing_connection = false;
+    }
+
+    /// Populates the New/Edit Connection modal fields from an existing [`ConnectionConfig`].
+    pub fn populate_connection_modal(&mut self, index: usize, conn: &ConnectionConfig) {
+        let (base_uri, uri_user, uri_pass) = ConnectionConfig::split_uri_credentials(&conn.uri);
+        self.editing_connection_idx = Some(index);
+        self.new_conn_name = conn.name.clone();
+        self.new_conn_uri = base_uri;
+        self.new_conn_username = if conn.username.is_empty() {
+            uri_user
+        } else {
+            conn.username.clone()
+        };
+        self.new_conn_password = uri_pass;
+        self.new_conn_save_password = conn.has_saved_password;
+
+        self.new_conn_ssh_enabled = conn.ssh_tunnel.enabled;
+        self.new_conn_ssh_endpoint = conn.ssh_tunnel.endpoint.clone();
+        self.new_conn_ssh_username = conn.ssh_tunnel.username.clone();
+        self.new_conn_ssh_auth_method = conn.ssh_tunnel.auth_method;
+        self.new_conn_ssh_key_path = if conn.ssh_tunnel.private_key_path.trim().is_empty() {
+            SshTunnelConfig::DEFAULT_PRIVATE_KEY_PATH.to_string()
+        } else {
+            conn.ssh_tunnel.private_key_path.clone()
+        };
+        self.new_conn_ssh_secret.clear();
+        self.new_conn_ssh_save_secret = conn.ssh_tunnel.has_saved_secret;
+
+        self.test_conn_status = None;
+        self.is_testing_connection = false;
+        self.show_new_connection_modal = true;
+    }
+
+    /// Builds an [`SshTunnelConfig`] from the current modal form fields, preserving an existing
+    /// saved keyring secret flag when editing and `new_conn_ssh_save_secret` remains enabled.
+    #[must_use]
+    pub fn build_ssh_tunnel_config(&self) -> SshTunnelConfig {
+        let previous_has_saved = self
+            .editing_connection_idx
+            .and_then(|idx| self.connections.get(idx))
+            .is_some_and(|conn| conn.ssh_tunnel.has_saved_secret);
+        self.build_ssh_tunnel_config_with_saved(previous_has_saved)
+    }
+
+    /// Builds an [`SshTunnelConfig`] from the current modal form fields using an explicit
+    /// `previous_has_saved` flag.
+    #[must_use]
+    pub fn build_ssh_tunnel_config_with_saved(&self, previous_has_saved: bool) -> SshTunnelConfig {
+        let has_saved_secret = self.new_conn_ssh_enabled
+            && self.new_conn_ssh_save_secret
+            && (!self.new_conn_ssh_secret.is_empty() || previous_has_saved);
+
+        SshTunnelConfig {
+            enabled: self.new_conn_ssh_enabled,
+            endpoint: self.new_conn_ssh_endpoint.trim().to_string(),
+            username: self.new_conn_ssh_username.trim().to_string(),
+            auth_method: self.new_conn_ssh_auth_method,
+            private_key_path: self.new_conn_ssh_key_path.trim().to_string(),
+            has_saved_secret,
         }
     }
 

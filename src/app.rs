@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -5,17 +6,18 @@ use std::time::{Duration, Instant};
 use bson::oid::ObjectId;
 use bson::{Bson, Document};
 use egui::{Context, FontData, FontDefinitions, FontFamily, Key};
+use uuid::Uuid;
 
 use crate::core::events::AppEvent;
 use crate::core::state::{AppState, PendingDeleteDocument, PendingDropIndex};
 use crate::database::{
     connection::ConnectionClient, CollectionService, ConnectionManager, DatabaseService,
     DocumentQueryParams, DocumentService, ExportStats, IndexService, SchemaAnalyzer, ShellService,
-    TransferService, UserService,
+    SshTunnelRegistry, TransferService, UserService,
 };
 use crate::models::{
-    ConnectionConfig, ConnectionStatus, DatabaseInfo, DocumentRow, IndexInfo, QueryStore, UserRole,
-    MAX_QUERY_HISTORY,
+    ConnectionConfig, ConnectionStatus, DatabaseInfo, DocumentRow, IndexInfo, QueryStore,
+    SshAuthMethod, SshTunnelConfig, UserRole, MAX_QUERY_HISTORY,
 };
 use crate::query::AggregationStage;
 use crate::theme::{apply_theme, ThemePalette};
@@ -27,8 +29,7 @@ use crate::workspace::{
 const DEFAULT_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 
 struct RoleUpdateTask {
-    connection_name: String,
-    uri: String,
+    target: ConnectionTarget,
     user_db: String,
     username: String,
     roles: Vec<UserRole>,
@@ -38,12 +39,14 @@ struct RoleUpdateTask {
 
 #[derive(Clone)]
 struct ConnectionTarget {
-    id: uuid::Uuid,
+    id: Uuid,
     name: String,
     uri: String,
     username: String,
     has_saved_password: bool,
     is_connected: bool,
+    ssh_tunnel: SshTunnelConfig,
+    ssh_secret: String,
 }
 
 fn is_system_database_name(name: &str) -> bool {
@@ -84,14 +87,19 @@ fn parse_history_query(command: &str) -> Option<(Option<String>, String, String)
     Some((parsed_db, coll.to_string(), filter))
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn resolve_effective_uri(
-    conn_id: uuid::Uuid,
+    ssh_registry: &SshTunnelRegistry,
+    conn_id: Uuid,
     raw_uri: String,
     username: String,
     has_saved_password: bool,
+    ssh_tunnel: SshTunnelConfig,
+    ssh_secret: String,
+    timeout: Duration,
 ) -> Result<String, String> {
     let (base_uri, uri_user, uri_pass) = ConnectionConfig::split_uri_credentials(&raw_uri);
-    if has_saved_password && uri_pass.is_empty() {
+    let mongo_uri = if has_saved_password && uri_pass.is_empty() {
         let pw = ConnectionManager::load_password_from_keyring_async(conn_id)
             .await
             .map_err(|err| format!("Failed to load saved password from OS Keychain: {err}"))?;
@@ -101,14 +109,54 @@ async fn resolve_effective_uri(
             } else {
                 username
             };
-            return Ok(ConnectionConfig::normalize_uri(
-                &base_uri,
-                &effective_user,
-                &pw,
-            ));
+            ConnectionConfig::normalize_uri(&base_uri, &effective_user, &pw)
+        } else {
+            raw_uri
         }
+    } else {
+        raw_uri
+    };
+
+    if ssh_tunnel.enabled {
+        let effective_ssh_secret = if ssh_secret.is_empty() && ssh_tunnel.has_saved_secret {
+            ConnectionManager::load_ssh_secret_from_keyring_async(conn_id)
+                .await
+                .map_err(|err| format!("Failed to load saved SSH secret from OS Keychain: {err}"))?
+                .unwrap_or_default()
+        } else {
+            ssh_secret
+        };
+
+        ssh_registry
+            .ensure_tunnel_and_rewrite_uri_async(
+                conn_id,
+                mongo_uri,
+                ssh_tunnel,
+                effective_ssh_secret,
+                timeout,
+            )
+            .await
+            .map_err(|err| err.to_string())
+    } else {
+        Ok(mongo_uri)
     }
-    Ok(raw_uri)
+}
+
+async fn resolve_target_uri(
+    ssh_registry: &SshTunnelRegistry,
+    target: &ConnectionTarget,
+) -> Result<String, String> {
+    resolve_effective_uri(
+        ssh_registry,
+        target.id,
+        target.uri.clone(),
+        target.username.clone(),
+        target.has_saved_password,
+        target.ssh_tunnel.clone(),
+        target.ssh_secret.clone(),
+        DEFAULT_CONNECT_TIMEOUT,
+    )
+    .await
 }
 
 pub struct MongoStudioApp {
@@ -119,6 +167,14 @@ pub struct MongoStudioApp {
     bg_tx: Sender<AppEvent>,
     bg_rx: Receiver<AppEvent>,
     pending_open_user: Option<(String, String)>,
+    ssh_registry: SshTunnelRegistry,
+    ssh_session_secrets: HashMap<Uuid, String>,
+}
+
+impl Drop for MongoStudioApp {
+    fn drop(&mut self) {
+        self.ssh_registry.close_all();
+    }
 }
 
 impl MongoStudioApp {
@@ -164,6 +220,8 @@ impl MongoStudioApp {
             bg_tx,
             bg_rx,
             pending_open_user: None,
+            ssh_registry: SshTunnelRegistry::new(),
+            ssh_session_secrets: HashMap::new(),
         }
     }
 
@@ -202,15 +260,28 @@ impl MongoStudioApp {
         });
     }
 
+    fn connection_target_from_config(&self, conn: &ConnectionConfig) -> ConnectionTarget {
+        ConnectionTarget {
+            id: conn.id,
+            name: conn.name.clone(),
+            uri: conn.uri.clone(),
+            username: conn.username.clone(),
+            has_saved_password: conn.has_saved_password,
+            is_connected: conn.status.is_connected(),
+            ssh_tunnel: conn.ssh_tunnel.clone(),
+            ssh_secret: self
+                .ssh_session_secrets
+                .get(&conn.id)
+                .cloned()
+                .unwrap_or_default(),
+        }
+    }
+
     fn connection_target_by_index(&self, index: usize) -> Option<ConnectionTarget> {
-        self.state.connections.get(index).map(|c| ConnectionTarget {
-            id: c.id,
-            name: c.name.clone(),
-            uri: c.uri.clone(),
-            username: c.username.clone(),
-            has_saved_password: c.has_saved_password,
-            is_connected: c.status.is_connected(),
-        })
+        self.state
+            .connections
+            .get(index)
+            .map(|c| self.connection_target_from_config(c))
     }
 
     fn connection_target_by_name(&self, connection_name: &str) -> Option<ConnectionTarget> {
@@ -218,14 +289,7 @@ impl MongoStudioApp {
             .connections
             .iter()
             .find(|c| c.name == connection_name)
-            .map(|c| ConnectionTarget {
-                id: c.id,
-                name: c.name.clone(),
-                uri: c.uri.clone(),
-                username: c.username.clone(),
-                has_saved_password: c.has_saved_password,
-                is_connected: c.status.is_connected(),
-            })
+            .map(|c| self.connection_target_from_config(c))
     }
 
     fn tab_query_params(
@@ -369,17 +433,11 @@ impl MongoStudioApp {
         if let Some(conn) = target.filter(|c| c.is_connected) {
             self.set_tab_loading(&connection_name, &database, &collection, true);
 
+            let ssh_registry = self.ssh_registry.clone();
             let tx = self.bg_tx.clone();
             let ctx_clone = ctx.clone();
             self.runtime.spawn(async move {
-                let result = match resolve_effective_uri(
-                    conn.id,
-                    conn.uri,
-                    conn.username,
-                    conn.has_saved_password,
-                )
-                .await
-                {
+                let result = match resolve_target_uri(&ssh_registry, &conn).await {
                     Ok(effective_uri) => DocumentService::query_documents(
                         &effective_uri,
                         &database,
@@ -527,7 +585,7 @@ impl MongoStudioApp {
         });
     }
 
-    fn spawn_keyring_save_task(&self, ctx: &Context, conn_id: uuid::Uuid, password: String) {
+    fn spawn_keyring_save_task(&self, ctx: &Context, conn_id: Uuid, password: String) {
         let tx = self.bg_tx.clone();
         let ctx_clone = ctx.clone();
         self.runtime.spawn(async move {
@@ -565,7 +623,7 @@ impl MongoStudioApp {
         });
     }
 
-    fn spawn_keyring_delete_task(&self, ctx: &Context, conn_id: uuid::Uuid) {
+    fn spawn_keyring_delete_task(&self, ctx: &Context, conn_id: Uuid) {
         let tx = self.bg_tx.clone();
         let ctx_clone = ctx.clone();
         self.runtime.spawn(async move {
@@ -580,86 +638,155 @@ impl MongoStudioApp {
         });
     }
 
+    fn spawn_ssh_keyring_save_task(&self, ctx: &Context, conn_id: Uuid, secret: String) {
+        let tx = self.bg_tx.clone();
+        let ctx_clone = ctx.clone();
+        self.runtime.spawn(async move {
+            if let Err(err) =
+                ConnectionManager::save_ssh_secret_to_keyring_async(conn_id, secret).await
+            {
+                // INTENTIONAL: receiver is dropped only on application shutdown.
+                let _ = tx.send(AppEvent::BackgroundTaskError {
+                    source: "Keyring".to_string(),
+                    message: format!("Failed to save SSH secret to OS Keychain: {err}"),
+                });
+                ctx_clone.request_repaint();
+            }
+        });
+    }
+
+    fn spawn_ssh_keyring_load_task(&self, ctx: &Context, index: usize, open_edit_modal: bool) {
+        let Some(conn) = self.state.connections.get(index) else {
+            return;
+        };
+        let conn_id = conn.id;
+        let tx = self.bg_tx.clone();
+        let ctx_clone = ctx.clone();
+        self.runtime.spawn(async move {
+            let result = ConnectionManager::load_ssh_secret_from_keyring_async(conn_id)
+                .await
+                .map_err(|err| err.to_string());
+            // INTENTIONAL: receiver is dropped only on application shutdown.
+            let _ = tx.send(AppEvent::SshSecretLoaded {
+                index,
+                open_edit_modal,
+                result,
+            });
+            ctx_clone.request_repaint();
+        });
+    }
+
+    fn spawn_ssh_keyring_delete_task(&self, ctx: &Context, conn_id: Uuid) {
+        let tx = self.bg_tx.clone();
+        let ctx_clone = ctx.clone();
+        self.runtime.spawn(async move {
+            if let Err(err) = ConnectionManager::delete_ssh_secret_from_keyring_async(conn_id).await
+            {
+                // INTENTIONAL: receiver is dropped only on application shutdown.
+                let _ = tx.send(AppEvent::BackgroundTaskError {
+                    source: "Keyring".to_string(),
+                    message: format!("Failed to delete SSH secret from OS Keychain: {err}"),
+                });
+                ctx_clone.request_repaint();
+            }
+        });
+    }
+
     fn open_auth_prompt_for_profile(&mut self, index: usize) {
         let Some(conn) = self.state.connections.get_mut(index) else {
             return;
         };
         conn.status = ConnectionStatus::Disconnected;
-        let (base_uri, uri_user, _) = ConnectionConfig::split_uri_credentials(&conn.uri);
-        let effective_user = if conn.username.is_empty() {
-            uri_user
-        } else {
-            conn.username.clone()
-        };
-        let conn_name = conn.name.clone();
-        self.state.editing_connection_idx = Some(index);
-        self.state.new_conn_name = conn_name.clone();
-        self.state.new_conn_uri = base_uri;
-        self.state.new_conn_username = effective_user;
-        self.state.new_conn_password.clear();
-        self.state.new_conn_save_password = conn.has_saved_password;
-        self.state.test_conn_status = None;
-        self.state.is_testing_connection = false;
-        self.state.show_new_connection_modal = true;
+        let conn_snapshot = conn.clone();
+        let conn_id = conn_snapshot.id;
+        let conn_name = conn_snapshot.name.clone();
+
+        self.state.populate_connection_modal(index, &conn_snapshot);
+        if let Some(secret) = self.ssh_session_secrets.get(&conn_id) {
+            self.state.new_conn_ssh_secret = secret.clone();
+        }
 
         self.state.bottom_panel.push_log(
             LogLevel::Info,
             "ConnectionManager",
-            format!(
-                "Authentication required for '{conn_name}' — please enter username and password."
-            ),
+            format!("Authentication required for '{conn_name}' — please complete credentials."),
         );
     }
 
     fn connect_profile_now(&mut self, ctx: &Context, index: usize) {
-        let Some(conn) = self.state.connections.get_mut(index) else {
+        let Some(conn) = self.state.connections.get(index) else {
             return;
         };
-
-        if conn.needs_auth_prompt() {
+        let ssh_secret = self
+            .ssh_session_secrets
+            .get(&conn.id)
+            .map(String::as_str)
+            .unwrap_or("");
+        if conn.needs_auth_prompt() || conn.ssh_tunnel.needs_secret_prompt(ssh_secret) {
             self.open_auth_prompt_for_profile(index);
             return;
         }
 
-        conn.status = ConnectionStatus::Connecting;
-        conn.expanded = false;
-        conn.last_error = None;
-        let conn_id = conn.id;
-        let conn_name = conn.name.clone();
-        let conn_uri = conn.uri.clone();
-        let redacted = ConnectionConfig::redact_uri(&conn_uri);
+        if let Some(conn_mut) = self.state.connections.get_mut(index) {
+            conn_mut.status = ConnectionStatus::Connecting;
+            conn_mut.expanded = false;
+            conn_mut.last_error = None;
+        }
         self.state.active_connection_idx = index;
 
-        self.state.bottom_panel.push_log(
-            LogLevel::Info,
-            "ConnectionManager",
-            format!("Connecting profile '{conn_name}' ({redacted})..."),
-        );
-        self.spawn_connect_task(ctx, conn_id, conn_name, conn_uri);
+        let Some(target) = self.connection_target_by_index(index) else {
+            return;
+        };
+        let redacted = ConnectionConfig::redact_uri(&target.uri);
+        if target.ssh_tunnel.enabled {
+            self.state.bottom_panel.push_log(
+                LogLevel::Info,
+                "ConnectionManager",
+                format!(
+                    "Connecting profile '{}' ({redacted}) via SSH tunnel ({})...",
+                    target.name, target.ssh_tunnel.endpoint
+                ),
+            );
+        } else {
+            self.state.bottom_panel.push_log(
+                LogLevel::Info,
+                "ConnectionManager",
+                format!("Connecting profile '{}' ({redacted})...", target.name),
+            );
+        }
+        self.spawn_connect_task(ctx, target);
     }
 
-    fn spawn_connect_task(&self, ctx: &Context, conn_id: uuid::Uuid, name: String, uri: String) {
+    fn spawn_connect_task(&self, ctx: &Context, target: ConnectionTarget) {
+        let ssh_registry = self.ssh_registry.clone();
         let tx = self.bg_tx.clone();
         let ctx_clone = ctx.clone();
         self.runtime.spawn(async move {
             let start = Instant::now();
-            let outcome =
-                ConnectionClient::connect_and_introspect(&name, &uri, DEFAULT_CONNECT_TIMEOUT)
-                    .await;
+            let outcome = match resolve_target_uri(&ssh_registry, &target).await {
+                Ok(effective_uri) => ConnectionClient::connect_and_introspect(
+                    &target.name,
+                    &effective_uri,
+                    DEFAULT_CONNECT_TIMEOUT,
+                )
+                .await
+                .map_err(|err| err.to_string()),
+                Err(err) => Err(err),
+            };
             let elapsed_ms = start.elapsed().as_secs_f64() * 1000.0;
             let event = match outcome {
                 Ok(conn) => AppEvent::ConnectionResult {
-                    conn_id,
-                    name,
-                    uri,
+                    conn_id: target.id,
+                    name: target.name,
+                    uri: target.uri,
                     result: Ok((conn.databases, conn.users, conn.is_admin)),
                     latency_ms: Some(elapsed_ms),
                 },
                 Err(err) => AppEvent::ConnectionResult {
-                    conn_id,
-                    name,
-                    uri,
-                    result: Err(err.to_string()),
+                    conn_id: target.id,
+                    name: target.name,
+                    uri: target.uri,
+                    result: Err(err),
                     latency_ms: None,
                 },
             };
@@ -669,13 +796,92 @@ impl MongoStudioApp {
         });
     }
 
-    fn spawn_ping_task(&self, ctx: &Context, uri: String) {
+    fn spawn_ping_task(
+        &self,
+        ctx: &Context,
+        uri: String,
+        ssh_tunnel: SshTunnelConfig,
+        ssh_secret: String,
+        editing_conn: Option<(Uuid, String, bool, bool)>,
+    ) {
+        let cached_ssh_secret = editing_conn
+            .as_ref()
+            .and_then(|(id, _, _, _)| self.ssh_session_secrets.get(id).cloned())
+            .unwrap_or_default();
         let tx = self.bg_tx.clone();
         let ctx_clone = ctx.clone();
         self.runtime.spawn(async move {
-            let result = ConnectionClient::ping_uri(&uri, DEFAULT_CONNECT_TIMEOUT)
+            let (base_uri, uri_user, uri_pass) = ConnectionConfig::split_uri_credentials(&uri);
+            let effective_mongo_uri = if uri_pass.is_empty() {
+                if let Some((conn_id, ref mongo_user, true, _)) = editing_conn {
+                    match ConnectionManager::load_password_from_keyring_async(conn_id).await {
+                        Ok(Some(pw)) => {
+                            let effective_user = if mongo_user.is_empty() {
+                                uri_user
+                            } else {
+                                mongo_user.clone()
+                            };
+                            ConnectionConfig::normalize_uri(&base_uri, &effective_user, &pw)
+                        }
+                        Ok(None) => uri.clone(),
+                        Err(err) => {
+                            let _ = tx.send(AppEvent::TestConnectionResult {
+                                uri,
+                                result: Err(format!(
+                                    "Failed to load saved password from OS Keychain: {err}"
+                                )),
+                            });
+                            ctx_clone.request_repaint();
+                            return;
+                        }
+                    }
+                } else {
+                    uri.clone()
+                }
+            } else {
+                uri.clone()
+            };
+
+            let result = if ssh_tunnel.enabled {
+                let effective_secret = if !ssh_secret.is_empty() {
+                    ssh_secret
+                } else if !cached_ssh_secret.is_empty() {
+                    cached_ssh_secret
+                } else if ssh_tunnel.has_saved_secret {
+                    if let Some((conn_id, _, _, true)) = editing_conn {
+                        match ConnectionManager::load_ssh_secret_from_keyring_async(conn_id).await {
+                            Ok(secret) => secret.unwrap_or_default(),
+                            Err(err) => {
+                                let _ = tx.send(AppEvent::TestConnectionResult {
+                                    uri,
+                                    result: Err(format!(
+                                        "Failed to load saved SSH secret from OS Keychain: {err}"
+                                    )),
+                                });
+                                ctx_clone.request_repaint();
+                                return;
+                            }
+                        }
+                    } else {
+                        String::new()
+                    }
+                } else {
+                    String::new()
+                };
+
+                SshTunnelRegistry::ping_through_ssh_async(
+                    effective_mongo_uri,
+                    ssh_tunnel,
+                    effective_secret,
+                    DEFAULT_CONNECT_TIMEOUT,
+                )
                 .await
-                .map_err(|e| e.to_string());
+                .map_err(|e| e.to_string())
+            } else {
+                ConnectionClient::ping_uri(&effective_mongo_uri, DEFAULT_CONNECT_TIMEOUT)
+                    .await
+                    .map_err(|e| e.to_string())
+            };
             // INTENTIONAL: receiver is dropped only on application shutdown.
             let _ = tx.send(AppEvent::TestConnectionResult { uri, result });
             ctx_clone.request_repaint();
@@ -689,17 +895,11 @@ impl MongoStudioApp {
         database: String,
         collection: String,
     ) {
+        let ssh_registry = self.ssh_registry.clone();
         let tx = self.bg_tx.clone();
         let ctx_clone = ctx.clone();
         self.runtime.spawn(async move {
-            let result = match resolve_effective_uri(
-                target.id,
-                target.uri,
-                target.username,
-                target.has_saved_password,
-            )
-            .await
-            {
+            let result = match resolve_target_uri(&ssh_registry, &target).await {
                 Ok(effective_uri) => ConnectionClient::introspect_single_collection(
                     &effective_uri,
                     &database,
@@ -722,25 +922,30 @@ impl MongoStudioApp {
     }
 
     fn spawn_update_user_roles_task(&self, ctx: &Context, task: RoleUpdateTask) {
+        let ssh_registry = self.ssh_registry.clone();
         let tx = self.bg_tx.clone();
         let ctx_clone = ctx.clone();
         self.runtime.spawn(async move {
-            let outcome = UserService::update_user_roles_and_list(
-                &task.uri,
-                &task.user_db,
-                &task.username,
-                &task.roles,
-                DEFAULT_CONNECT_TIMEOUT,
-            )
-            .await;
+            let outcome = match resolve_target_uri(&ssh_registry, &task.target).await {
+                Ok(effective_uri) => UserService::update_user_roles_and_list(
+                    &effective_uri,
+                    &task.user_db,
+                    &task.username,
+                    &task.roles,
+                    DEFAULT_CONNECT_TIMEOUT,
+                )
+                .await
+                .map_err(|err| err.to_string()),
+                Err(err) => Err(err),
+            };
 
             let (message, result) = match outcome {
                 Ok(users) => (task.success_message, Ok(users)),
-                Err(err) => (task.failure_prefix, Err(err.to_string())),
+                Err(err) => (task.failure_prefix, Err(err)),
             };
             // INTENTIONAL: receiver is dropped only on application shutdown.
             let _ = tx.send(AppEvent::UserOperationResult {
-                connection_name: task.connection_name,
+                connection_name: task.target.name,
                 message,
                 result,
             });
@@ -949,17 +1154,11 @@ impl MongoStudioApp {
                         ),
                     );
 
+                    let ssh_registry = self.ssh_registry.clone();
                     let tx = self.bg_tx.clone();
                     let ctx_clone = ctx.clone();
                     self.runtime.spawn(async move {
-                        let result = match resolve_effective_uri(
-                            target.id,
-                            target.uri,
-                            target.username,
-                            target.has_saved_password,
-                        )
-                        .await
-                        {
+                        let result = match resolve_target_uri(&ssh_registry, &target).await {
                             Ok(effective_uri) => DatabaseService::create_database_and_introspect(
                                 &effective_uri,
                                 &trimmed_db,
@@ -1098,17 +1297,11 @@ impl MongoStudioApp {
                         format!("Creating collection '{trimmed_db}.{trimmed_coll}'..."),
                     );
 
+                    let ssh_registry = self.ssh_registry.clone();
                     let tx = self.bg_tx.clone();
                     let ctx_clone = ctx.clone();
                     self.runtime.spawn(async move {
-                        let result = match resolve_effective_uri(
-                            target.id,
-                            target.uri,
-                            target.username,
-                            target.has_saved_password,
-                        )
-                        .await
-                        {
+                        let result = match resolve_target_uri(&ssh_registry, &target).await {
                             Ok(effective_uri) => CollectionService::create_collection(
                                 &effective_uri,
                                 &trimmed_db,
@@ -1226,17 +1419,11 @@ impl MongoStudioApp {
                         format!("Dropping collection '{db_name}.{collection_name}'..."),
                     );
 
+                    let ssh_registry = self.ssh_registry.clone();
                     let tx = self.bg_tx.clone();
                     let ctx_clone = ctx.clone();
                     self.runtime.spawn(async move {
-                        let result = match resolve_effective_uri(
-                            target.id,
-                            target.uri,
-                            target.username,
-                            target.has_saved_password,
-                        )
-                        .await
-                        {
+                        let result = match resolve_target_uri(&ssh_registry, &target).await {
                             Ok(effective_uri) => CollectionService::drop_collection(
                                 &effective_uri,
                                 &db_name,
@@ -1342,17 +1529,11 @@ impl MongoStudioApp {
                         format!("Dropping database '{db_name}'..."),
                     );
 
+                    let ssh_registry = self.ssh_registry.clone();
                     let tx = self.bg_tx.clone();
                     let ctx_clone = ctx.clone();
                     self.runtime.spawn(async move {
-                        let result = match resolve_effective_uri(
-                            target.id,
-                            target.uri,
-                            target.username,
-                            target.has_saved_password,
-                        )
-                        .await
-                        {
+                        let result = match resolve_target_uri(&ssh_registry, &target).await {
                             Ok(effective_uri) => DatabaseService::drop_database(
                                 &effective_uri,
                                 &db_name,
@@ -1544,16 +1725,11 @@ impl MongoStudioApp {
                                 format!("Inserting document into {database}.{collection}..."),
                             );
 
+                            let ssh_registry = self.ssh_registry.clone();
                             let tx = self.bg_tx.clone();
                             let ctx_clone = ctx.clone();
                             self.runtime.spawn(async move {
-                                let result = match resolve_effective_uri(
-                                    target.id,
-                                    target.uri,
-                                    target.username,
-                                    target.has_saved_password,
-                                )
-                                .await
+                                let result = match resolve_target_uri(&ssh_registry, &target).await
                                 {
                                     Ok(effective_uri) => DocumentService::insert_document(
                                         &effective_uri,
@@ -1690,16 +1866,11 @@ impl MongoStudioApp {
                                 format!("Updating document in {database}.{collection}..."),
                             );
 
+                            let ssh_registry = self.ssh_registry.clone();
                             let tx = self.bg_tx.clone();
                             let ctx_clone = ctx.clone();
                             self.runtime.spawn(async move {
-                                let result = match resolve_effective_uri(
-                                    target.id,
-                                    target.uri,
-                                    target.username,
-                                    target.has_saved_password,
-                                )
-                                .await
+                                let result = match resolve_target_uri(&ssh_registry, &target).await
                                 {
                                     Ok(effective_uri) => DocumentService::update_document(
                                         &effective_uri,
@@ -1818,16 +1989,11 @@ impl MongoStudioApp {
                                 ),
                             );
 
+                            let ssh_registry = self.ssh_registry.clone();
                             let tx = self.bg_tx.clone();
                             let ctx_clone = ctx.clone();
                             self.runtime.spawn(async move {
-                                let result = match resolve_effective_uri(
-                                    target.id,
-                                    target.uri,
-                                    target.username,
-                                    target.has_saved_password,
-                                )
-                                .await
+                                let result = match resolve_target_uri(&ssh_registry, &target).await
                                 {
                                     Ok(effective_uri) => DocumentService::delete_document(
                                         &effective_uri,
@@ -1995,17 +2161,15 @@ impl MongoStudioApp {
                         );
                         continue;
                     }
-                    if let Some(conn) = self.state.connections.get(connection_index) {
+                    if let Some(target) = self.connection_target_by_index(connection_index) {
                         let effective_roles = if roles.is_empty() {
                             vec![UserRole::new("read", "admin")]
                         } else {
                             roles
                         };
                         let role_count = effective_roles.len();
-                        let conn_name = conn.name.clone();
-                        let uri = conn.uri.clone();
 
-                        self.pending_open_user = Some((conn_name.clone(), trimmed.clone()));
+                        self.pending_open_user = Some((target.name.clone(), trimmed.clone()));
                         self.state.bottom_panel.push_log(
                             LogLevel::Info,
                             "UserManager",
@@ -2014,17 +2178,22 @@ impl MongoStudioApp {
                             ),
                         );
 
+                        let ssh_registry = self.ssh_registry.clone();
                         let tx = self.bg_tx.clone();
                         let ctx_clone = ctx.clone();
                         self.runtime.spawn(async move {
-                            let res = UserService::create_user_and_list(
-                                &uri,
-                                &trimmed,
-                                &password,
-                                &effective_roles,
-                                DEFAULT_CONNECT_TIMEOUT,
-                            )
-                            .await;
+                            let res = match resolve_target_uri(&ssh_registry, &target).await {
+                                Ok(effective_uri) => UserService::create_user_and_list(
+                                    &effective_uri,
+                                    &trimmed,
+                                    &password,
+                                    &effective_roles,
+                                    DEFAULT_CONNECT_TIMEOUT,
+                                )
+                                .await
+                                .map_err(|err| err.to_string()),
+                                Err(err) => Err(err),
+                            };
 
                             let (message, result) = match res {
                                 Ok(users) => (
@@ -2035,12 +2204,12 @@ impl MongoStudioApp {
                                 ),
                                 Err(err) => (
                                     format!("Failed to create MongoDB user '{trimmed}'"),
-                                    Err(err.to_string()),
+                                    Err(err),
                                 ),
                             };
                             // INTENTIONAL: receiver is dropped only on application shutdown.
                             let _ = tx.send(AppEvent::UserOperationResult {
-                                connection_name: conn_name,
+                                connection_name: target.name,
                                 message,
                                 result,
                             });
@@ -2078,8 +2247,7 @@ impl MongoStudioApp {
                                         updated_roles.push(new_role);
                                     }
                                     RoleUpdateTask {
-                                        connection_name: conn.name.clone(),
-                                        uri: conn.uri.clone(),
+                                        target: self.connection_target_from_config(conn),
                                         user_db: user.db.clone(),
                                         username: username.clone(),
                                         roles: updated_roles,
@@ -2128,8 +2296,7 @@ impl MongoStudioApp {
                                     let mut updated_roles = user.roles.clone();
                                     updated_roles.retain(|r| !(r.db == db && r.role == role));
                                     RoleUpdateTask {
-                                        connection_name: conn.name.clone(),
-                                        uri: conn.uri.clone(),
+                                        target: self.connection_target_from_config(conn),
                                         user_db: user.db.clone(),
                                         username: username.clone(),
                                         roles: updated_roles,
@@ -2175,8 +2342,7 @@ impl MongoStudioApp {
                                 .iter()
                                 .find(|u| u.username == username)
                                 .map(|user| RoleUpdateTask {
-                                    connection_name: conn.name.clone(),
-                                    uri: conn.uri.clone(),
+                                    target: self.connection_target_from_config(conn),
                                     user_db: user.db.clone(),
                                     username: username.clone(),
                                     roles,
@@ -2231,19 +2397,20 @@ impl MongoStudioApp {
                         );
                         continue;
                     }
-                    if let Some(conn) = self
+                    let change_ctx = self
                         .state
                         .connections
                         .iter()
                         .find(|c| c.name == connection_name)
-                    {
-                        let conn_name = conn.name.clone();
-                        let uri = conn.uri.clone();
-                        let user_db = conn
-                            .users
-                            .iter()
-                            .find(|u| u.username == username)
-                            .map_or_else(|| "admin".to_string(), |u| u.db.clone());
+                        .map(|conn| {
+                            let user_db = conn
+                                .users
+                                .iter()
+                                .find(|u| u.username == username)
+                                .map_or_else(|| "admin".to_string(), |u| u.db.clone());
+                            (self.connection_target_from_config(conn), user_db)
+                        });
+                    if let Some((target, user_db)) = change_ctx {
                         let uname = username.clone();
 
                         self.state.bottom_panel.push_log(
@@ -2252,22 +2419,26 @@ impl MongoStudioApp {
                             format!("Updating password for user '{username}'..."),
                         );
 
+                        let ssh_registry = self.ssh_registry.clone();
                         let tx = self.bg_tx.clone();
                         let ctx_clone = ctx.clone();
                         self.runtime.spawn(async move {
-                            let result = UserService::change_user_password(
-                                &uri,
-                                &user_db,
-                                &uname,
-                                &new_password,
-                                DEFAULT_CONNECT_TIMEOUT,
-                            )
-                            .await
-                            .map_err(|err| err.to_string());
+                            let result = match resolve_target_uri(&ssh_registry, &target).await {
+                                Ok(effective_uri) => UserService::change_user_password(
+                                    &effective_uri,
+                                    &user_db,
+                                    &uname,
+                                    &new_password,
+                                    DEFAULT_CONNECT_TIMEOUT,
+                                )
+                                .await
+                                .map_err(|err| err.to_string()),
+                                Err(err) => Err(err),
+                            };
 
                             // INTENTIONAL: receiver is dropped only on application shutdown.
                             let _ = tx.send(AppEvent::UserPasswordChanged {
-                                connection_name: conn_name,
+                                connection_name: target.name,
                                 username: uname,
                                 result,
                             });
@@ -2325,14 +2496,15 @@ impl MongoStudioApp {
                         );
                         continue;
                     }
-                    if let Some(conn) = self.state.connections.get(connection_index) {
+                    let delete_ctx = self.state.connections.get(connection_index).map(|conn| {
                         let user_db = conn
                             .users
                             .iter()
                             .find(|u| u.username == username)
                             .map_or_else(|| "admin".to_string(), |u| u.db.clone());
-                        let conn_name = conn.name.clone();
-                        let uri = conn.uri.clone();
+                        (self.connection_target_from_config(conn), user_db)
+                    });
+                    if let Some((target, user_db)) = delete_ctx {
                         let uname = username.clone();
 
                         self.state.bottom_panel.push_log(
@@ -2341,27 +2513,31 @@ impl MongoStudioApp {
                             format!("Deleting MongoDB user '{username}'..."),
                         );
 
+                        let ssh_registry = self.ssh_registry.clone();
                         let tx = self.bg_tx.clone();
                         let ctx_clone = ctx.clone();
                         self.runtime.spawn(async move {
-                            let res = UserService::drop_user_and_list(
-                                &uri,
-                                &user_db,
-                                &uname,
-                                DEFAULT_CONNECT_TIMEOUT,
-                            )
-                            .await;
+                            let res = match resolve_target_uri(&ssh_registry, &target).await {
+                                Ok(effective_uri) => UserService::drop_user_and_list(
+                                    &effective_uri,
+                                    &user_db,
+                                    &uname,
+                                    DEFAULT_CONNECT_TIMEOUT,
+                                )
+                                .await
+                                .map_err(|err| err.to_string()),
+                                Err(err) => Err(err),
+                            };
 
                             let (message, result) = match res {
                                 Ok(users) => (format!("Deleted MongoDB user '{uname}'"), Ok(users)),
-                                Err(err) => (
-                                    format!("Failed to delete MongoDB user '{uname}'"),
-                                    Err(err.to_string()),
-                                ),
+                                Err(err) => {
+                                    (format!("Failed to delete MongoDB user '{uname}'"), Err(err))
+                                }
                             };
                             // INTENTIONAL: receiver is dropped only on application shutdown.
                             let _ = tx.send(AppEvent::UserOperationResult {
-                                connection_name: conn_name,
+                                connection_name: target.name,
                                 message,
                                 result,
                             });
@@ -2471,16 +2647,11 @@ impl MongoStudioApp {
                                 ),
                             );
 
+                            let ssh_registry = self.ssh_registry.clone();
                             let tx = self.bg_tx.clone();
                             let ctx_clone = ctx.clone();
                             self.runtime.spawn(async move {
-                                let result = match resolve_effective_uri(
-                                    target.id,
-                                    target.uri,
-                                    target.username,
-                                    target.has_saved_password,
-                                )
-                                .await
+                                let result = match resolve_target_uri(&ssh_registry, &target).await
                                 {
                                     Ok(effective_uri) => DocumentService::run_aggregation(
                                         &effective_uri,
@@ -2694,16 +2865,11 @@ impl MongoStudioApp {
                                 format!("Creating index on {database}.{collection}..."),
                             );
 
+                            let ssh_registry = self.ssh_registry.clone();
                             let tx = self.bg_tx.clone();
                             let ctx_clone = ctx.clone();
                             self.runtime.spawn(async move {
-                                let result = match resolve_effective_uri(
-                                    target.id,
-                                    target.uri,
-                                    target.username,
-                                    target.has_saved_password,
-                                )
-                                .await
+                                let result = match resolve_target_uri(&ssh_registry, &target).await
                                 {
                                     Ok(effective_uri) => IndexService::create_index(
                                         &effective_uri,
@@ -2850,17 +3016,12 @@ impl MongoStudioApp {
                                 ),
                             );
 
+                            let ssh_registry = self.ssh_registry.clone();
                             let tx = self.bg_tx.clone();
                             let ctx_clone = ctx.clone();
                             let idx_clone = index_name.clone();
                             self.runtime.spawn(async move {
-                                let result = match resolve_effective_uri(
-                                    target.id,
-                                    target.uri,
-                                    target.username,
-                                    target.has_saved_password,
-                                )
-                                .await
+                                let result = match resolve_target_uri(&ssh_registry, &target).await
                                 {
                                     Ok(effective_uri) => IndexService::drop_index(
                                         &effective_uri,
@@ -2957,16 +3118,11 @@ impl MongoStudioApp {
                                 ),
                             );
 
+                            let ssh_registry = self.ssh_registry.clone();
                             let tx = self.bg_tx.clone();
                             let ctx_clone = ctx.clone();
                             self.runtime.spawn(async move {
-                                let result = match resolve_effective_uri(
-                                    target.id,
-                                    target.uri,
-                                    target.username,
-                                    target.has_saved_password,
-                                )
-                                .await
+                                let result = match resolve_target_uri(&ssh_registry, &target).await
                                 {
                                     Ok(effective_uri) => SchemaAnalyzer::analyze_collection(
                                         &effective_uri,
@@ -3228,17 +3384,11 @@ impl MongoStudioApp {
 
                     if let Some(target) = active_target {
                         let current_db = self.state.shell_current_db.clone();
+                        let ssh_registry = self.ssh_registry.clone();
                         let tx = self.bg_tx.clone();
                         let ctx_clone = ctx.clone();
                         self.runtime.spawn(async move {
-                            let result = match resolve_effective_uri(
-                                target.id,
-                                target.uri,
-                                target.username,
-                                target.has_saved_password,
-                            )
-                            .await
-                            {
+                            let result = match resolve_target_uri(&ssh_registry, &target).await {
                                 Ok(effective_uri) => ShellService::execute_command(
                                     &effective_uri,
                                     &current_db,
@@ -3325,16 +3475,11 @@ impl MongoStudioApp {
                                 ),
                             );
 
+                            let ssh_registry = self.ssh_registry.clone();
                             let tx = self.bg_tx.clone();
                             let ctx_clone = ctx.clone();
                             self.runtime.spawn(async move {
-                                let result = match resolve_effective_uri(
-                                    target.id,
-                                    target.uri,
-                                    target.username,
-                                    target.has_saved_password,
-                                )
-                                .await
+                                let result = match resolve_target_uri(&ssh_registry, &target).await
                                 {
                                     Ok(effective_uri) => TransferService::export_collection(
                                         &effective_uri,
@@ -3473,17 +3618,11 @@ impl MongoStudioApp {
                         ),
                     );
 
+                    let ssh_registry = self.ssh_registry.clone();
                     let tx = self.bg_tx.clone();
                     let ctx_clone = ctx.clone();
                     self.runtime.spawn(async move {
-                        let result = match resolve_effective_uri(
-                            target.id,
-                            target.uri,
-                            target.username,
-                            target.has_saved_password,
-                        )
-                        .await
-                        {
+                        let result = match resolve_target_uri(&ssh_registry, &target).await {
                             Ok(effective_uri) => TransferService::import_collection(
                                 &effective_uri,
                                 &database,
@@ -3593,33 +3732,29 @@ impl MongoStudioApp {
                     );
                 }
                 AppEvent::OpenNewConnectionModal => {
-                    self.state.editing_connection_idx = None;
+                    self.state.reset_connection_modal_fields();
                     self.state.show_new_connection_modal = true;
-                    self.state.test_conn_status = None;
-                    self.state.is_testing_connection = false;
                 }
                 AppEvent::OpenEditConnectionModal { index } => {
-                    if let Some(conn) = self.state.connections.get(index) {
-                        let (base_uri, uri_user, uri_pass) =
+                    if let Some(conn) = self.state.connections.get(index).cloned() {
+                        let (_base_uri, _uri_user, uri_pass) =
                             ConnectionConfig::split_uri_credentials(&conn.uri);
-                        let effective_user = if conn.username.is_empty() {
-                            uri_user
-                        } else {
-                            conn.username.clone()
-                        };
-                        let needs_keyring_load = conn.has_saved_password && uri_pass.is_empty();
-                        self.state.editing_connection_idx = Some(index);
-                        self.state.new_conn_name = conn.name.clone();
-                        self.state.new_conn_uri = base_uri;
-                        self.state.new_conn_username = effective_user;
-                        self.state.new_conn_password = uri_pass;
-                        self.state.new_conn_save_password = conn.has_saved_password;
-                        self.state.test_conn_status = None;
-                        self.state.is_testing_connection = false;
-                        self.state.show_new_connection_modal = true;
+                        let needs_mongo_keyring = conn.has_saved_password && uri_pass.is_empty();
+                        let cached_ssh_secret = self.ssh_session_secrets.get(&conn.id).cloned();
+                        let needs_ssh_keyring = conn.ssh_tunnel.enabled
+                            && conn.ssh_tunnel.has_saved_secret
+                            && cached_ssh_secret.as_deref().is_none_or(str::is_empty);
 
-                        if needs_keyring_load {
+                        self.state.populate_connection_modal(index, &conn);
+                        if let Some(secret) = cached_ssh_secret {
+                            self.state.new_conn_ssh_secret = secret;
+                        }
+
+                        if needs_mongo_keyring {
                             self.spawn_keyring_load_task(ctx, index, true);
+                        }
+                        if needs_ssh_keyring {
+                            self.spawn_ssh_keyring_load_task(ctx, index, true);
                         }
                     }
                 }
@@ -3647,8 +3782,9 @@ impl MongoStudioApp {
                             }
                         }
                     } else {
+                        let mut prompt_needed = false;
                         match result {
-                            Ok(Some(pw)) => {
+                            Ok(Some(pw)) if !pw.is_empty() => {
                                 if let Some(conn) = self.state.connections.get_mut(index) {
                                     let (base_uri, uri_user, _) =
                                         ConnectionConfig::split_uri_credentials(&conn.uri);
@@ -3660,21 +3796,20 @@ impl MongoStudioApp {
                                     conn.uri =
                                         ConnectionConfig::normalize_uri(&base_uri, &user, &pw);
                                 }
-                                self.connect_profile_now(ctx, index);
                             }
-                            Ok(None) => {
+                            Ok(Some(_)) | Ok(None) => {
                                 let mut auth_missing = false;
                                 if let Some(conn) = self.state.connections.get_mut(index) {
                                     if conn.requires_auth {
                                         conn.has_saved_password = false;
                                         conn.status = ConnectionStatus::Disconnected;
                                         auth_missing = true;
+                                        prompt_needed = conn.needs_auth_prompt();
                                     }
                                 }
                                 if auth_missing {
                                     self.spawn_save_profiles_task(ctx);
                                 }
-                                self.connect_profile_now(ctx, index);
                             }
                             Err(err) => {
                                 self.state.bottom_panel.push_log(
@@ -3684,11 +3819,120 @@ impl MongoStudioApp {
                                         "Failed to load saved password from OS Keychain: {err}"
                                     ),
                                 );
-                                let needs_prompt =
+                                prompt_needed =
                                     self.state.connections.get_mut(index).is_some_and(|conn| {
                                         let uri_pass =
                                             ConnectionConfig::split_uri_credentials(&conn.uri).2;
                                         if conn.requires_auth && uri_pass.is_empty() {
+                                            conn.status = ConnectionStatus::Disconnected;
+                                            true
+                                        } else {
+                                            false
+                                        }
+                                    });
+                            }
+                        }
+
+                        if prompt_needed {
+                            self.open_auth_prompt_for_profile(index);
+                            continue;
+                        }
+
+                        let needs_ssh_keyring =
+                            self.state.connections.get(index).is_some_and(|c| {
+                                c.ssh_tunnel.enabled
+                                    && c.ssh_tunnel.has_saved_secret
+                                    && self
+                                        .ssh_session_secrets
+                                        .get(&c.id)
+                                        .is_none_or(String::is_empty)
+                            });
+                        if needs_ssh_keyring {
+                            self.spawn_ssh_keyring_load_task(ctx, index, false);
+                        } else {
+                            self.connect_profile_now(ctx, index);
+                        }
+                    }
+                }
+                AppEvent::SshSecretLoaded {
+                    index,
+                    open_edit_modal,
+                    result,
+                } => {
+                    if open_edit_modal {
+                        match result {
+                            Ok(Some(pw)) => {
+                                if self.state.editing_connection_idx == Some(index) {
+                                    self.state.new_conn_ssh_secret = pw;
+                                }
+                            }
+                            Ok(None) => {}
+                            Err(err) => {
+                                self.state.bottom_panel.push_log(
+                                    LogLevel::Error,
+                                    "Keyring",
+                                    format!(
+                                        "Failed to load saved SSH secret from OS Keychain: {err}"
+                                    ),
+                                );
+                            }
+                        }
+                    } else {
+                        match result {
+                            Ok(Some(secret)) if !secret.is_empty() => {
+                                if let Some(conn) = self.state.connections.get(index) {
+                                    self.ssh_session_secrets.insert(conn.id, secret);
+                                }
+                                self.connect_profile_now(ctx, index);
+                            }
+                            Ok(Some(_)) | Ok(None) => {
+                                let mut cleared_stale = false;
+                                let mut needs_prompt = false;
+                                if let Some(conn) = self.state.connections.get_mut(index) {
+                                    if conn.ssh_tunnel.has_saved_secret {
+                                        conn.ssh_tunnel.has_saved_secret = false;
+                                        cleared_stale = true;
+                                    }
+                                    let session_secret = self
+                                        .ssh_session_secrets
+                                        .get(&conn.id)
+                                        .map(String::as_str)
+                                        .unwrap_or("");
+                                    if conn.needs_auth_prompt()
+                                        || conn.ssh_tunnel.needs_secret_prompt(session_secret)
+                                    {
+                                        conn.status = ConnectionStatus::Disconnected;
+                                        needs_prompt = true;
+                                    }
+                                }
+                                if cleared_stale {
+                                    self.spawn_save_profiles_task(ctx);
+                                }
+                                if needs_prompt {
+                                    self.open_auth_prompt_for_profile(index);
+                                } else {
+                                    self.connect_profile_now(ctx, index);
+                                }
+                            }
+                            Err(err) => {
+                                self.state.bottom_panel.push_log(
+                                    LogLevel::Error,
+                                    "Keyring",
+                                    format!(
+                                        "Failed to load saved SSH secret from OS Keychain: {err}"
+                                    ),
+                                );
+                                let needs_prompt =
+                                    self.state.connections.get_mut(index).is_some_and(|conn| {
+                                        let has_session_secret = self
+                                            .ssh_session_secrets
+                                            .get(&conn.id)
+                                            .is_some_and(|s| !s.is_empty());
+                                        let ssh_needs_pwd = conn.ssh_tunnel.enabled
+                                            && conn.ssh_tunnel.auth_method
+                                                == SshAuthMethod::Password
+                                            && !has_session_secret;
+                                        if ssh_needs_pwd || conn.needs_auth_prompt() {
                                             conn.status = ConnectionStatus::Disconnected;
                                             true
                                         } else {
@@ -3704,16 +3948,44 @@ impl MongoStudioApp {
                         }
                     }
                 }
-                AppEvent::TestConnection { name: _, uri } => {
+                AppEvent::TestConnection {
+                    name: _,
+                    uri,
+                    ssh_tunnel,
+                    ssh_secret,
+                } => {
                     self.state.is_testing_connection = true;
                     self.state.test_conn_status = None;
                     let redacted = ConnectionConfig::redact_uri(&uri);
-                    self.state.bottom_panel.push_log(
-                        LogLevel::Info,
-                        "ConnectionClient",
-                        format!("Pinging MongoDB server at '{redacted}'..."),
-                    );
-                    self.spawn_ping_task(ctx, uri);
+                    if ssh_tunnel.enabled {
+                        self.state.bottom_panel.push_log(
+                            LogLevel::Info,
+                            "ConnectionClient",
+                            format!(
+                                "Pinging MongoDB server via SSH tunnel ({})...",
+                                ssh_tunnel.endpoint
+                            ),
+                        );
+                    } else {
+                        self.state.bottom_panel.push_log(
+                            LogLevel::Info,
+                            "ConnectionClient",
+                            format!("Pinging MongoDB server at '{redacted}'..."),
+                        );
+                    }
+                    let editing_conn = self
+                        .state
+                        .editing_connection_idx
+                        .and_then(|idx| self.state.connections.get(idx))
+                        .map(|conn| {
+                            (
+                                conn.id,
+                                conn.username.clone(),
+                                conn.has_saved_password,
+                                conn.ssh_tunnel.has_saved_secret,
+                            )
+                        });
+                    self.spawn_ping_task(ctx, uri, ssh_tunnel, ssh_secret, editing_conn);
                 }
                 AppEvent::TestConnectionResult { uri, result } => {
                     self.state.is_testing_connection = false;
@@ -3738,49 +4010,95 @@ impl MongoStudioApp {
                         }
                     }
                 }
-                AppEvent::AddConnection { name, uri } => {
-                    match ConnectionConfig::new_profile(&name, &uri) {
-                        Ok(mut conn) => {
-                            let password_to_save = if self.state.new_conn_save_password
-                                && !self.state.new_conn_password.is_empty()
-                            {
-                                conn.has_saved_password = true;
-                                Some(self.state.new_conn_password.clone())
-                            } else {
-                                None
-                            };
+                AppEvent::AddConnection {
+                    name,
+                    uri,
+                    ssh_tunnel,
+                    ssh_secret,
+                } => match ConnectionConfig::new_profile(&name, &uri) {
+                    Ok(mut conn) => {
+                        let password_to_save = if self.state.new_conn_save_password
+                            && !self.state.new_conn_password.is_empty()
+                        {
+                            conn.has_saved_password = true;
+                            Some(self.state.new_conn_password.clone())
+                        } else {
+                            None
+                        };
 
-                            let conn_id = conn.id;
-                            let conn_name = conn.name.clone();
-                            let conn_uri = conn.uri.clone();
-                            let redacted = ConnectionConfig::redact_uri(&conn_uri);
+                        let mut final_ssh = ssh_tunnel;
+                        let ssh_secret_to_save = if final_ssh.enabled
+                            && self.state.new_conn_ssh_save_secret
+                            && !ssh_secret.is_empty()
+                        {
+                            final_ssh.has_saved_secret = true;
+                            Some(ssh_secret.clone())
+                        } else {
+                            final_ssh.has_saved_secret = false;
+                            None
+                        };
+                        conn.ssh_tunnel = final_ssh;
 
-                            self.state.connections.push(conn);
-                            self.state.active_connection_idx = self.state.connections.len() - 1;
+                        let conn_id = conn.id;
+                        let conn_name = conn.name.clone();
+                        let conn_uri = conn.uri.clone();
+                        let ssh_enabled = conn.ssh_tunnel.enabled;
+                        let ssh_endpoint = conn.ssh_tunnel.endpoint.clone();
+                        let redacted = ConnectionConfig::redact_uri(&conn_uri);
 
-                            if let Some(password) = password_to_save {
-                                self.spawn_keyring_save_task(ctx, conn_id, password);
-                            }
-                            self.spawn_save_profiles_task(ctx);
+                        if ssh_enabled && !ssh_secret.is_empty() {
+                            self.ssh_session_secrets.insert(conn_id, ssh_secret);
+                        }
 
+                        self.state.connections.push(conn);
+                        let new_idx = self.state.connections.len().saturating_sub(1);
+                        self.state.active_connection_idx = new_idx;
+
+                        if let Some(password) = password_to_save {
+                            self.spawn_keyring_save_task(ctx, conn_id, password);
+                        }
+                        if let Some(secret) = ssh_secret_to_save {
+                            self.spawn_ssh_keyring_save_task(ctx, conn_id, secret);
+                        }
+                        self.spawn_save_profiles_task(ctx);
+
+                        if ssh_enabled {
+                            self.state.bottom_panel.push_log(
+                                    LogLevel::Info,
+                                    "ConnectionManager",
+                                    format!(
+                                        "Connecting to '{conn_name}' ({redacted}) via SSH tunnel ({ssh_endpoint})..."
+                                    ),
+                                );
+                        } else {
                             self.state.bottom_panel.push_log(
                                 LogLevel::Info,
                                 "ConnectionManager",
                                 format!("Connecting to '{conn_name}' ({redacted})..."),
                             );
+                        }
 
-                            self.spawn_connect_task(ctx, conn_id, conn_name, conn_uri);
+                        if let Some(target) = self.connection_target_by_index(new_idx) {
+                            self.spawn_connect_task(ctx, target);
                         }
-                        Err(err) => {
-                            self.state.bottom_panel.push_log(
-                                LogLevel::Error,
-                                "ConnectionManager",
-                                format!("Invalid connection config: {err}"),
-                            );
-                        }
+                        self.state.new_conn_password.clear();
+                        self.state.new_conn_ssh_secret.clear();
                     }
-                }
-                AppEvent::UpdateConnection { index, name, uri } => {
+                    Err(err) => {
+                        self.state.bottom_panel.push_log(
+                            LogLevel::Error,
+                            "ConnectionManager",
+                            format!("Invalid connection config: {err}"),
+                        );
+                    }
+                },
+                AppEvent::UpdateConnection {
+                    index,
+                    name,
+                    uri,
+                    ssh_tunnel,
+                    ssh_secret,
+                } => {
                     let clamped_name = ConnectionConfig::clamp_profile_name(&name);
                     let trimmed_uri = uri.trim();
                     if clamped_name.is_empty() || trimmed_uri.is_empty() {
@@ -3816,10 +4134,56 @@ impl MongoStudioApp {
                             None
                         };
 
-                        (conn.id, conn.name.clone(), conn.uri.clone(), keyring_op)
+                        let prev_ssh_saved = conn.ssh_tunnel.has_saved_secret;
+                        let mut final_ssh = ssh_tunnel;
+                        let ssh_keyring_op = if final_ssh.enabled
+                            && self.state.new_conn_ssh_save_secret
+                            && !ssh_secret.is_empty()
+                        {
+                            final_ssh.has_saved_secret = true;
+                            Some(Some(ssh_secret.clone()))
+                        } else if (!final_ssh.enabled || !self.state.new_conn_ssh_save_secret)
+                            && prev_ssh_saved
+                        {
+                            final_ssh.has_saved_secret = false;
+                            Some(None)
+                        } else {
+                            final_ssh.has_saved_secret = final_ssh.enabled && prev_ssh_saved;
+                            None
+                        };
+                        let ssh_enabled = final_ssh.enabled;
+                        conn.ssh_tunnel = final_ssh;
+
+                        (
+                            conn.id,
+                            conn.name.clone(),
+                            conn.uri.clone(),
+                            keyring_op,
+                            ssh_keyring_op,
+                            ssh_enabled,
+                            prev_ssh_saved,
+                        )
                     });
 
-                    if let Some((conn_id, conn_name, conn_uri, keyring_op)) = update_outcome {
+                    if let Some((
+                        conn_id,
+                        conn_name,
+                        conn_uri,
+                        keyring_op,
+                        ssh_keyring_op,
+                        ssh_enabled,
+                        prev_ssh_saved,
+                    )) = update_outcome
+                    {
+                        self.ssh_registry.close_tunnel(conn_id);
+                        if !ssh_enabled {
+                            self.ssh_session_secrets.remove(&conn_id);
+                        } else if !ssh_secret.is_empty() {
+                            self.ssh_session_secrets.insert(conn_id, ssh_secret);
+                        } else if !prev_ssh_saved || !self.state.new_conn_ssh_save_secret {
+                            self.ssh_session_secrets.remove(&conn_id);
+                        }
+
                         let redacted = ConnectionConfig::redact_uri(&conn_uri);
                         self.state.active_connection_idx = index;
 
@@ -3832,6 +4196,15 @@ impl MongoStudioApp {
                             }
                             None => {}
                         }
+                        match ssh_keyring_op {
+                            Some(Some(secret)) => {
+                                self.spawn_ssh_keyring_save_task(ctx, conn_id, secret);
+                            }
+                            Some(None) => {
+                                self.spawn_ssh_keyring_delete_task(ctx, conn_id);
+                            }
+                            None => {}
+                        }
                         self.spawn_save_profiles_task(ctx);
 
                         self.state.bottom_panel.push_log(
@@ -3840,39 +4213,58 @@ impl MongoStudioApp {
                             format!("Updated profile '{conn_name}' ({redacted}), reconnecting..."),
                         );
 
-                        self.spawn_connect_task(ctx, conn_id, conn_name, conn_uri);
+                        if let Some(target) = self.connection_target_by_index(index) {
+                            self.spawn_connect_task(ctx, target);
+                        }
                     }
+                    self.state.new_conn_password.clear();
+                    self.state.new_conn_ssh_secret.clear();
                 }
                 AppEvent::ConnectProfile { index } => {
-                    let needs_keyring = self.state.connections.get(index).is_some_and(|conn| {
-                        conn.has_saved_password
-                            && ConnectionConfig::split_uri_credentials(&conn.uri)
-                                .2
-                                .is_empty()
-                    });
+                    let Some(conn) = self.state.connections.get(index) else {
+                        continue;
+                    };
+                    let needs_mongo_keyring = conn.has_saved_password
+                        && ConnectionConfig::split_uri_credentials(&conn.uri)
+                            .2
+                            .is_empty();
+                    let needs_ssh_keyring = conn.ssh_tunnel.enabled
+                        && conn.ssh_tunnel.has_saved_secret
+                        && self
+                            .ssh_session_secrets
+                            .get(&conn.id)
+                            .is_none_or(String::is_empty);
 
-                    if needs_keyring {
-                        if let Some(conn) = self.state.connections.get_mut(index) {
-                            conn.status = ConnectionStatus::Connecting;
-                            conn.expanded = false;
-                            conn.last_error = None;
+                    if needs_mongo_keyring || needs_ssh_keyring {
+                        if let Some(conn_mut) = self.state.connections.get_mut(index) {
+                            conn_mut.status = ConnectionStatus::Connecting;
+                            conn_mut.expanded = false;
+                            conn_mut.last_error = None;
                         }
-                        self.spawn_keyring_load_task(ctx, index, false);
+                        if needs_mongo_keyring {
+                            self.spawn_keyring_load_task(ctx, index, false);
+                        } else {
+                            self.spawn_ssh_keyring_load_task(ctx, index, false);
+                        }
                     } else {
                         self.connect_profile_now(ctx, index);
                     }
                 }
                 AppEvent::DisconnectProfile { index } => {
-                    let disconnected_name = self.state.connections.get_mut(index).map(|conn| {
+                    let disconnected = self.state.connections.get_mut(index).map(|conn| {
                         conn.status = ConnectionStatus::Disconnected;
                         conn.expanded = false;
                         conn.last_error = None;
                         if !conn.has_saved_password {
                             conn.clear_session_password();
                         }
-                        conn.name.clone()
+                        (conn.id, conn.name.clone(), conn.ssh_tunnel.has_saved_secret)
                     });
-                    if let Some(name) = disconnected_name {
+                    if let Some((conn_id, name, has_saved_ssh)) = disconnected {
+                        self.ssh_registry.close_tunnel(conn_id);
+                        if !has_saved_ssh {
+                            self.ssh_session_secrets.remove(&conn_id);
+                        }
                         self.spawn_save_profiles_task(ctx);
                         self.state.bottom_panel.push_log(
                             LogLevel::Info,
@@ -3884,12 +4276,15 @@ impl MongoStudioApp {
                 AppEvent::RemoveConnection { index } => {
                     if index < self.state.connections.len() {
                         let removed = self.state.connections.remove(index);
+                        self.ssh_registry.close_tunnel(removed.id);
+                        self.ssh_session_secrets.remove(&removed.id);
                         if self.state.active_connection_idx >= self.state.connections.len()
                             && !self.state.connections.is_empty()
                         {
                             self.state.active_connection_idx = self.state.connections.len() - 1;
                         }
                         self.spawn_keyring_delete_task(ctx, removed.id);
+                        self.spawn_ssh_keyring_delete_task(ctx, removed.id);
                         self.spawn_save_profiles_task(ctx);
                         self.state.bottom_panel.push_log(
                             LogLevel::Info,
@@ -3960,15 +4355,15 @@ impl MongoStudioApp {
                     if let Some(conn) = self.state.connections.get_mut(active_idx) {
                         conn.status = ConnectionStatus::Connecting;
                         conn.last_error = None;
-                        let conn_id = conn.id;
                         let conn_name = conn.name.clone();
-                        let conn_uri = conn.uri.clone();
                         self.state.bottom_panel.push_log(
                             LogLevel::Info,
                             "Explorer",
                             format!("Refreshing databases and collections for '{conn_name}'..."),
                         );
-                        self.spawn_connect_task(ctx, conn_id, conn_name, conn_uri);
+                    }
+                    if let Some(target) = self.connection_target_by_index(active_idx) {
+                        self.spawn_connect_task(ctx, target);
                     }
                 }
                 AppEvent::ExecuteFilterQuery {
@@ -4029,6 +4424,8 @@ impl MongoStudioApp {
                     self.state.bottom_panel.logs.clear();
                 }
                 AppEvent::ResetWorkspaceLayout => {
+                    self.ssh_registry.close_all();
+                    self.ssh_session_secrets.clear();
                     self.state = AppState::default();
                     self.palette = apply_theme(ctx, self.state.theme_mode);
                     self.pending_open_user = None;

@@ -8,7 +8,9 @@ use egui_phosphor::regular;
 use crate::core::events::AppEvent;
 use crate::core::state::AppState;
 use crate::database::{CreateIndexRequest, IndexService};
-use crate::models::{ConnectionConfig, DocumentRow, SavedQuery, UserRole};
+use crate::models::{
+    ConnectionConfig, DocumentRow, SavedQuery, SshAuthMethod, SshTunnelConfig, UserRole,
+};
 use crate::theme::{ThemeMode, ThemePalette};
 use crate::ui::activity_bar::render_activity_bar;
 use crate::ui::command_palette::render_command_palette;
@@ -385,6 +387,145 @@ fn render_central_workspace(
     });
 }
 
+fn render_connection_modal_ssh_section(
+    ui: &mut egui::Ui,
+    state: &mut AppState,
+    palette: &ThemePalette,
+) {
+    ui.add_space(6.0);
+    ui.separator();
+    ui.add_space(4.0);
+
+    ui.checkbox(
+        &mut state.new_conn_ssh_enabled,
+        RichText::new(format!(
+            "{} Connect via SSH Tunnel (ip:port)",
+            regular::LOCK_KEY
+        ))
+        .strong(),
+    );
+
+    if !state.new_conn_ssh_enabled {
+        return;
+    }
+
+    ui.add_space(4.0);
+    ui.columns(2, |columns| {
+        columns[0].label(RichText::new("SSH Host (ip:port)").size(11.5));
+        columns[0].add(
+            TextEdit::singleline(&mut state.new_conn_ssh_endpoint)
+                .font(egui::FontId::monospace(12.0))
+                .hint_text("192.168.1.10:22 or bastion:2222")
+                .margin(Margin::symmetric(6.0, 4.0))
+                .desired_width(f32::INFINITY),
+        );
+
+        columns[1].label(RichText::new("SSH Username").size(11.5));
+        columns[1].add(
+            TextEdit::singleline(&mut state.new_conn_ssh_username)
+                .hint_text("ubuntu or root")
+                .margin(Margin::symmetric(6.0, 4.0))
+                .desired_width(f32::INFINITY),
+        );
+    });
+
+    ui.add_space(4.0);
+    let prev_auth_method = state.new_conn_ssh_auth_method;
+    ui.horizontal(|ui| {
+        ui.label(RichText::new("SSH Auth").size(11.5));
+        ui.radio_value(
+            &mut state.new_conn_ssh_auth_method,
+            SshAuthMethod::Password,
+            "Password",
+        )
+        .on_hover_cursor(CursorIcon::PointingHand);
+        ui.radio_value(
+            &mut state.new_conn_ssh_auth_method,
+            SshAuthMethod::PrivateKey,
+            "SSH Key (id_ecdsa)",
+        )
+        .on_hover_cursor(CursorIcon::PointingHand);
+    });
+    if state.new_conn_ssh_auth_method != prev_auth_method {
+        state.new_conn_ssh_secret.clear();
+        state.new_conn_ssh_save_secret = false;
+    }
+
+    ui.add_space(4.0);
+    match state.new_conn_ssh_auth_method {
+        SshAuthMethod::Password => {
+            ui.label(RichText::new("SSH Password").size(11.5));
+            ui.add(
+                TextEdit::singleline(&mut state.new_conn_ssh_secret)
+                    .password(true)
+                    .hint_text("Enter SSH password...")
+                    .margin(Margin::symmetric(6.0, 4.0))
+                    .desired_width(f32::INFINITY),
+            );
+            ui.add_space(4.0);
+            ui.checkbox(
+                &mut state.new_conn_ssh_save_secret,
+                RichText::new("Save SSH password in OS Keychain").size(11.5),
+            );
+        }
+        SshAuthMethod::PrivateKey => {
+            ui.label(RichText::new("Private Key Path").size(11.5));
+            ui.horizontal(|ui| {
+                let input_width = (ui.available_width() - 88.0).max(140.0);
+                ui.add(
+                    TextEdit::singleline(&mut state.new_conn_ssh_key_path)
+                        .font(egui::FontId::monospace(12.0))
+                        .hint_text("~/.ssh/id_ecdsa")
+                        .margin(Margin::symmetric(6.0, 4.0))
+                        .desired_width(input_width),
+                );
+                if secondary_button(ui, "Browse...", palette.border_color).clicked() {
+                    if let Some(path) = rfd::FileDialog::new().pick_file() {
+                        state.new_conn_ssh_key_path = path.display().to_string();
+                    }
+                }
+            });
+            ui.add_space(4.0);
+            ui.label(RichText::new("Key Passphrase (Optional)").size(11.5));
+            ui.add(
+                TextEdit::singleline(&mut state.new_conn_ssh_secret)
+                    .password(true)
+                    .hint_text("Leave blank if key has no passphrase")
+                    .margin(Margin::symmetric(6.0, 4.0))
+                    .desired_width(f32::INFINITY),
+            );
+            ui.add_space(4.0);
+            ui.checkbox(
+                &mut state.new_conn_ssh_save_secret,
+                RichText::new("Save SSH passphrase in OS Keychain").size(11.5),
+            );
+        }
+    }
+
+    if !state.new_conn_ssh_endpoint.trim().is_empty() {
+        if let Err(err) = SshTunnelConfig::parse_endpoint(&state.new_conn_ssh_endpoint) {
+            ui.add_space(4.0);
+            ui.label(
+                RichText::new(format!("{} {err}", regular::WARNING_CIRCLE))
+                    .color(palette.warning_color)
+                    .size(11.5),
+            );
+        } else if state.new_conn_ssh_auth_method == SshAuthMethod::PrivateKey
+            && !state.new_conn_ssh_username.trim().is_empty()
+        {
+            let cfg = state.build_ssh_tunnel_config();
+            if let Err(err) = cfg.validate_offline(&state.new_conn_ssh_secret) {
+                ui.add_space(4.0);
+                ui.label(
+                    RichText::new(format!("{} {err}", regular::WARNING_CIRCLE))
+                        .color(palette.warning_color)
+                        .size(11.5),
+                );
+            }
+        }
+    }
+}
+
 fn render_modals(
     ctx: &Context,
     state: &mut AppState,
@@ -408,140 +549,183 @@ fn render_modals(
             .collapsible(false)
             .resizable(false)
             .frame(modal_frame)
-            .fixed_size([460.0, 310.0])
+            .fixed_size(if state.new_conn_ssh_enabled {
+                [480.0, 490.0]
+            } else {
+                [460.0, 345.0]
+            })
             .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
             .show(ctx, |ui| {
-                ui.label(RichText::new("Connection Profile Name (max 30 chars)").strong());
-                ui.add(
-                    TextEdit::singleline(&mut state.new_conn_name)
-                        .char_limit(ConnectionConfig::MAX_PROFILE_NAME_LEN)
-                        .hint_text("e.g. LAN MongoDB Server")
-                        .margin(Margin::symmetric(6.0, 4.0))
-                        .min_size(Vec2::new(200.0, 24.0))
-                        .desired_width(f32::INFINITY),
-                );
-                if state.new_conn_name.chars().count() > ConnectionConfig::MAX_PROFILE_NAME_LEN {
-                    state.new_conn_name =
-                        ConnectionConfig::clamp_profile_name(&state.new_conn_name);
-                }
-                ui.add_space(6.0);
+                ScrollArea::vertical()
+                    .id_source("connection_modal_scroll")
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
+                        ui.label(RichText::new("Connection Profile Name (max 30 chars)").strong());
+                        ui.add(
+                            TextEdit::singleline(&mut state.new_conn_name)
+                                .char_limit(ConnectionConfig::MAX_PROFILE_NAME_LEN)
+                                .hint_text("e.g. LAN MongoDB Server")
+                                .margin(Margin::symmetric(6.0, 4.0))
+                                .min_size(Vec2::new(200.0, 24.0))
+                                .desired_width(f32::INFINITY),
+                        );
+                        if state.new_conn_name.chars().count()
+                            > ConnectionConfig::MAX_PROFILE_NAME_LEN
+                        {
+                            state.new_conn_name =
+                                ConnectionConfig::clamp_profile_name(&state.new_conn_name);
+                        }
+                        ui.add_space(6.0);
 
-                ui.label(RichText::new("Host or MongoDB Connection URI").strong());
-                ui.add(
-                    TextEdit::singleline(&mut state.new_conn_uri)
-                        .font(egui::FontId::monospace(12.0))
-                        .hint_text("192.168.100.243:27017 or mongodb://192.168.100.243:27017")
-                        .margin(Margin::symmetric(6.0, 4.0))
-                        .min_size(Vec2::new(200.0, 24.0))
-                        .desired_width(f32::INFINITY),
-                );
-                ui.add_space(8.0);
+                        ui.label(RichText::new("Host or MongoDB Connection URI").strong());
+                        ui.add(
+                            TextEdit::singleline(&mut state.new_conn_uri)
+                                .font(egui::FontId::monospace(12.0))
+                                .hint_text(
+                                    "192.168.100.243:27017 or mongodb://192.168.100.243:27017",
+                                )
+                                .margin(Margin::symmetric(6.0, 4.0))
+                                .min_size(Vec2::new(200.0, 24.0))
+                                .desired_width(f32::INFINITY),
+                        );
+                        ui.add_space(8.0);
 
-                ui.label(
-                    RichText::new("Authentication (Optional)")
-                        .strong()
-                        .size(12.0)
-                        .color(palette.muted_text),
-                );
-                ui.columns(2, |columns| {
-                    columns[0].label(RichText::new("Username").size(11.5));
-                    columns[0].add(
-                        TextEdit::singleline(&mut state.new_conn_username)
-                            .hint_text("admin (optional)")
-                            .margin(Margin::symmetric(6.0, 4.0))
-                            .desired_width(f32::INFINITY),
-                    );
-
-                    columns[1].label(RichText::new("Password").size(11.5));
-                    columns[1].add(
-                        TextEdit::singleline(&mut state.new_conn_password)
-                            .password(true)
-                            .hint_text("password (optional)")
-                            .margin(Margin::symmetric(6.0, 4.0))
-                            .desired_width(f32::INFINITY),
-                    );
-                });
-
-                ui.add_space(4.0);
-                ui.checkbox(
-                    &mut state.new_conn_save_password,
-                    RichText::new("Save password in OS Keychain").size(11.5),
-                );
-
-                ui.add_space(6.0);
-                if state.is_testing_connection {
-                    ui.label(
-                        RichText::new(format!("{} Testing connection...", regular::CIRCLE_HALF))
-                            .color(palette.warning_color)
-                            .monospace()
-                            .size(11.5),
-                    );
-                } else if let Some(status) = &state.test_conn_status {
-                    match status {
-                        Ok(msg) => {
-                            ui.label(
-                                RichText::new(format!("{} {msg}", regular::CHECK_CIRCLE))
-                                    .color(palette.success_color)
-                                    .monospace()
-                                    .size(11.5),
+                        ui.label(
+                            RichText::new("Authentication (Optional)")
+                                .strong()
+                                .size(12.0)
+                                .color(palette.muted_text),
+                        );
+                        ui.columns(2, |columns| {
+                            columns[0].label(RichText::new("Username").size(11.5));
+                            columns[0].add(
+                                TextEdit::singleline(&mut state.new_conn_username)
+                                    .hint_text("admin (optional)")
+                                    .margin(Margin::symmetric(6.0, 4.0))
+                                    .desired_width(f32::INFINITY),
                             );
-                        }
-                        Err(err) => {
-                            ui.label(
-                                RichText::new(format!("{} {err}", regular::WARNING_CIRCLE))
-                                    .color(palette.error_color)
-                                    .monospace()
-                                    .size(11.5),
+
+                            columns[1].label(RichText::new("Password").size(11.5));
+                            columns[1].add(
+                                TextEdit::singleline(&mut state.new_conn_password)
+                                    .password(true)
+                                    .hint_text("password (optional)")
+                                    .margin(Margin::symmetric(6.0, 4.0))
+                                    .desired_width(f32::INFINITY),
                             );
-                        }
-                    }
-                }
-
-                ui.add_space(8.0);
-
-                ui.horizontal(|ui| {
-                    let submit_label = if is_editing {
-                        format!("{} Save & Reconnect", regular::FLOPPY_DISK)
-                    } else {
-                        format!("{} Connect & Save", regular::PLUGS_CONNECTED)
-                    };
-
-                    if primary_button(ui, &submit_label, palette.accent_color).clicked() {
-                        let effective_uri = state.build_effective_uri();
-                        if let Some(edit_idx) = state.editing_connection_idx.take() {
-                            events.push(AppEvent::UpdateConnection {
-                                index: edit_idx,
-                                name: state.new_conn_name.clone(),
-                                uri: effective_uri,
-                            });
-                        } else {
-                            events.push(AppEvent::AddConnection {
-                                name: state.new_conn_name.clone(),
-                                uri: effective_uri,
-                            });
-                        }
-                        state.show_new_connection_modal = false;
-                    }
-
-                    if secondary_button(
-                        ui,
-                        &format!("{} Test Connection", regular::LIGHTNING),
-                        palette.border_color,
-                    )
-                    .clicked()
-                    {
-                        let effective_uri = state.build_effective_uri();
-                        events.push(AppEvent::TestConnection {
-                            name: state.new_conn_name.clone(),
-                            uri: effective_uri,
                         });
-                    }
 
-                    if secondary_button(ui, "Cancel", palette.border_color).clicked() {
-                        state.editing_connection_idx = None;
-                        state.show_new_connection_modal = false;
-                    }
-                });
+                        ui.add_space(4.0);
+                        ui.checkbox(
+                            &mut state.new_conn_save_password,
+                            RichText::new("Save password in OS Keychain").size(11.5),
+                        );
+
+                        render_connection_modal_ssh_section(ui, state, palette);
+
+                        ui.add_space(6.0);
+                        if state.is_testing_connection {
+                            ui.label(
+                                RichText::new(format!(
+                                    "{} Testing connection...",
+                                    regular::CIRCLE_HALF
+                                ))
+                                .color(palette.warning_color)
+                                .monospace()
+                                .size(11.5),
+                            );
+                        } else if let Some(status) = &state.test_conn_status {
+                            match status {
+                                Ok(msg) => {
+                                    ui.label(
+                                        RichText::new(format!("{} {msg}", regular::CHECK_CIRCLE))
+                                            .color(palette.success_color)
+                                            .monospace()
+                                            .size(11.5),
+                                    );
+                                }
+                                Err(err) => {
+                                    ui.label(
+                                        RichText::new(format!("{} {err}", regular::WARNING_CIRCLE))
+                                            .color(palette.error_color)
+                                            .monospace()
+                                            .size(11.5),
+                                    );
+                                }
+                            }
+                        }
+
+                        ui.add_space(8.0);
+
+                        let ssh_basics_valid = if state.new_conn_ssh_enabled {
+                            let ssh_user = state.new_conn_ssh_username.trim();
+                            SshTunnelConfig::parse_endpoint(&state.new_conn_ssh_endpoint).is_ok()
+                                && !ssh_user.is_empty()
+                                && !ssh_user.starts_with('-')
+                                && !ssh_user
+                                    .chars()
+                                    .any(|c| c.is_whitespace() || c.is_control())
+                        } else {
+                            true
+                        };
+
+                        ui.horizontal(|ui| {
+                            let submit_label = if is_editing {
+                                format!("{} Save & Reconnect", regular::FLOPPY_DISK)
+                            } else {
+                                format!("{} Connect & Save", regular::PLUGS_CONNECTED)
+                            };
+
+                            ui.add_enabled_ui(ssh_basics_valid, |ui| {
+                                if primary_button(ui, &submit_label, palette.accent_color).clicked()
+                                {
+                                    let effective_uri = state.build_effective_uri();
+                                    let ssh_tunnel = state.build_ssh_tunnel_config();
+                                    let ssh_secret = state.new_conn_ssh_secret.clone();
+                                    if let Some(edit_idx) = state.editing_connection_idx.take() {
+                                        events.push(AppEvent::UpdateConnection {
+                                            index: edit_idx,
+                                            name: state.new_conn_name.clone(),
+                                            uri: effective_uri,
+                                            ssh_tunnel,
+                                            ssh_secret,
+                                        });
+                                    } else {
+                                        events.push(AppEvent::AddConnection {
+                                            name: state.new_conn_name.clone(),
+                                            uri: effective_uri,
+                                            ssh_tunnel,
+                                            ssh_secret,
+                                        });
+                                    }
+                                    state.show_new_connection_modal = false;
+                                }
+                            });
+
+                            if secondary_button(
+                                ui,
+                                &format!("{} Test Connection", regular::LIGHTNING),
+                                palette.border_color,
+                            )
+                            .clicked()
+                            {
+                                let effective_uri = state.build_effective_uri();
+                                events.push(AppEvent::TestConnection {
+                                    name: state.new_conn_name.clone(),
+                                    uri: effective_uri,
+                                    ssh_tunnel: state.build_ssh_tunnel_config(),
+                                    ssh_secret: state.new_conn_ssh_secret.clone(),
+                                });
+                            }
+
+                            if secondary_button(ui, "Cancel", palette.border_color).clicked() {
+                                state.new_conn_password.clear();
+                                state.new_conn_ssh_secret.clear();
+                                state.editing_connection_idx = None;
+                                state.show_new_connection_modal = false;
+                            }
+                        });
+                    });
             });
     }
 
