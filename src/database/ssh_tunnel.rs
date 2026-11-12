@@ -5,6 +5,8 @@ use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 #[cfg(unix)]
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
+#[cfg(windows)]
+use std::os::windows::process::CommandExt;
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Mutex, PoisonError};
@@ -77,7 +79,12 @@ impl AskpassTempDir {
             dir: Some(dir.clone()),
         };
 
-        let script_path = dir.join("askpass.sh");
+        #[cfg(windows)]
+        let script_name = "askpass.cmd";
+        #[cfg(not(windows))]
+        let script_name = "askpass.sh";
+
+        let script_path = dir.join(script_name);
         let mut options = OpenOptions::new();
         options.write(true).create_new(true);
         #[cfg(unix)]
@@ -86,11 +93,16 @@ impl AskpassTempDir {
         let mut file = options.open(&script_path).map_err(|err| {
             AppError::Connection(format!("failed to create SSH askpass script: {err}"))
         })?;
-        // Never write secrets to disk: OpenSSH reads this script, which echoes the env var.
-        file.write_all(b"#!/bin/sh\nprintf '%s\\n' \"$MONGO_STUDIO_SSH_ASKPASS_SECRET\"\n")
-            .map_err(|err| {
-                AppError::Connection(format!("failed to write SSH askpass script: {err}"))
-            })?;
+        // Never write secrets to disk: OpenSSH executes this helper, which reads the env var.
+        #[cfg(windows)]
+        let script_body: &[u8] = b"@echo off\r\n\"%SystemRoot%\\System32\\WindowsPowerShell\\v1.0\\powershell.exe\" -NoProfile -NonInteractive -Command \"[Console]::Out.WriteLine([Environment]::GetEnvironmentVariable('MONGO_STUDIO_SSH_ASKPASS_SECRET'))\"\r\n";
+        #[cfg(not(windows))]
+        let script_body: &[u8] =
+            b"#!/bin/sh\nprintf '%s\\n' \"$MONGO_STUDIO_SSH_ASKPASS_SECRET\"\n";
+
+        file.write_all(script_body).map_err(|err| {
+            AppError::Connection(format!("failed to write SSH askpass script: {err}"))
+        })?;
         file.flush().map_err(|err| {
             AppError::Connection(format!("failed to flush SSH askpass script: {err}"))
         })?;
@@ -330,6 +342,12 @@ fn spawn_ssh_tunnel_blocking(
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::piped());
+    #[cfg(windows)]
+    {
+        // Suppress blank console flash when a GUI app spawns Win32 OpenSSH.
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
 
     let needs_askpass = params.auth_method == SshAuthMethod::Password || params.has_secret;
     let mut askpass_guard = if needs_askpass {
@@ -630,6 +648,16 @@ mod tests {
                 AskpassTempDir::create().expect("askpass temp dir should be created");
             dir_path = guard.dir.clone().expect("dir path should exist");
             assert!(script_path.is_file());
+            #[cfg(windows)]
+            assert_eq!(
+                script_path.extension().and_then(|ext| ext.to_str()),
+                Some("cmd")
+            );
+            #[cfg(not(windows))]
+            assert_eq!(
+                script_path.extension().and_then(|ext| ext.to_str()),
+                Some("sh")
+            );
             let content = fs::read_to_string(&script_path).expect("script should be readable");
             assert!(content.contains("MONGO_STUDIO_SSH_ASKPASS_SECRET"));
             assert!(!content.contains("super-secret-value"));
