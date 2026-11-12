@@ -82,7 +82,7 @@ pub fn render_status_bar(
                     );
                     ui.separator();
                     ui.label(
-                        RichText::new("Phase 1 Shell (Mock Data)")
+                        RichText::new("Phase 2 Live Driver (Tokio Async)")
                             .color(palette.status_bar_fg)
                             .size(11.5),
                     );

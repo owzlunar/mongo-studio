@@ -42,13 +42,25 @@ impl QueryFilter {
             return true;
         }
 
+        let raw_json_obj = doc
+            .raw_json
+            .as_deref()
+            .and_then(|raw| serde_json::from_str::<Value>(raw).ok());
+
         for (k, expected_val) in map {
-            let Some(actual_str) = doc.field_str(k) else {
-                return false;
-            };
-            if expected_val.as_str() != Some(actual_str) {
-                return false;
+            if let Some(actual_str) = doc.field_str(k) {
+                if expected_val.as_str() == Some(actual_str) {
+                    continue;
+                }
             }
+            if let Some(Value::Object(ref raw_map)) = raw_json_obj {
+                if let Some(actual_val) = raw_map.get(k) {
+                    if actual_val == expected_val {
+                        continue;
+                    }
+                }
+            }
+            return false;
         }
 
         true

@@ -19,6 +19,11 @@ pub struct AppState {
     pub show_new_connection_modal: bool,
     pub new_conn_name: String,
     pub new_conn_uri: String,
+    pub new_conn_username: String,
+    pub new_conn_password: String,
+    pub new_conn_save_password: bool,
+    pub test_conn_status: Option<Result<String, String>>,
+    pub is_testing_connection: bool,
     pub show_about_modal: bool,
 }
 
@@ -62,8 +67,24 @@ impl AppState {
             show_new_connection_modal: false,
             new_conn_name: "Production ReplicaSet".to_string(),
             new_conn_uri: "mongodb://localhost:27017".to_string(),
+            new_conn_username: String::new(),
+            new_conn_password: String::new(),
+            new_conn_save_password: false,
+            test_conn_status: None,
+            is_testing_connection: false,
             show_about_modal: false,
         }
+    }
+
+    /// Normalizes `new_conn_uri` (auto-prepending `mongodb://` when omitted) and injects
+    /// `new_conn_username` / `new_conn_password` if provided and not already in the URI.
+    #[must_use]
+    pub fn build_effective_uri(&self) -> String {
+        ConnectionConfig::normalize_uri(
+            &self.new_conn_uri,
+            &self.new_conn_username,
+            &self.new_conn_password,
+        )
     }
 
     #[must_use]

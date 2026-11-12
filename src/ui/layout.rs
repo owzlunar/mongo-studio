@@ -1,4 +1,6 @@
-use egui::{Context, CursorIcon, Frame, Image, Margin, RichText, ScrollArea, Stroke, TextEdit, Vec2, Window};
+use egui::{
+    Context, CursorIcon, Frame, Image, Margin, RichText, ScrollArea, Stroke, TextEdit, Vec2, Window,
+};
 use egui_dock::{DockArea, Style};
 use egui_phosphor::regular;
 
@@ -69,12 +71,21 @@ fn render_top_menu_bar(
                         events.push(AppEvent::OpenNewConnectionModal);
                         ui.close_menu();
                     }
-                    if menu_item(ui, &format!("{} Refresh Connections", regular::ARROWS_CLOCKWISE)) {
+                    if menu_item(
+                        ui,
+                        &format!("{} Refresh Connections", regular::ARROWS_CLOCKWISE),
+                    ) {
                         events.push(AppEvent::RefreshConnections);
                         ui.close_menu();
                     }
                     ui.separator();
-                    if menu_item(ui, &format!("{} Reset Workspace Layout", regular::ARROW_COUNTER_CLOCKWISE)) {
+                    if menu_item(
+                        ui,
+                        &format!(
+                            "{} Reset Workspace Layout",
+                            regular::ARROW_COUNTER_CLOCKWISE
+                        ),
+                    ) {
                         events.push(AppEvent::ResetWorkspaceLayout);
                         ui.close_menu();
                     }
@@ -82,7 +93,13 @@ fn render_top_menu_bar(
                 file_resp.response.on_hover_cursor(CursorIcon::PointingHand);
 
                 let edit_resp = ui.menu_button("Edit", |ui| {
-                    if menu_item(ui, &format!("{} Command Palette... (Ctrl+P)", regular::TERMINAL_WINDOW)) {
+                    if menu_item(
+                        ui,
+                        &format!(
+                            "{} Command Palette... (Ctrl+P)",
+                            regular::TERMINAL_WINDOW
+                        ),
+                    ) {
                         events.push(AppEvent::ToggleCommandPalette);
                         ui.close_menu();
                     }
@@ -94,11 +111,17 @@ fn render_top_menu_bar(
                 edit_resp.response.on_hover_cursor(CursorIcon::PointingHand);
 
                 let view_resp = ui.menu_button("View", |ui| {
-                    if menu_item(ui, &format!("{} Toggle Sidebar (Ctrl+B)", regular::SIDEBAR_SIMPLE)) {
+                    if menu_item(
+                        ui,
+                        &format!("{} Toggle Sidebar (Ctrl+B)", regular::SIDEBAR_SIMPLE),
+                    ) {
                         events.push(AppEvent::ToggleSidebar);
                         ui.close_menu();
                     }
-                    if menu_item(ui, &format!("{} Toggle Bottom Panel (Ctrl+J)", regular::TERMINAL_WINDOW)) {
+                    if menu_item(
+                        ui,
+                        &format!("{} Toggle Bottom Panel (Ctrl+J)", regular::TERMINAL_WINDOW),
+                    ) {
                         events.push(AppEvent::ToggleBottomPanel);
                         ui.close_menu();
                     }
@@ -258,7 +281,7 @@ fn render_bottom_panel(
                         let resp = ui.add(
                             TextEdit::singleline(&mut state.bottom_panel.terminal_input)
                                 .font(egui::FontId::monospace(12.0))
-                                .hint_text("Enter mock shell command...")
+                                .hint_text("Enter shell command...")
                                 .margin(Margin::symmetric(6.0, 4.0))
                                 .min_size(Vec2::new(200.0, 24.0))
                                 .desired_width(f32::INFINITY),
@@ -271,7 +294,7 @@ fn render_bottom_panel(
                                     .terminal_history
                                     .push(format!("mongosh> {cmd}"));
                                 state.bottom_panel.terminal_history.push(
-                                    "{ \"ok\": 1, \"note\": \"Executed in Phase 1 mock shell\" }"
+                                    "{ \"ok\": 1, \"note\": \"Executed in Mongo Studio shell\" }"
                                         .to_string(),
                                 );
                                 state.bottom_panel.terminal_input.clear();
@@ -294,13 +317,34 @@ fn render_bottom_panel(
                         });
                 }
                 BottomPanelTab::Problems => {
-                    ui.label(
-                        RichText::new(format!(
-                            "{} No syntax or connection problems detected in workspace.",
-                            regular::CHECK_CIRCLE
-                        ))
-                        .color(palette.success_color),
-                    );
+                    let mut has_problems = false;
+                    for conn in &state.connections {
+                        if let Some(err) = &conn.last_error {
+                            has_problems = true;
+                            ui.horizontal(|ui| {
+                                ui.label(
+                                    RichText::new(format!(
+                                        "{} [{}]",
+                                        regular::WARNING_CIRCLE,
+                                        conn.name
+                                    ))
+                                    .color(palette.error_color)
+                                    .strong()
+                                    .monospace(),
+                                );
+                                ui.label(RichText::new(err).monospace().size(12.0));
+                            });
+                        }
+                    }
+                    if !has_problems {
+                        ui.label(
+                            RichText::new(format!(
+                                "{} No syntax or connection problems detected in workspace.",
+                                regular::CHECK_CIRCLE
+                            ))
+                            .color(palette.success_color),
+                        );
+                    }
                 }
             }
         });
@@ -348,27 +392,94 @@ fn render_modals(
             .collapsible(false)
             .resizable(false)
             .frame(modal_frame)
-            .fixed_size([420.0, 195.0])
+            .fixed_size([460.0, 310.0])
             .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
             .show(ctx, |ui| {
                 ui.label(RichText::new("Connection Profile Name").strong());
                 ui.add(
                     TextEdit::singleline(&mut state.new_conn_name)
+                        .hint_text("e.g. LAN MongoDB Server")
                         .margin(Margin::symmetric(6.0, 4.0))
                         .min_size(Vec2::new(200.0, 24.0))
                         .desired_width(f32::INFINITY),
                 );
                 ui.add_space(6.0);
 
-                ui.label(RichText::new("MongoDB Connection URI").strong());
+                ui.label(RichText::new("Host or MongoDB Connection URI").strong());
                 ui.add(
                     TextEdit::singleline(&mut state.new_conn_uri)
                         .font(egui::FontId::monospace(12.0))
+                        .hint_text("192.168.100.243:27017 or mongodb://192.168.100.243:27017")
                         .margin(Margin::symmetric(6.0, 4.0))
                         .min_size(Vec2::new(200.0, 24.0))
                         .desired_width(f32::INFINITY),
                 );
-                ui.add_space(12.0);
+                ui.add_space(8.0);
+
+                ui.label(
+                    RichText::new("Authentication (Optional)")
+                        .strong()
+                        .size(12.0)
+                        .color(palette.muted_text),
+                );
+                ui.columns(2, |columns| {
+                    columns[0].label(RichText::new("Username").size(11.5));
+                    columns[0].add(
+                        TextEdit::singleline(&mut state.new_conn_username)
+                            .hint_text("admin (optional)")
+                            .margin(Margin::symmetric(6.0, 4.0))
+                            .desired_width(f32::INFINITY),
+                    );
+
+                    columns[1].label(RichText::new("Password").size(11.5));
+                    columns[1].add(
+                        TextEdit::singleline(&mut state.new_conn_password)
+                            .password(true)
+                            .hint_text("password (optional)")
+                            .margin(Margin::symmetric(6.0, 4.0))
+                            .desired_width(f32::INFINITY),
+                    );
+                });
+
+                ui.add_space(4.0);
+                ui.checkbox(
+                    &mut state.new_conn_save_password,
+                    RichText::new("Save password in OS Keychain").size(11.5),
+                );
+
+                ui.add_space(6.0);
+                if state.is_testing_connection {
+                    ui.label(
+                        RichText::new(format!(
+                            "{} Testing connection...",
+                            regular::CIRCLE_HALF
+                        ))
+                        .color(palette.warning_color)
+                        .monospace()
+                        .size(11.5),
+                    );
+                } else if let Some(status) = &state.test_conn_status {
+                    match status {
+                        Ok(msg) => {
+                            ui.label(
+                                RichText::new(format!("{} {msg}", regular::CHECK_CIRCLE))
+                                    .color(palette.success_color)
+                                    .monospace()
+                                    .size(11.5),
+                            );
+                        }
+                        Err(err) => {
+                            ui.label(
+                                RichText::new(format!("{} {err}", regular::WARNING_CIRCLE))
+                                    .color(palette.error_color)
+                                    .monospace()
+                                    .size(11.5),
+                            );
+                        }
+                    }
+                }
+
+                ui.add_space(8.0);
 
                 ui.horizontal(|ui| {
                     if primary_button(
@@ -378,12 +489,28 @@ fn render_modals(
                     )
                     .clicked()
                     {
+                        let effective_uri = state.build_effective_uri();
                         events.push(AppEvent::AddConnection {
                             name: state.new_conn_name.clone(),
-                            uri: state.new_conn_uri.clone(),
+                            uri: effective_uri,
                         });
                         state.show_new_connection_modal = false;
                     }
+
+                    if secondary_button(
+                        ui,
+                        &format!("{} Test Connection", regular::LIGHTNING),
+                        palette.border_color,
+                    )
+                    .clicked()
+                    {
+                        let effective_uri = state.build_effective_uri();
+                        events.push(AppEvent::TestConnection {
+                            name: state.new_conn_name.clone(),
+                            uri: effective_uri,
+                        });
+                    }
+
                     if secondary_button(ui, "Cancel", palette.border_color).clicked() {
                         state.show_new_connection_modal = false;
                     }
@@ -414,7 +541,7 @@ fn render_modals(
                 });
                 ui.add_space(6.0);
                 ui.label("VS Code-inspired MongoDB Desktop Admin Tool built in 100% Rust.");
-                ui.label("Stack: Rust + egui + eframe + egui_dock + egui-phosphor");
+                ui.label("Stack: Rust + egui + eframe + egui_dock + mongodb + tokio");
                 ui.add_space(10.0);
                 if primary_button(ui, "Close", palette.accent_color).clicked() {
                     state.show_about_modal = false;

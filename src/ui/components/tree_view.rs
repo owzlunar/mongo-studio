@@ -14,7 +14,7 @@ pub fn render_connection_tree(
 ) {
     let query = search_filter.trim().to_lowercase();
 
-    for conn in connections.iter_mut() {
+    for (conn_idx, conn) in connections.iter_mut().enumerate() {
         let status_dot_color = match conn.status {
             ConnectionStatus::Connected => palette.success_color,
             ConnectionStatus::Connecting => palette.warning_color,
@@ -28,6 +28,16 @@ pub fn render_connection_tree(
             regular::CARET_RIGHT
         };
 
+        let hover_details = if let Some(err) = &conn.last_error {
+            format!("{} ({})\nError: {err}", conn.status.label(), conn.host)
+        } else {
+            format!(
+                "{} ({}) — Right-click for connection actions",
+                conn.status.label(),
+                conn.host
+            )
+        };
+
         ui.horizontal(|ui| {
             let toggle_resp = ui
                 .selectable_label(
@@ -39,14 +49,60 @@ pub fn render_connection_tree(
                     ))
                     .strong(),
                 )
-                .on_hover_cursor(CursorIcon::PointingHand);
+                .on_hover_cursor(CursorIcon::PointingHand)
+                .on_hover_text(&hover_details);
+
             if toggle_resp.clicked() {
                 conn.expanded = !conn.expanded;
             }
 
+            toggle_resp.context_menu(|ui| {
+                if ui
+                    .button(format!("{} Connect / Reconnect", regular::PLUGS_CONNECTED))
+                    .clicked()
+                {
+                    events.push(AppEvent::ConnectProfile { index: conn_idx });
+                    ui.close_menu();
+                }
+                if conn.status.is_connected()
+                    && ui
+                        .button(format!("{} Disconnect", regular::PLUGS))
+                        .clicked()
+                {
+                    events.push(AppEvent::DisconnectProfile { index: conn_idx });
+                    ui.close_menu();
+                }
+                ui.separator();
+                if ui
+                    .button(
+                        RichText::new(format!("{} Remove Profile", regular::TRASH))
+                            .color(palette.error_color),
+                    )
+                    .clicked()
+                {
+                    events.push(AppEvent::RemoveConnection { index: conn_idx });
+                    ui.close_menu();
+                }
+            });
+
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                ui.label(RichText::new(regular::RECORD).color(status_dot_color).size(11.0))
-                    .on_hover_text(format!("{} ({})", conn.status.label(), conn.host));
+                ui.label(
+                    RichText::new(regular::RECORD)
+                        .color(status_dot_color)
+                        .size(11.0),
+                )
+                .on_hover_text(&hover_details);
+
+                if !conn.status.is_connected()
+                    && conn.status != ConnectionStatus::Connecting
+                    && ui
+                        .small_button(RichText::new(regular::PLUGS).size(11.0))
+                        .on_hover_cursor(CursorIcon::PointingHand)
+                        .on_hover_text(format!("Connect to {}", conn.host))
+                        .clicked()
+                {
+                    events.push(AppEvent::ConnectProfile { index: conn_idx });
+                }
             });
         });
 
