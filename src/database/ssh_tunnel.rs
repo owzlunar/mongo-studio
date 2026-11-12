@@ -7,7 +7,7 @@ use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
@@ -427,7 +427,7 @@ fn spawn_ssh_tunnel_blocking(
     }
 }
 
-fn validate_private_key_file(key_path: &PathBuf) -> AppResult<()> {
+fn validate_private_key_file(key_path: &Path) -> AppResult<()> {
     let metadata = fs::metadata(key_path).map_err(|err| {
         AppError::Connection(format!(
             "SSH private key not accessible at {}: {err}",

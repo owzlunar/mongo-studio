@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 
 use bson::oid::ObjectId;
 use bson::{doc, Bson, DateTime};
-use mongo_studio::core::{AppError, AppState};
+use mongo_studio::core::{AppError, AppResult, AppState};
 use mongo_studio::database::connection::ConnectionClient;
 use mongo_studio::database::{
     CollectionService, ConnectionManager, CreateIndexRequest, DatabaseService, DocumentQueryParams,
@@ -736,6 +736,17 @@ fn document_service_enforces_phase4_offline_guards_and_validates_extended_json()
     ));
 }
 
+fn assert_missing_keyring_behavior(load_res: AppResult<Option<String>>, delete_res: AppResult<()>) {
+    assert!(
+        matches!(load_res, Ok(None) | Err(AppError::Persistence(_))),
+        "expected Ok(None) or Persistence error for missing keyring entry, got {load_res:?}"
+    );
+    assert!(
+        matches!(delete_res, Ok(()) | Err(AppError::Persistence(_))),
+        "expected Ok(()) or Persistence error when keyring unavailable, got {delete_res:?}"
+    );
+}
+
 #[test]
 fn connection_manager_keyring_async_handles_nonexistent_entry_without_panicking() {
     // Arrange
@@ -751,11 +762,7 @@ fn connection_manager_keyring_async_handles_nonexistent_entry_without_panicking(
     ));
 
     // Assert
-    assert!(
-        matches!(load_res, Ok(None) | Err(_)),
-        "expected Ok(None) or Err for missing keyring entry, got {load_res:?}"
-    );
-    assert_eq!(delete_res, Ok(()));
+    assert_missing_keyring_behavior(load_res, delete_res);
 }
 
 #[test]
@@ -2657,6 +2664,37 @@ fn ssh_tunnel_registry_unix_private_key_permission_check_and_closed_port_fail_fa
 }
 
 #[test]
+fn ssh_tunnel_registry_closed_port_fail_fast_across_platforms() {
+    let runtime = build_test_runtime();
+    let registry = SshTunnelRegistry::new();
+    let conn_id = Uuid::new_v4();
+
+    let closed_listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind ephemeral port");
+    let closed_port = closed_listener.local_addr().expect("local_addr").port();
+    drop(closed_listener);
+
+    let closed_port_cfg = SshTunnelConfig {
+        enabled: true,
+        endpoint: format!("127.0.0.1:{closed_port}"),
+        username: "ops".to_string(),
+        auth_method: SshAuthMethod::Password,
+        private_key_path: String::new(),
+        has_saved_secret: false,
+    };
+    let tunnel_err = runtime
+        .block_on(registry.ensure_tunnel_and_rewrite_uri_async(
+            conn_id,
+            "mongodb://127.0.0.1:27017/app".to_string(),
+            closed_port_cfg,
+            "test-secret".to_string(),
+            Duration::from_millis(500),
+        ))
+        .expect_err("closed loopback SSH port must fail");
+    assert!(matches!(tunnel_err, AppError::Connection(_)));
+    assert_eq!(registry.active_local_port(conn_id), None);
+}
+
+#[test]
 fn connection_manager_ssh_keyring_async_handles_nonexistent_entry_without_panicking() {
     let runtime = build_test_runtime();
     let random_conn_id = Uuid::new_v4();
@@ -2668,9 +2706,5 @@ fn connection_manager_ssh_keyring_async_handles_nonexistent_entry_without_panick
         random_conn_id,
     ));
 
-    assert!(
-        matches!(load_res, Ok(None) | Err(_)),
-        "expected Ok(None) or Err for missing SSH keyring entry, got {load_res:?}"
-    );
-    assert_eq!(delete_res, Ok(()));
+    assert_missing_keyring_behavior(load_res, delete_res);
 }
