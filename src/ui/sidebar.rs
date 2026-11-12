@@ -51,14 +51,13 @@ pub fn render_sidebar(
                                 events.push(AppEvent::RefreshConnections);
                             }
 
-                            let add_btn =
-                                egui::Button::new(RichText::new(regular::PLUS).strong().size(13.0))
-                                    .min_size(Vec2::new(22.0, 22.0));
-                            if ui
-                                .add(add_btn)
-                                .on_hover_cursor(CursorIcon::PointingHand)
-                                .on_hover_text("Add Connection")
-                                .clicked()
+                            if primary_button(
+                                ui,
+                                &format!("{} Add Connection", regular::PLUS),
+                                palette.accent_color,
+                            )
+                            .on_hover_text("Add MongoDB Connection")
+                            .clicked()
                             {
                                 events.push(AppEvent::OpenNewConnectionModal);
                             }
@@ -89,17 +88,6 @@ pub fn render_sidebar(
                                 palette,
                                 events,
                             );
-
-                            ui.add_space(12.0);
-                            if primary_button(
-                                ui,
-                                &format!("{} Add Connection", regular::PLUS),
-                                palette.accent_color,
-                            )
-                            .clicked()
-                            {
-                                events.push(AppEvent::OpenNewConnectionModal);
-                            }
                         });
                 }
                 ActivityView::SavedQueries => {

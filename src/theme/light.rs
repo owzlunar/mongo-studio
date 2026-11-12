@@ -23,7 +23,8 @@ pub const fn light_palette() -> ThemePalette {
         success_color: Color32::from_rgb(22, 130, 93),
         warning_color: Color32::from_rgb(180, 120, 0),
         error_color: Color32::from_rgb(211, 47, 47),
-        muted_text: Color32::from_rgb(110, 110, 110),
+        text_primary: Color32::from_rgb(28, 28, 28),
+        muted_text: Color32::from_rgb(100, 100, 100),
     }
 }
 
@@ -34,25 +35,33 @@ pub fn apply_light_theme(ctx: &Context) -> ThemePalette {
 
     visuals.panel_fill = p.editor_bg;
     visuals.window_fill = p.popup_bg;
-    visuals.extreme_bg_color = Color32::from_rgb(255, 255, 255);
+    visuals.extreme_bg_color = Color32::from_rgb(232, 232, 234);
     visuals.faint_bg_color = Color32::from_rgb(245, 245, 245);
     visuals.selection.bg_fill = Color32::from_rgb(173, 214, 255);
     visuals.selection.stroke = Stroke::new(1.0_f32, Color32::from_rgb(0, 90, 158));
 
     visuals.widgets.noninteractive.bg_fill = p.popup_bg;
     visuals.widgets.noninteractive.bg_stroke = Stroke::new(1.0_f32, p.border_color);
+    visuals.widgets.noninteractive.fg_stroke = Stroke::new(1.0_f32, p.text_primary);
 
-    visuals.widgets.inactive.bg_fill = Color32::from_rgb(236, 238, 242);
+    visuals.widgets.inactive.bg_fill = Color32::from_rgb(198, 202, 208);
     visuals.widgets.inactive.bg_stroke = Stroke::new(1.0_f32, Color32::from_rgb(200, 204, 212));
     visuals.widgets.inactive.rounding = Rounding::same(3.0);
+    visuals.widgets.inactive.fg_stroke = Stroke::new(1.0_f32, p.text_primary);
 
     visuals.widgets.hovered.bg_fill = Color32::from_rgb(214, 232, 255);
     visuals.widgets.hovered.bg_stroke = Stroke::new(1.0_f32, p.accent_color);
     visuals.widgets.hovered.rounding = Rounding::same(3.0);
+    visuals.widgets.hovered.fg_stroke = Stroke::new(1.0_f32, Color32::from_rgb(10, 10, 10));
+
+    visuals.widgets.active.bg_fill = p.accent_color;
+    visuals.widgets.active.rounding = Rounding::same(3.0);
+    visuals.widgets.active.fg_stroke = Stroke::new(1.0_f32, Color32::WHITE);
 
     visuals.widgets.open.bg_fill = Color32::from_rgb(214, 232, 255);
     visuals.widgets.open.bg_stroke = Stroke::new(1.0_f32, p.accent_color);
     visuals.widgets.open.rounding = Rounding::same(3.0);
+    visuals.widgets.open.fg_stroke = Stroke::new(1.0_f32, Color32::from_rgb(10, 10, 10));
 
     visuals.window_rounding = Rounding::same(5.0);
     visuals.menu_rounding = Rounding::same(4.0);

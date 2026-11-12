@@ -7,7 +7,7 @@ use uuid::Uuid;
 
 use crate::core::{AppError, AppResult};
 use crate::database::connection::ConnectionClient;
-use crate::models::ConnectionConfig;
+use crate::models::{CollectionInfo, ConnectionConfig};
 
 const KEYRING_SERVICE: &str = "com.mongostudio.MongoStudio";
 
@@ -40,7 +40,7 @@ impl ConnectionManager {
         runtime.block_on(ConnectionClient::ping_uri(uri, timeout))
     }
 
-    /// Synchronously connects to a live MongoDB server and introspects its databases and collections.
+    /// Synchronously connects to a live MongoDB server and introspects its databases, lazy collection stubs, and admin users.
     ///
     /// # Errors
     ///
@@ -57,6 +57,28 @@ impl ConnectionManager {
                 AppError::Connection(format!("failed to build async runtime: {err}"))
             })?;
         runtime.block_on(ConnectionClient::connect_and_introspect(name, uri, timeout))
+    }
+
+    /// Synchronously introspects a single collection on demand (fetching up to 50 documents, indexes, and schema).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AppError::Connection`] if the runtime cannot be created or introspection fails.
+    pub fn load_collection_blocking(
+        uri: &str,
+        db_name: &str,
+        coll_name: &str,
+        timeout: Duration,
+    ) -> AppResult<CollectionInfo> {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|err| {
+                AppError::Connection(format!("failed to build async runtime: {err}"))
+            })?;
+        runtime.block_on(ConnectionClient::introspect_single_collection(
+            uri, db_name, coll_name, timeout,
+        ))
     }
 
     /// Saves a connection password in the OS credential keyring.
@@ -107,7 +129,15 @@ impl ConnectionManager {
                 AppError::Persistence(format!("failed to create config directory: {err}"))
             })?;
         }
-        let serialized = serde_json::to_string_pretty(connections).map_err(|err| {
+        let sanitized: Vec<ConnectionConfig> = connections
+            .iter()
+            .cloned()
+            .map(|mut c| {
+                c.clear_session_password();
+                c
+            })
+            .collect();
+        let serialized = serde_json::to_string_pretty(&sanitized).map_err(|err| {
             AppError::Persistence(format!("failed to serialize connections: {err}"))
         })?;
         fs::write(path, serialized)

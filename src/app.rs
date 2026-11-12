@@ -6,8 +6,13 @@ use egui::{Context, FontData, FontDefinitions, FontFamily, Key};
 
 use crate::core::events::AppEvent;
 use crate::core::state::AppState;
-use crate::database::{connection::ConnectionClient, ConnectionManager};
-use crate::models::{ConnectionConfig, ConnectionStatus, DocumentRow};
+use crate::database::{
+    connection::ConnectionClient, ConnectionManager, DatabaseService, UserService,
+};
+use crate::models::{
+    CollectionInfo, ConnectionConfig, ConnectionStatus, DatabaseInfo, DocumentRow, MongoUser,
+    UserRole,
+};
 use crate::theme::{apply_theme, ThemePalette};
 use crate::ui::layout::render_main_layout;
 use crate::workspace::{LogLevel, WorkspacePersistence};
@@ -118,7 +123,7 @@ impl MongoStudioApp {
                     conn_id,
                     name,
                     uri,
-                    result: Ok(conn.databases),
+                    result: Ok((conn.databases, conn.users, conn.is_admin)),
                     latency_ms: Some(elapsed_ms),
                 },
                 Err(err) => AppEvent::ConnectionResult {
@@ -146,6 +151,35 @@ impl MongoStudioApp {
         });
     }
 
+    fn spawn_load_collection_task(
+        &self,
+        ctx: &Context,
+        connection_name: String,
+        uri: String,
+        database: String,
+        collection: String,
+    ) {
+        let tx = self.bg_tx.clone();
+        let ctx_clone = ctx.clone();
+        self.runtime.spawn(async move {
+            let result = ConnectionClient::introspect_single_collection(
+                &uri,
+                &database,
+                &collection,
+                DEFAULT_CONNECT_TIMEOUT,
+            )
+            .await
+            .map_err(|e| e.to_string());
+            let _ = tx.send(AppEvent::CollectionLoaded {
+                connection_name,
+                database,
+                collection,
+                result,
+            });
+            ctx_clone.request_repaint();
+        });
+    }
+
     pub fn process_events(&mut self, ctx: &Context, events: Vec<AppEvent>) {
         for event in events {
             match event {
@@ -156,12 +190,540 @@ impl MongoStudioApp {
                 } => {
                     self.state
                         .open_or_focus_collection(&connection_name, &database, &collection);
+
+                    let needs_load = self
+                        .state
+                        .connections
+                        .iter()
+                        .find(|c| c.name == connection_name)
+                        .and_then(|c| {
+                            c.databases
+                                .iter()
+                                .find(|db| db.name == database)
+                                .and_then(|db| {
+                                    db.collections.iter().find(|coll| coll.name == collection)
+                                })
+                                .map(|coll| (!coll.loaded, c.uri.clone()))
+                        });
+
+                    if let Some((true, uri)) = needs_load {
+                        self.state.bottom_panel.push_log(
+                            LogLevel::Info,
+                            "Explorer",
+                            format!("Lazy-loading collection {database}.{collection}..."),
+                        );
+                        self.spawn_load_collection_task(
+                            ctx,
+                            connection_name,
+                            uri,
+                            database,
+                            collection,
+                        );
+                    } else {
+                        self.state.bottom_panel.push_log(
+                            LogLevel::Info,
+                            "Workspace",
+                            format!("Opened collection tab: {database}.{collection}"),
+                        );
+                    }
+                }
+                AppEvent::RefreshCollection {
+                    connection_name,
+                    database,
+                    collection,
+                } => {
+                    if let Some(conn) = self
+                        .state
+                        .connections
+                        .iter()
+                        .find(|c| c.name == connection_name)
+                    {
+                        let uri = conn.uri.clone();
+                        self.state.bottom_panel.push_log(
+                            LogLevel::Info,
+                            "Explorer",
+                            format!("Refreshing collection {database}.{collection}..."),
+                        );
+                        self.spawn_load_collection_task(
+                            ctx,
+                            connection_name,
+                            uri,
+                            database,
+                            collection,
+                        );
+                    }
+                }
+                AppEvent::CollectionLoaded {
+                    connection_name,
+                    database,
+                    collection,
+                    result,
+                } => match result {
+                    Ok(loaded_coll) => {
+                        let doc_count = loaded_coll.stats.document_count;
+                        if let Some(conn) = self
+                            .state
+                            .connections
+                            .iter_mut()
+                            .find(|c| c.name == connection_name)
+                        {
+                            if let Some(db) =
+                                conn.databases.iter_mut().find(|d| d.name == database)
+                            {
+                                if let Some(slot) =
+                                    db.collections.iter_mut().find(|c| c.name == collection)
+                                {
+                                    *slot = loaded_coll;
+                                }
+                            }
+                        }
+                        self.state.bottom_panel.push_log(
+                            LogLevel::Success,
+                            "Explorer",
+                            format!(
+                                "Loaded {database}.{collection} ({doc_count} total documents)"
+                            ),
+                        );
+                    }
+                    Err(err) => {
+                        self.state.bottom_panel.push_log(
+                            LogLevel::Error,
+                            "Explorer",
+                            format!("Failed to load {database}.{collection}: {err}"),
+                        );
+                    }
+                },
+                AppEvent::OpenUserTab {
+                    connection_name,
+                    username,
+                } => {
+                    self.state.open_or_focus_user(&connection_name, &username);
                     self.state.bottom_panel.push_log(
                         LogLevel::Info,
-                        "Workspace",
-                        format!("Opened collection tab: {database}.{collection}"),
+                        "UserManager",
+                        format!("Opened user permissions inspector for '{username}'"),
                     );
                 }
+                AppEvent::OpenCreateDatabaseModal { connection_index } => {
+                    self.state.create_db_conn_idx = connection_index;
+                    self.state.new_db_name.clear();
+                    self.state.new_db_collection = "items".to_string();
+                    self.state.show_create_db_modal = true;
+                }
+                AppEvent::CreateDatabase {
+                    connection_index,
+                    db_name,
+                    collection_name,
+                } => {
+                    let trimmed_db = db_name.trim().to_string();
+                    let trimmed_coll = collection_name.trim().to_string();
+                    if trimmed_db.is_empty() || trimmed_coll.is_empty() {
+                        continue;
+                    }
+
+                    if let Some(conn) = self.state.connections.get_mut(connection_index) {
+                        if let Some(existing_db) =
+                            conn.databases.iter_mut().find(|d| d.name == trimmed_db)
+                        {
+                            existing_db.expanded = true;
+                            if !existing_db
+                                .collections
+                                .iter()
+                                .any(|c| c.name == trimmed_coll)
+                            {
+                                existing_db
+                                    .collections
+                                    .push(CollectionInfo::new_lazy_stub(&trimmed_db, &trimmed_coll));
+                            }
+                        } else {
+                            let mut new_db = DatabaseInfo::new(&trimmed_db, true, [&trimmed_coll]);
+                            if let Some(first_coll) = new_db.collections.first_mut() {
+                                first_coll.documents.clear();
+                                first_coll.stats.document_count = 0;
+                                first_coll.loaded = true;
+                            }
+                            conn.databases.push(new_db);
+                            conn.databases.sort_by(|a, b| a.name.cmp(&b.name));
+                        }
+
+                        let conn_name = conn.name.clone();
+                        let uri = conn.uri.clone();
+                        let _ = ConnectionManager::save_profiles(&self.state.connections);
+
+                        self.state
+                            .open_or_focus_collection(&conn_name, &trimmed_db, &trimmed_coll);
+
+                        self.state.bottom_panel.push_log(
+                            LogLevel::Success,
+                            "DatabaseService",
+                            format!(
+                                "Created database '{trimmed_db}' with initial collection '{trimmed_coll}'"
+                            ),
+                        );
+
+                        let tx = self.bg_tx.clone();
+                        let ctx_clone = ctx.clone();
+                        self.runtime.spawn(async move {
+                            if DatabaseService::create_database(
+                                &uri,
+                                &trimmed_db,
+                                &trimmed_coll,
+                                DEFAULT_CONNECT_TIMEOUT,
+                            )
+                            .await
+                            .is_ok()
+                            {
+                                if let Ok(loaded) = ConnectionClient::introspect_single_collection(
+                                    &uri,
+                                    &trimmed_db,
+                                    &trimmed_coll,
+                                    DEFAULT_CONNECT_TIMEOUT,
+                                )
+                                .await
+                                {
+                                    let _ = tx.send(AppEvent::CollectionLoaded {
+                                        connection_name: conn_name,
+                                        database: trimmed_db,
+                                        collection: trimmed_coll,
+                                        result: Ok(loaded),
+                                    });
+                                    ctx_clone.request_repaint();
+                                }
+                            }
+                        });
+                    }
+                }
+                AppEvent::OpenCreateUserModal { connection_index } => {
+                    self.state.create_user_conn_idx = connection_index;
+                    self.state.new_user_username.clear();
+                    self.state.new_user_password.clear();
+                    self.state.new_user_db = "admin".to_string();
+                    self.state.new_user_role = "readWrite".to_string();
+                    self.state.show_create_user_modal = true;
+                }
+                AppEvent::CreateUser {
+                    connection_index,
+                    username,
+                    password,
+                    initial_db,
+                    initial_role,
+                } => {
+                    let trimmed = username.trim().to_string();
+                    if trimmed.eq_ignore_ascii_case("admin") {
+                        self.state.bottom_panel.push_log(
+                            LogLevel::Error,
+                            "UserManager",
+                            "Refused to create or overwrite protected 'admin' user.",
+                        );
+                        continue;
+                    }
+                    if let Some(conn) = self.state.connections.get_mut(connection_index) {
+                        let role = UserRole::new(&initial_role, &initial_db);
+                        let new_user = MongoUser {
+                            id: format!("admin.{trimmed}"),
+                            username: trimmed.clone(),
+                            db: "admin".to_string(),
+                            roles: vec![role.clone()],
+                        };
+                        conn.users.retain(|u| u.username != trimmed);
+                        conn.users.push(new_user);
+                        conn.users_expanded = true;
+
+                        let conn_name = conn.name.clone();
+                        let uri = conn.uri.clone();
+                        self.state.open_or_focus_user(&conn_name, &trimmed);
+
+                        self.state.bottom_panel.push_log(
+                            LogLevel::Success,
+                            "UserManager",
+                            format!(
+                                "Created user '{trimmed}' with role '{initial_role}' on '{initial_db}'"
+                            ),
+                        );
+
+                        let tx = self.bg_tx.clone();
+                        let ctx_clone = ctx.clone();
+                        self.runtime.spawn(async move {
+                            let res = UserService::create_user(
+                                &uri,
+                                &trimmed,
+                                &password,
+                                &[role],
+                                DEFAULT_CONNECT_TIMEOUT,
+                            )
+                            .await;
+                            if res.is_ok() {
+                                if let Ok(users) =
+                                    UserService::list_users_uri(&uri, DEFAULT_CONNECT_TIMEOUT).await
+                                {
+                                    let _ = tx.send(AppEvent::UserOperationResult {
+                                        connection_name: conn_name,
+                                        message: format!(
+                                            "Created MongoDB user '{trimmed}' on server"
+                                        ),
+                                        result: Ok(users),
+                                    });
+                                    ctx_clone.request_repaint();
+                                }
+                            }
+                        });
+                    }
+                }
+                AppEvent::GrantUserRole {
+                    connection_name,
+                    username,
+                    db,
+                    role,
+                } => {
+                    if username.trim().eq_ignore_ascii_case("admin") {
+                        self.state.bottom_panel.push_log(
+                            LogLevel::Error,
+                            "UserManager",
+                            "Cannot modify roles of protected 'admin' user.",
+                        );
+                        continue;
+                    }
+                    if let Some(conn) = self
+                        .state
+                        .connections
+                        .iter_mut()
+                        .find(|c| c.name == connection_name)
+                    {
+                        if let Some(user) = conn.users.iter_mut().find(|u| u.username == username) {
+                            let new_role = UserRole::new(&role, &db);
+                            if !user.roles.contains(&new_role) {
+                                user.roles.push(new_role);
+                            }
+                            let updated_roles = user.roles.clone();
+                            let user_db = user.db.clone();
+                            let uri = conn.uri.clone();
+                            let conn_name = conn.name.clone();
+                            let uname = username.clone();
+
+                            self.state.bottom_panel.push_log(
+                                LogLevel::Success,
+                                "UserManager",
+                                format!("Granted role '{role}' on '{db}' to user '{username}'"),
+                            );
+
+                            let tx = self.bg_tx.clone();
+                            let ctx_clone = ctx.clone();
+                            self.runtime.spawn(async move {
+                                if UserService::update_user_roles(
+                                    &uri,
+                                    &user_db,
+                                    &uname,
+                                    &updated_roles,
+                                    DEFAULT_CONNECT_TIMEOUT,
+                                )
+                                .await
+                                .is_ok()
+                                {
+                                    if let Ok(users) =
+                                        UserService::list_users_uri(&uri, DEFAULT_CONNECT_TIMEOUT)
+                                            .await
+                                    {
+                                        let _ = tx.send(AppEvent::UserOperationResult {
+                                            connection_name: conn_name,
+                                            message: format!(
+                                                "Granted role '{role}' on '{db}' to '{uname}'"
+                                            ),
+                                            result: Ok(users),
+                                        });
+                                        ctx_clone.request_repaint();
+                                    }
+                                }
+                            });
+                        }
+                    }
+                }
+                AppEvent::RevokeUserRole {
+                    connection_name,
+                    username,
+                    db,
+                    role,
+                } => {
+                    if username.trim().eq_ignore_ascii_case("admin") {
+                        self.state.bottom_panel.push_log(
+                            LogLevel::Error,
+                            "UserManager",
+                            "Cannot revoke roles from protected 'admin' user.",
+                        );
+                        continue;
+                    }
+                    if let Some(conn) = self
+                        .state
+                        .connections
+                        .iter_mut()
+                        .find(|c| c.name == connection_name)
+                    {
+                        if let Some(user) = conn.users.iter_mut().find(|u| u.username == username) {
+                            user.roles.retain(|r| !(r.db == db && r.role == role));
+                            let updated_roles = user.roles.clone();
+                            let user_db = user.db.clone();
+                            let uri = conn.uri.clone();
+                            let conn_name = conn.name.clone();
+                            let uname = username.clone();
+
+                            self.state.bottom_panel.push_log(
+                                LogLevel::Info,
+                                "UserManager",
+                                format!("Revoked role '{role}' on '{db}' from user '{username}'"),
+                            );
+
+                            let tx = self.bg_tx.clone();
+                            let ctx_clone = ctx.clone();
+                            self.runtime.spawn(async move {
+                                if UserService::update_user_roles(
+                                    &uri,
+                                    &user_db,
+                                    &uname,
+                                    &updated_roles,
+                                    DEFAULT_CONNECT_TIMEOUT,
+                                )
+                                .await
+                                .is_ok()
+                                {
+                                    if let Ok(users) =
+                                        UserService::list_users_uri(&uri, DEFAULT_CONNECT_TIMEOUT)
+                                            .await
+                                    {
+                                        let _ = tx.send(AppEvent::UserOperationResult {
+                                            connection_name: conn_name,
+                                            message: format!(
+                                                "Revoked role '{role}' on '{db}' from '{uname}'"
+                                            ),
+                                            result: Ok(users),
+                                        });
+                                        ctx_clone.request_repaint();
+                                    }
+                                }
+                            });
+                        }
+                    }
+                }
+                AppEvent::ChangeUserPassword {
+                    connection_name,
+                    username,
+                    new_password,
+                } => {
+                    if username.trim().eq_ignore_ascii_case("admin") {
+                        self.state.bottom_panel.push_log(
+                            LogLevel::Error,
+                            "UserManager",
+                            "Cannot change password of protected 'admin' user.",
+                        );
+                        continue;
+                    }
+                    if let Some(conn) = self
+                        .state
+                        .connections
+                        .iter()
+                        .find(|c| c.name == connection_name)
+                    {
+                        let uri = conn.uri.clone();
+                        let user_db = conn
+                            .users
+                            .iter()
+                            .find(|u| u.username == username)
+                            .map_or_else(|| "admin".to_string(), |u| u.db.clone());
+                        let uname = username.clone();
+                        self.runtime.spawn(async move {
+                            let _ = UserService::change_user_password(
+                                &uri,
+                                &user_db,
+                                &uname,
+                                &new_password,
+                                DEFAULT_CONNECT_TIMEOUT,
+                            )
+                            .await;
+                        });
+                        self.state.bottom_panel.push_log(
+                            LogLevel::Success,
+                            "UserManager",
+                            format!("Updated password for user '{username}'"),
+                        );
+                    }
+                }
+                AppEvent::RequestDeleteUser {
+                    connection_index,
+                    username,
+                } => {
+                    if username.trim().eq_ignore_ascii_case("admin") {
+                        self.state.bottom_panel.push_log(
+                            LogLevel::Error,
+                            "UserManager",
+                            "System 'admin' user is protected and cannot be deleted.",
+                        );
+                    } else {
+                        self.state.pending_delete_user = Some((connection_index, username));
+                    }
+                }
+                AppEvent::ConfirmDeleteUser {
+                    connection_index,
+                    username,
+                } => {
+                    if username.trim().eq_ignore_ascii_case("admin") {
+                        self.state.bottom_panel.push_log(
+                            LogLevel::Error,
+                            "UserManager",
+                            "System 'admin' user is protected and cannot be deleted.",
+                        );
+                        continue;
+                    }
+                    if let Some(conn) = self.state.connections.get_mut(connection_index) {
+                        let user_db = conn
+                            .users
+                            .iter()
+                            .find(|u| u.username == username)
+                            .map_or_else(|| "admin".to_string(), |u| u.db.clone());
+                        conn.users.retain(|u| u.username != username);
+
+                        let uri = conn.uri.clone();
+                        let uname = username.clone();
+                        self.runtime.spawn(async move {
+                            let _ = UserService::drop_user(
+                                &uri,
+                                &user_db,
+                                &uname,
+                                DEFAULT_CONNECT_TIMEOUT,
+                            )
+                            .await;
+                        });
+
+                        self.state.bottom_panel.push_log(
+                            LogLevel::Info,
+                            "UserManager",
+                            format!("Deleted MongoDB user '{username}'"),
+                        );
+                    }
+                }
+                AppEvent::UserOperationResult {
+                    connection_name,
+                    message,
+                    result,
+                } => match result {
+                    Ok(users) => {
+                        if let Some(conn) = self
+                            .state
+                            .connections
+                            .iter_mut()
+                            .find(|c| c.name == connection_name)
+                        {
+                            conn.users = users;
+                        }
+                        self.state
+                            .bottom_panel
+                            .push_log(LogLevel::Success, "UserManager", message);
+                    }
+                    Err(err) => {
+                        self.state.bottom_panel.push_log(
+                            LogLevel::Error,
+                            "UserManager",
+                            format!("{message}: {err}"),
+                        );
+                    }
+                },
                 AppEvent::SelectActivity(view) => {
                     if self.state.active_activity == view {
                         self.state.sidebar_visible = !self.state.sidebar_visible;
@@ -192,9 +754,36 @@ impl MongoStudioApp {
                     );
                 }
                 AppEvent::OpenNewConnectionModal => {
+                    self.state.editing_connection_idx = None;
                     self.state.show_new_connection_modal = true;
                     self.state.test_conn_status = None;
                     self.state.is_testing_connection = false;
+                }
+                AppEvent::OpenEditConnectionModal { index } => {
+                    if let Some(conn) = self.state.connections.get(index) {
+                        let (base_uri, uri_user, uri_pass) =
+                            ConnectionConfig::split_uri_credentials(&conn.uri);
+                        let effective_user = if conn.username.is_empty() {
+                            uri_user
+                        } else {
+                            conn.username.clone()
+                        };
+                        let effective_pass = if conn.has_saved_password {
+                            ConnectionManager::load_password_from_keyring(conn.id)
+                                .unwrap_or(uri_pass)
+                        } else {
+                            uri_pass
+                        };
+                        self.state.editing_connection_idx = Some(index);
+                        self.state.new_conn_name = conn.name.clone();
+                        self.state.new_conn_uri = base_uri;
+                        self.state.new_conn_username = effective_user;
+                        self.state.new_conn_password = effective_pass;
+                        self.state.new_conn_save_password = conn.has_saved_password;
+                        self.state.test_conn_status = None;
+                        self.state.is_testing_connection = false;
+                        self.state.show_new_connection_modal = true;
+                    }
                 }
                 AppEvent::TestConnection { name: _, uri } => {
                     self.state.is_testing_connection = true;
@@ -269,9 +858,113 @@ impl MongoStudioApp {
                         }
                     }
                 }
+                AppEvent::UpdateConnection { index, name, uri } => {
+                    let clamped_name = ConnectionConfig::clamp_profile_name(&name);
+                    let trimmed_uri = uri.trim();
+                    if clamped_name.is_empty() || trimmed_uri.is_empty() {
+                        self.state.bottom_panel.push_log(
+                            LogLevel::Error,
+                            "ConnectionManager",
+                            "Connection name and URI must not be empty.",
+                        );
+                        continue;
+                    }
+
+                    if let Some(conn) = self.state.connections.get_mut(index) {
+                        let (_base_uri, uri_user, uri_pass) =
+                            ConnectionConfig::split_uri_credentials(trimmed_uri);
+                        conn.name = clamped_name;
+                        conn.uri = trimmed_uri.to_string();
+                        conn.host = ConnectionConfig::extract_display_host(trimmed_uri);
+                        conn.username = uri_user;
+                        conn.requires_auth = !conn.username.is_empty() || !uri_pass.is_empty();
+                        conn.status = ConnectionStatus::Connecting;
+                        conn.expanded = false;
+                        conn.last_error = None;
+
+                        if self.state.new_conn_save_password
+                            && !self.state.new_conn_password.is_empty()
+                        {
+                            let _ = ConnectionManager::save_password_to_keyring(
+                                conn.id,
+                                &self.state.new_conn_password,
+                            );
+                            conn.has_saved_password = true;
+                        } else if !self.state.new_conn_save_password && conn.has_saved_password {
+                            ConnectionManager::delete_password_from_keyring(conn.id);
+                            conn.has_saved_password = false;
+                        }
+
+                        let conn_id = conn.id;
+                        let conn_name = conn.name.clone();
+                        let conn_uri = conn.uri.clone();
+                        let redacted = ConnectionConfig::redact_uri(&conn_uri);
+                        self.state.active_connection_idx = index;
+
+                        let _ = ConnectionManager::save_profiles(&self.state.connections);
+
+                        self.state.bottom_panel.push_log(
+                            LogLevel::Info,
+                            "ConnectionManager",
+                            format!("Updated profile '{conn_name}' ({redacted}), reconnecting..."),
+                        );
+
+                        self.spawn_connect_task(ctx, conn_id, conn_name, conn_uri);
+                    }
+                }
                 AppEvent::ConnectProfile { index } => {
                     if let Some(conn) = self.state.connections.get_mut(index) {
+                        if conn.has_saved_password
+                            && ConnectionConfig::split_uri_credentials(&conn.uri)
+                                .2
+                                .is_empty()
+                        {
+                            if let Some(saved_pw) =
+                                ConnectionManager::load_password_from_keyring(conn.id)
+                            {
+                                let (base_uri, uri_user, _) =
+                                    ConnectionConfig::split_uri_credentials(&conn.uri);
+                                let user = if conn.username.is_empty() {
+                                    uri_user
+                                } else {
+                                    conn.username.clone()
+                                };
+                                conn.uri =
+                                    ConnectionConfig::normalize_uri(&base_uri, &user, &saved_pw);
+                            }
+                        }
+
+                        if conn.needs_auth_prompt() {
+                            let (base_uri, uri_user, _) =
+                                ConnectionConfig::split_uri_credentials(&conn.uri);
+                            let effective_user = if conn.username.is_empty() {
+                                uri_user
+                            } else {
+                                conn.username.clone()
+                            };
+                            let conn_name = conn.name.clone();
+                            self.state.editing_connection_idx = Some(index);
+                            self.state.new_conn_name = conn_name.clone();
+                            self.state.new_conn_uri = base_uri;
+                            self.state.new_conn_username = effective_user;
+                            self.state.new_conn_password.clear();
+                            self.state.new_conn_save_password = false;
+                            self.state.test_conn_status = None;
+                            self.state.is_testing_connection = false;
+                            self.state.show_new_connection_modal = true;
+
+                            self.state.bottom_panel.push_log(
+                                LogLevel::Info,
+                                "ConnectionManager",
+                                format!(
+                                    "Authentication required for '{conn_name}' — please enter username and password."
+                                ),
+                            );
+                            continue;
+                        }
+
                         conn.status = ConnectionStatus::Connecting;
+                        conn.expanded = false;
                         conn.last_error = None;
                         let conn_id = conn.id;
                         let conn_name = conn.name.clone();
@@ -290,7 +983,11 @@ impl MongoStudioApp {
                 AppEvent::DisconnectProfile { index } => {
                     if let Some(conn) = self.state.connections.get_mut(index) {
                         conn.status = ConnectionStatus::Disconnected;
+                        conn.expanded = false;
                         conn.last_error = None;
+                        if !conn.has_saved_password {
+                            conn.clear_session_password();
+                        }
                         let name = conn.name.clone();
                         let _ = ConnectionManager::save_profiles(&self.state.connections);
                         self.state.bottom_panel.push_log(
@@ -332,41 +1029,36 @@ impl MongoStudioApp {
                         .find(|c| c.id == conn_id || (c.name == name && c.uri == uri))
                     {
                         match result {
-                            Ok(dbs) => {
+                            Ok((dbs, users, is_admin)) => {
                                 let db_count = dbs.len();
-                                let first_db_coll = dbs.iter().find_map(|db| {
-                                    db.collections
-                                        .first()
-                                        .map(|coll| (db.name.clone(), coll.name.clone()))
-                                });
-
+                                let user_count = users.len();
                                 conn.status = ConnectionStatus::Connected;
                                 conn.databases = dbs;
+                                conn.users = users;
+                                conn.is_admin = is_admin;
                                 conn.expanded = true;
                                 conn.last_error = None;
-
-                                if let Some((db_name, coll_name)) = first_db_coll {
-                                    self.state.open_or_focus_collection(
-                                        &name,
-                                        &db_name,
-                                        &coll_name,
-                                    );
-                                }
 
                                 let _ = ConnectionManager::save_profiles(&self.state.connections);
                                 let latency_note = latency_ms
                                     .map(|ms| format!(" in {ms:.1} ms"))
                                     .unwrap_or_default();
+                                let admin_note = if is_admin {
+                                    format!(", {user_count} user(s) loaded")
+                                } else {
+                                    String::new()
+                                };
                                 self.state.bottom_panel.push_log(
                                     LogLevel::Success,
                                     "ConnectionManager",
                                     format!(
-                                        "Connected to '{name}' ({redacted}){latency_note} — discovered {db_count} database(s)"
+                                        "Connected to '{name}' ({redacted}){latency_note} — discovered {db_count} database(s){admin_note}"
                                     ),
                                 );
                             }
                             Err(err) => {
                                 conn.status = ConnectionStatus::Error;
+                                conn.expanded = false;
                                 conn.last_error = Some(err.clone());
                                 let _ = ConnectionManager::save_profiles(&self.state.connections);
                                 self.state.bottom_panel.push_log(

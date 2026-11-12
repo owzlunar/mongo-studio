@@ -1,11 +1,13 @@
 use egui::{
-    Context, CursorIcon, Frame, Image, Margin, RichText, ScrollArea, Stroke, TextEdit, Vec2, Window,
+    ComboBox, Context, CursorIcon, Frame, Image, Margin, RichText, ScrollArea, Stroke, TextEdit,
+    Vec2, Window,
 };
 use egui_dock::{DockArea, Style};
 use egui_phosphor::regular;
 
 use crate::core::events::AppEvent;
 use crate::core::state::AppState;
+use crate::models::{ConnectionConfig, UserRole};
 use crate::theme::{ThemeMode, ThemePalette};
 use crate::ui::activity_bar::render_activity_bar;
 use crate::ui::command_palette::render_command_palette;
@@ -388,21 +390,32 @@ fn render_modals(
             .stroke(Stroke::new(1.5_f32, palette.popup_border))
             .inner_margin(Margin::same(14.0));
 
-        Window::new("Add MongoDB Connection")
+        let is_editing = state.editing_connection_idx.is_some();
+        let modal_title = if is_editing {
+            "Edit MongoDB Connection"
+        } else {
+            "Add MongoDB Connection"
+        };
+
+        Window::new(modal_title)
             .collapsible(false)
             .resizable(false)
             .frame(modal_frame)
             .fixed_size([460.0, 310.0])
             .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
             .show(ctx, |ui| {
-                ui.label(RichText::new("Connection Profile Name").strong());
+                ui.label(RichText::new("Connection Profile Name (max 30 chars)").strong());
                 ui.add(
                     TextEdit::singleline(&mut state.new_conn_name)
+                        .char_limit(ConnectionConfig::MAX_PROFILE_NAME_LEN)
                         .hint_text("e.g. LAN MongoDB Server")
                         .margin(Margin::symmetric(6.0, 4.0))
                         .min_size(Vec2::new(200.0, 24.0))
                         .desired_width(f32::INFINITY),
                 );
+                if state.new_conn_name.chars().count() > ConnectionConfig::MAX_PROFILE_NAME_LEN {
+                    state.new_conn_name = ConnectionConfig::clamp_profile_name(&state.new_conn_name);
+                }
                 ui.add_space(6.0);
 
                 ui.label(RichText::new("Host or MongoDB Connection URI").strong());
@@ -482,18 +495,26 @@ fn render_modals(
                 ui.add_space(8.0);
 
                 ui.horizontal(|ui| {
-                    if primary_button(
-                        ui,
-                        &format!("{} Connect & Save", regular::PLUGS_CONNECTED),
-                        palette.accent_color,
-                    )
-                    .clicked()
-                    {
+                    let submit_label = if is_editing {
+                        format!("{} Save & Reconnect", regular::FLOPPY_DISK)
+                    } else {
+                        format!("{} Connect & Save", regular::PLUGS_CONNECTED)
+                    };
+
+                    if primary_button(ui, &submit_label, palette.accent_color).clicked() {
                         let effective_uri = state.build_effective_uri();
-                        events.push(AppEvent::AddConnection {
-                            name: state.new_conn_name.clone(),
-                            uri: effective_uri,
-                        });
+                        if let Some(edit_idx) = state.editing_connection_idx.take() {
+                            events.push(AppEvent::UpdateConnection {
+                                index: edit_idx,
+                                name: state.new_conn_name.clone(),
+                                uri: effective_uri,
+                            });
+                        } else {
+                            events.push(AppEvent::AddConnection {
+                                name: state.new_conn_name.clone(),
+                                uri: effective_uri,
+                            });
+                        }
                         state.show_new_connection_modal = false;
                     }
 
@@ -512,7 +533,242 @@ fn render_modals(
                     }
 
                     if secondary_button(ui, "Cancel", palette.border_color).clicked() {
+                        state.editing_connection_idx = None;
                         state.show_new_connection_modal = false;
+                    }
+                });
+            });
+    }
+
+    if state.show_create_db_modal {
+        let modal_frame = Frame::window(&ctx.style())
+            .fill(palette.popup_bg)
+            .stroke(Stroke::new(1.5_f32, palette.popup_border))
+            .inner_margin(Margin::same(14.0));
+
+        Window::new("Add MongoDB Database")
+            .collapsible(false)
+            .resizable(false)
+            .frame(modal_frame)
+            .fixed_size([410.0, 210.0])
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .show(ctx, |ui| {
+                ui.label(RichText::new("Database Name").strong());
+                ui.add(
+                    TextEdit::singleline(&mut state.new_db_name)
+                        .hint_text("e.g. inventory_db")
+                        .margin(Margin::symmetric(6.0, 4.0))
+                        .desired_width(f32::INFINITY),
+                );
+                ui.add_space(6.0);
+
+                ui.label(RichText::new("Initial Collection Name").strong());
+                ui.add(
+                    TextEdit::singleline(&mut state.new_db_collection)
+                        .hint_text("e.g. items")
+                        .margin(Margin::symmetric(6.0, 4.0))
+                        .desired_width(f32::INFINITY),
+                );
+                ui.label(
+                    RichText::new(
+                        "MongoDB materializes a new database once its first collection is created.",
+                    )
+                    .size(11.0)
+                    .color(palette.muted_text),
+                );
+
+                ui.add_space(12.0);
+                ui.horizontal(|ui| {
+                    let trimmed_db = state.new_db_name.trim();
+                    let trimmed_coll = state.new_db_collection.trim();
+                    let can_submit = !trimmed_db.is_empty() && !trimmed_coll.is_empty();
+
+                    ui.add_enabled_ui(can_submit, |ui| {
+                        if primary_button(
+                            ui,
+                            &format!("{} Create Database", regular::DATABASE),
+                            palette.accent_color,
+                        )
+                        .clicked()
+                        {
+                            events.push(AppEvent::CreateDatabase {
+                                connection_index: state.create_db_conn_idx,
+                                db_name: trimmed_db.to_string(),
+                                collection_name: trimmed_coll.to_string(),
+                            });
+                            state.show_create_db_modal = false;
+                        }
+                    });
+
+                    if secondary_button(ui, "Cancel", palette.border_color).clicked() {
+                        state.show_create_db_modal = false;
+                    }
+                });
+            });
+    }
+
+    if state.show_create_user_modal {
+        let modal_frame = Frame::window(&ctx.style())
+            .fill(palette.popup_bg)
+            .stroke(Stroke::new(1.5_f32, palette.popup_border))
+            .inner_margin(Margin::same(14.0));
+
+        let mut db_options = vec!["admin".to_string()];
+        if let Some(conn) = state.connections.get(state.create_user_conn_idx) {
+            for db in &conn.databases {
+                if !db_options.contains(&db.name) {
+                    db_options.push(db.name.clone());
+                }
+            }
+        }
+
+        Window::new("Create MongoDB User")
+            .collapsible(false)
+            .resizable(false)
+            .frame(modal_frame)
+            .fixed_size([430.0, 270.0])
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .show(ctx, |ui| {
+                ui.label(RichText::new("New Username").strong());
+                ui.add(
+                    TextEdit::singleline(&mut state.new_user_username)
+                        .hint_text("e.g. report_reader")
+                        .margin(Margin::symmetric(6.0, 4.0))
+                        .desired_width(f32::INFINITY),
+                );
+                ui.add_space(6.0);
+
+                ui.label(RichText::new("Password").strong());
+                ui.add(
+                    TextEdit::singleline(&mut state.new_user_password)
+                        .password(true)
+                        .hint_text("Enter user password...")
+                        .margin(Margin::symmetric(6.0, 4.0))
+                        .desired_width(f32::INFINITY),
+                );
+                ui.add_space(8.0);
+
+                ui.columns(2, |columns| {
+                    columns[0].label(RichText::new("Initial Database").strong().size(12.0));
+                    ComboBox::from_id_source("create_user_db_combo")
+                        .selected_text(RichText::new(&state.new_user_db).monospace())
+                        .width(180.0)
+                        .show_ui(&mut columns[0], |ui| {
+                            for db_opt in &db_options {
+                                ui.selectable_value(
+                                    &mut state.new_user_db,
+                                    db_opt.clone(),
+                                    db_opt,
+                                );
+                            }
+                        });
+
+                    columns[1].label(RichText::new("Initial Role").strong().size(12.0));
+                    ComboBox::from_id_source("create_user_role_combo")
+                        .selected_text(RichText::new(&state.new_user_role).monospace())
+                        .width(180.0)
+                        .show_ui(&mut columns[1], |ui| {
+                            for &role_opt in UserRole::COMMON_ROLES {
+                                ui.selectable_value(
+                                    &mut state.new_user_role,
+                                    role_opt.to_string(),
+                                    role_opt,
+                                );
+                            }
+                        });
+                });
+
+                let trimmed_user = state.new_user_username.trim();
+                let is_reserved_admin = trimmed_user.eq_ignore_ascii_case("admin");
+                if is_reserved_admin {
+                    ui.add_space(6.0);
+                    ui.label(
+                        RichText::new(format!(
+                            "{} User 'admin' is reserved and cannot be created or overwritten.",
+                            regular::WARNING_CIRCLE
+                        ))
+                        .color(palette.error_color)
+                        .size(11.5),
+                    );
+                }
+
+                ui.add_space(12.0);
+                ui.horizontal(|ui| {
+                    let can_submit = !trimmed_user.is_empty()
+                        && !state.new_user_password.trim().is_empty()
+                        && !is_reserved_admin;
+
+                    ui.add_enabled_ui(can_submit, |ui| {
+                        if primary_button(
+                            ui,
+                            &format!("{} Create User", regular::USER_PLUS),
+                            palette.accent_color,
+                        )
+                        .clicked()
+                        {
+                            events.push(AppEvent::CreateUser {
+                                connection_index: state.create_user_conn_idx,
+                                username: trimmed_user.to_string(),
+                                password: state.new_user_password.clone(),
+                                initial_db: state.new_user_db.clone(),
+                                initial_role: state.new_user_role.clone(),
+                            });
+                            state.show_create_user_modal = false;
+                        }
+                    });
+
+                    if secondary_button(ui, "Cancel", palette.border_color).clicked() {
+                        state.show_create_user_modal = false;
+                    }
+                });
+            });
+    }
+
+    if let Some((conn_idx, username)) = state.pending_delete_user.clone() {
+        let modal_frame = Frame::window(&ctx.style())
+            .fill(palette.popup_bg)
+            .stroke(Stroke::new(1.5_f32, palette.error_color))
+            .inner_margin(Margin::same(14.0));
+
+        Window::new("Confirm Delete MongoDB User")
+            .collapsible(false)
+            .resizable(false)
+            .frame(modal_frame)
+            .fixed_size([400.0, 155.0])
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .show(ctx, |ui| {
+                ui.label(
+                    RichText::new(format!(
+                        "{} Permanently delete user '{username}'?",
+                        regular::WARNING
+                    ))
+                    .color(palette.error_color)
+                    .strong()
+                    .size(13.5),
+                );
+                ui.add_space(6.0);
+                ui.label(
+                    "This action will drop the user and revoke all database permissions immediately.",
+                );
+                ui.add_space(12.0);
+
+                ui.horizontal(|ui| {
+                    if primary_button(
+                        ui,
+                        &format!("{} Delete User", regular::TRASH),
+                        palette.error_color,
+                    )
+                    .clicked()
+                    {
+                        events.push(AppEvent::ConfirmDeleteUser {
+                            connection_index: conn_idx,
+                            username,
+                        });
+                        state.pending_delete_user = None;
+                    }
+
+                    if secondary_button(ui, "Cancel", palette.border_color).clicked() {
+                        state.pending_delete_user = None;
                     }
                 });
             });

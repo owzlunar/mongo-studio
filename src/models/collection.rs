@@ -2,6 +2,10 @@ use serde::{Deserialize, Serialize};
 
 use super::document::DocumentRow;
 
+const fn default_loaded() -> bool {
+    true
+}
+
 #[derive(Debug, Default, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct CollectionStats {
     pub document_count: usize,
@@ -35,9 +39,38 @@ pub struct CollectionInfo {
     pub documents: Vec<DocumentRow>,
     pub indexes: Vec<IndexInfo>,
     pub schema_fields: Vec<SchemaField>,
+    #[serde(default = "default_loaded")]
+    pub loaded: bool,
 }
 
 impl CollectionInfo {
+    /// Creates a lightweight lazy-loading collection stub with `loaded: false`.
+    /// Full documents, indexes, and schema are fetched on demand when the user opens the collection.
+    #[must_use]
+    pub fn new_lazy_stub(database: &str, name: &str) -> Self {
+        let default_indexes = vec![IndexInfo {
+            name: "_id_".to_string(),
+            keys: "{ _id: 1 }".to_string(),
+            index_type: "B-Tree".to_string(),
+            unique: true,
+            size_kb: 16.0,
+        }];
+        Self {
+            database: database.to_string(),
+            name: name.to_string(),
+            stats: CollectionStats {
+                document_count: 0,
+                avg_obj_size_bytes: 0,
+                storage_size_kb: 0.0,
+                index_count: default_indexes.len(),
+            },
+            documents: Vec::new(),
+            indexes: default_indexes,
+            schema_fields: Vec::new(),
+            loaded: false,
+        }
+    }
+
     #[must_use]
     pub fn mock(database: &str, name: &str) -> Self {
         let documents = DocumentRow::mock_for_collection(name);
@@ -109,6 +142,7 @@ impl CollectionInfo {
             documents,
             indexes,
             schema_fields,
+            loaded: true,
         }
     }
 }

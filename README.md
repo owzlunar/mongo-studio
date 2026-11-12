@@ -333,12 +333,11 @@ cargo tree -d
 - Connection Profiles
 - Secure Credential Storage
 
-### Phase 3 — Database Explorer
-- Database Tree
-- Collection Tree
-- Refresh Explorer
-- Collection Information
-- Collection Statistics
+### Phase 3 — Database Explorer & Admin User Management
+- Database Tree & Collection Tree (Fast Concurrent Lazy-Loading)
+- Refresh Explorer & On-Demand Collection Introspection
+- Collection Information, Indexes & Schema Statistics
+- Admin User & Role Management (`Users` Node, Right-Click Create/Delete User, Database Role Assignment, Change Password, Protected `admin` Lock)
 
 ### Phase 4 — Document Manager
 - Document Browser

@@ -58,7 +58,7 @@ fn render_json_field(ui: &mut Ui, key: &str, value: &Value, palette: &ThemePalet
         Value::Number(n) => (n.to_string(), palette.warning_color),
         Value::Bool(b) => (b.to_string(), palette.accent_color),
         Value::Null => ("null".to_string(), palette.muted_text),
-        Value::Array(_) | Value::Object(_) => (value.to_string(), palette.activity_bar_fg_active),
+        Value::Array(_) | Value::Object(_) => (value.to_string(), palette.text_primary),
     };
 
     ui.horizontal(|ui| {

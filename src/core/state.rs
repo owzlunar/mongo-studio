@@ -1,6 +1,6 @@
 use egui_dock::DockState;
 
-use crate::models::{CollectionInfo, ConnectionConfig};
+use crate::models::{CollectionInfo, ConnectionConfig, MongoUser};
 use crate::theme::ThemeMode;
 use crate::ui::activity_bar::ActivityView;
 use crate::workspace::{BottomPanelState, CollectionTab, WorkspacePersistence};
@@ -17,6 +17,7 @@ pub struct AppState {
     pub command_palette_open: bool,
     pub command_palette_query: String,
     pub show_new_connection_modal: bool,
+    pub editing_connection_idx: Option<usize>,
     pub new_conn_name: String,
     pub new_conn_uri: String,
     pub new_conn_username: String,
@@ -24,6 +25,17 @@ pub struct AppState {
     pub new_conn_save_password: bool,
     pub test_conn_status: Option<Result<String, String>>,
     pub is_testing_connection: bool,
+    pub show_create_db_modal: bool,
+    pub create_db_conn_idx: usize,
+    pub new_db_name: String,
+    pub new_db_collection: String,
+    pub show_create_user_modal: bool,
+    pub create_user_conn_idx: usize,
+    pub new_user_username: String,
+    pub new_user_password: String,
+    pub new_user_db: String,
+    pub new_user_role: String,
+    pub pending_delete_user: Option<(usize, String)>,
     pub show_about_modal: bool,
 }
 
@@ -65,6 +77,7 @@ impl AppState {
             command_palette_open: false,
             command_palette_query: String::new(),
             show_new_connection_modal: false,
+            editing_connection_idx: None,
             new_conn_name: "Production ReplicaSet".to_string(),
             new_conn_uri: "mongodb://localhost:27017".to_string(),
             new_conn_username: String::new(),
@@ -72,6 +85,17 @@ impl AppState {
             new_conn_save_password: false,
             test_conn_status: None,
             is_testing_connection: false,
+            show_create_db_modal: false,
+            create_db_conn_idx: 0,
+            new_db_name: String::new(),
+            new_db_collection: "users".to_string(),
+            show_create_user_modal: false,
+            create_user_conn_idx: 0,
+            new_user_username: String::new(),
+            new_user_password: String::new(),
+            new_user_db: "admin".to_string(),
+            new_user_role: "readWrite".to_string(),
+            pending_delete_user: None,
             show_about_modal: false,
         }
     }
@@ -130,6 +154,55 @@ impl AppState {
             .find(|coll| coll.name == collection)
     }
 
+    #[must_use]
+    pub fn find_collection_by_conn(
+        &self,
+        connection_name: &str,
+        database: &str,
+        collection: &str,
+    ) -> Option<&CollectionInfo> {
+        self.connections
+            .iter()
+            .filter(|conn| conn.name == connection_name)
+            .flat_map(|conn| &conn.databases)
+            .filter(|db| db.name == database)
+            .flat_map(|db| &db.collections)
+            .find(|coll| coll.name == collection)
+            .or_else(|| self.find_collection(database, collection))
+    }
+
+    pub fn find_collection_by_conn_mut(
+        &mut self,
+        connection_name: &str,
+        database: &str,
+        collection: &str,
+    ) -> Option<&mut CollectionInfo> {
+        if self
+            .connections
+            .iter()
+            .any(|c| c.name == connection_name)
+        {
+            self.connections
+                .iter_mut()
+                .filter(|conn| conn.name == connection_name)
+                .flat_map(|conn| &mut conn.databases)
+                .filter(|db| db.name == database)
+                .flat_map(|db| &mut db.collections)
+                .find(|coll| coll.name == collection)
+        } else {
+            self.find_collection_mut(database, collection)
+        }
+    }
+
+    #[must_use]
+    pub fn find_user(&self, connection_name: &str, username: &str) -> Option<&MongoUser> {
+        self.connections
+            .iter()
+            .filter(|conn| conn.name == connection_name)
+            .flat_map(|conn| &conn.users)
+            .find(|u| u.username == username)
+    }
+
     pub fn open_or_focus_collection(
         &mut self,
         connection_name: &str,
@@ -137,6 +210,15 @@ impl AppState {
         collection: &str,
     ) {
         let target = CollectionTab::new(connection_name, database, collection);
+        if let Some(location) = self.dock_state.find_tab(&target) {
+            self.dock_state.set_active_tab(location);
+        } else {
+            self.dock_state.push_to_focused_leaf(target);
+        }
+    }
+
+    pub fn open_or_focus_user(&mut self, connection_name: &str, username: &str) {
+        let target = CollectionTab::new_user(connection_name, username);
         if let Some(location) = self.dock_state.find_tab(&target) {
             self.dock_state.set_active_tab(location);
         } else {

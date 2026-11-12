@@ -23,6 +23,7 @@ pub const fn dark_palette() -> ThemePalette {
         success_color: Color32::from_rgb(78, 201, 176),       // #4ec9b0 (MongoDB/VS Code Teal-Green)
         warning_color: Color32::from_rgb(204, 167, 0),
         error_color: Color32::from_rgb(244, 71, 71),
+        text_primary: Color32::from_rgb(230, 230, 230),
         muted_text: Color32::from_rgb(140, 140, 140),
     }
 }
@@ -34,7 +35,7 @@ pub fn apply_dark_theme(ctx: &Context) -> ThemePalette {
 
     visuals.panel_fill = p.editor_bg;
     visuals.window_fill = p.popup_bg;
-    visuals.extreme_bg_color = Color32::from_rgb(20, 20, 20);
+    visuals.extreme_bg_color = Color32::from_rgb(32, 32, 33);
     visuals.faint_bg_color = Color32::from_rgb(36, 36, 37);
     visuals.code_bg_color = Color32::from_rgb(25, 25, 26);
 
@@ -46,7 +47,7 @@ pub fn apply_dark_theme(ctx: &Context) -> ThemePalette {
     visuals.widgets.noninteractive.fg_stroke =
         Stroke::new(1.0_f32, Color32::from_rgb(212, 212, 212));
 
-    visuals.widgets.inactive.bg_fill = Color32::from_rgb(56, 56, 60);
+    visuals.widgets.inactive.bg_fill = Color32::from_rgb(66, 66, 70);
     visuals.widgets.inactive.bg_stroke = Stroke::new(1.0_f32, Color32::from_rgb(72, 72, 78));
     visuals.widgets.inactive.rounding = Rounding::same(3.0);
     visuals.widgets.inactive.fg_stroke = Stroke::new(1.0_f32, Color32::from_rgb(220, 220, 220));

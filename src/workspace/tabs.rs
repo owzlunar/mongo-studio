@@ -49,13 +49,28 @@ pub struct CollectionTab {
     pub sort_query: String,
     pub limit: usize,
     pub selected_row: Option<usize>,
+    #[serde(default)]
+    pub selected_user: Option<String>,
+    #[serde(default)]
+    pub role_db_input: String,
+    #[serde(default)]
+    pub role_name_input: String,
+    #[serde(default)]
+    pub password_input: String,
+    #[serde(default)]
+    pub show_password: bool,
 }
 
 impl PartialEq for CollectionTab {
     fn eq(&self, other: &Self) -> bool {
-        self.connection_name == other.connection_name
-            && self.database == other.database
-            && self.collection == other.collection
+        if self.selected_user.is_some() || other.selected_user.is_some() {
+            self.connection_name == other.connection_name
+                && self.selected_user == other.selected_user
+        } else {
+            self.connection_name == other.connection_name
+                && self.database == other.database
+                && self.collection == other.collection
+        }
     }
 }
 
@@ -70,21 +85,55 @@ impl CollectionTab {
             collection: collection.to_string(),
             active_subtab: CollectionSubTab::Documents,
             view_mode: DocumentViewMode::Table,
-            filter_query: "{\"status\": \"active\"}".to_string(),
+            filter_query: "{}".to_string(),
             projection_query: "{}".to_string(),
             sort_query: "{\"_id\": 1}".to_string(),
             limit: 50,
             selected_row: Some(0),
+            selected_user: None,
+            role_db_input: "admin".to_string(),
+            role_name_input: "readWrite".to_string(),
+            password_input: String::new(),
+            show_password: false,
+        }
+    }
+
+    #[must_use]
+    pub fn new_user(connection_name: &str, username: &str) -> Self {
+        Self {
+            connection_name: connection_name.to_string(),
+            database: "admin".to_string(),
+            collection: format!("user:{username}"),
+            active_subtab: CollectionSubTab::Documents,
+            view_mode: DocumentViewMode::Table,
+            filter_query: "{}".to_string(),
+            projection_query: "{}".to_string(),
+            sort_query: "{}".to_string(),
+            limit: 50,
+            selected_row: None,
+            selected_user: Some(username.to_string()),
+            role_db_input: "admin".to_string(),
+            role_name_input: "readWrite".to_string(),
+            password_input: String::new(),
+            show_password: false,
         }
     }
 
     #[must_use]
     pub fn title(&self) -> &str {
-        &self.collection
+        if let Some(ref user) = self.selected_user {
+            user.as_str()
+        } else {
+            &self.collection
+        }
     }
 
     #[must_use]
     pub fn full_namespace(&self) -> String {
-        format!("{}.{}", self.database, self.collection)
+        if let Some(ref user) = self.selected_user {
+            format!("admin.system.users.{user}")
+        } else {
+            format!("{}.{}", self.database, self.collection)
+        }
     }
 }

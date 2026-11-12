@@ -1,16 +1,20 @@
 use std::collections::BTreeMap;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use bson::{doc, Bson, Document};
 use mongodb::options::{ClientOptions, FindOptions};
 use mongodb::Client;
+use tokio::sync::Semaphore;
+use tokio::task::JoinSet;
 use uuid::Uuid;
 
 use crate::core::{AppError, AppResult};
 use crate::database::index_service::IndexService;
+use crate::database::user_service::UserService;
 use crate::models::{
     CollectionInfo, CollectionStats, ConnectionConfig, ConnectionStatus, DatabaseInfo, DocumentRow,
-    IndexInfo, SchemaField,
+    IndexInfo, MongoUser, SchemaField,
 };
 
 #[derive(Debug, Clone)]
@@ -40,6 +44,8 @@ impl ConnectionClient {
         }
 
         let host = ConnectionConfig::extract_display_host(trimmed_uri);
+        let (_base_uri, uri_user, uri_pass) = ConnectionConfig::split_uri_credentials(trimmed_uri);
+        let requires_auth = !uri_user.is_empty() || !uri_pass.is_empty();
 
         Ok(Self {
             config: ConnectionConfig {
@@ -51,7 +57,12 @@ impl ConnectionClient {
                 expanded: true,
                 databases: DatabaseInfo::mock_databases(),
                 last_error: None,
+                username: uri_user,
+                requires_auth,
                 has_saved_password: false,
+                is_admin: true,
+                users_expanded: true,
+                users: MongoUser::mock_users(),
             },
         })
     }
@@ -103,8 +114,8 @@ impl ConnectionClient {
         Ok(start.elapsed().as_secs_f64() * 1000.0)
     }
 
-    /// Connects to a live MongoDB deployment, verifies connectivity via `ping`, and introspects
-    /// databases, collections, sample documents, indexes, and schema fields.
+    /// Fast connection & discovery: pings the server, fetches admin users if permitted,
+    /// and concurrently lists database and collection names as lightweight lazy stubs.
     ///
     /// # Errors
     ///
@@ -148,51 +159,106 @@ impl ConnectionClient {
         })?
         .map_err(|err| AppError::Connection(format!("failed to ping server: {err}")))?;
 
-        let db_names = match tokio::time::timeout(timeout, client.list_database_names(None, None)).await {
-            Ok(Ok(names)) if !names.is_empty() => names,
-            _ => {
-                if let Some(default_db) = default_db_from_uri {
-                    vec![default_db]
-                } else {
-                    vec!["admin".to_string(), "test".to_string()]
+        let (is_admin, users) = UserService::fetch_users(&client, timeout).await;
+
+        let db_names =
+            match tokio::time::timeout(timeout, client.list_database_names(None, None)).await {
+                Ok(Ok(names)) if !names.is_empty() => names,
+                _ => {
+                    if let Some(default_db) = default_db_from_uri {
+                        vec![default_db]
+                    } else {
+                        vec!["admin".to_string(), "test".to_string()]
+                    }
                 }
-            }
-        };
+            };
 
-        let mut databases = Vec::with_capacity(db_names.len());
+        let semaphore = Arc::new(Semaphore::new(16));
+        let mut join_set = JoinSet::new();
+
         for (db_idx, db_name) in db_names.into_iter().enumerate() {
-            let db = client.database(&db_name);
-            let coll_names = tokio::time::timeout(timeout, db.list_collection_names(None))
-                .await
-                .ok()
-                .and_then(Result::ok)
-                .unwrap_or_default();
+            let client_clone = client.clone();
+            let sem_clone = Arc::clone(&semaphore);
+            join_set.spawn(async move {
+                let _permit = sem_clone.acquire_owned().await.ok();
+                let db = client_clone.database(&db_name);
+                let mut coll_names =
+                    tokio::time::timeout(timeout, db.list_collection_names(None))
+                        .await
+                        .ok()
+                        .and_then(Result::ok)
+                        .unwrap_or_default();
+                coll_names.sort();
 
-            let mut collections = Vec::with_capacity(coll_names.len());
-            for coll_name in coll_names.into_iter().take(50) {
-                let coll_info =
-                    Self::introspect_collection(&db, &db_name, &coll_name, timeout).await;
-                collections.push(coll_info);
-            }
+                let collections: Vec<CollectionInfo> = coll_names
+                    .into_iter()
+                    .map(|coll_name| CollectionInfo::new_lazy_stub(&db_name, &coll_name))
+                    .collect();
 
-            databases.push(DatabaseInfo {
-                name: db_name,
-                expanded: db_idx < 3,
-                size_on_disk_mb: (collections.len() as f64) * 1.6,
-                collections,
+                let db_info = DatabaseInfo {
+                    name: db_name,
+                    expanded: db_idx < 3,
+                    size_on_disk_mb: (collections.len() as f64) * 1.6,
+                    collections,
+                };
+                (db_idx, db_info)
             });
         }
+
+        let mut indexed_dbs = Vec::new();
+        while let Some(res) = join_set.join_next().await {
+            if let Ok(pair) = res {
+                indexed_dbs.push(pair);
+            }
+        }
+        indexed_dbs.sort_by_key(|(idx, _)| *idx);
+        let databases: Vec<DatabaseInfo> = indexed_dbs.into_iter().map(|(_, db)| db).collect();
 
         profile.uri = normalized;
         profile.status = ConnectionStatus::Connected;
         profile.expanded = true;
         profile.databases = databases;
         profile.last_error = None;
+        profile.is_admin = is_admin;
+        profile.users_expanded = is_admin && !users.is_empty();
+        profile.users = users;
 
         Ok(profile)
     }
 
-    async fn introspect_collection(
+    /// Connects to `uri` and introspects a single collection on demand (documents, count, indexes, schema).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AppError::Connection`] if the server cannot be reached.
+    pub async fn introspect_single_collection(
+        uri: &str,
+        db_name: &str,
+        coll_name: &str,
+        timeout: Duration,
+    ) -> AppResult<CollectionInfo> {
+        let normalized = ConnectionConfig::normalize_uri(uri, "", "");
+        let mut options = tokio::time::timeout(timeout, ClientOptions::parse(&normalized))
+            .await
+            .map_err(|_| {
+                AppError::Connection(format!(
+                    "connection timed out after {}s",
+                    timeout.as_secs()
+                ))
+            })?
+            .map_err(|err| AppError::Connection(format!("invalid MongoDB URI: {err}")))?;
+
+        options.connect_timeout = Some(timeout);
+        options.server_selection_timeout = Some(timeout);
+
+        let client = Client::with_options(options)
+            .map_err(|err| AppError::Connection(format!("failed to create client: {err}")))?;
+
+        let db = client.database(db_name);
+        Ok(Self::introspect_collection(&db, db_name, coll_name, timeout).await)
+    }
+
+    pub async fn introspect_collection(
         db: &mongodb::Database,
         db_name: &str,
         coll_name: &str,
@@ -219,7 +285,9 @@ impl ConnectionClient {
             .await
             .ok()
             .and_then(Result::ok)
-            .map_or(documents.len(), |c| usize::try_from(c).unwrap_or(documents.len()));
+            .map_or(documents.len(), |c| {
+                usize::try_from(c).unwrap_or(documents.len())
+            });
 
         let mut indexes = Vec::new();
         if let Ok(Ok(mut idx_cursor)) =
@@ -273,6 +341,7 @@ impl ConnectionClient {
             documents,
             indexes,
             schema_fields,
+            loaded: true,
         }
     }
 

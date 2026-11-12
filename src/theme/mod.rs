@@ -31,6 +31,7 @@ pub struct ThemePalette {
     pub success_color: Color32,
     pub warning_color: Color32,
     pub error_color: Color32,
+    pub text_primary: Color32,
     pub muted_text: Color32,
 }
 
@@ -43,6 +44,14 @@ pub(crate) fn configure_common_style(ctx: &Context) {
         style.spacing.window_margin = egui::Margin::same(10.0);
         style.spacing.menu_margin = egui::Margin::same(6.0);
         style.visuals.menu_rounding = Rounding::same(4.0);
+
+        // Keep scrollbars slim, subtle (foreground_color = false), and non-floating
+        let mut scroll = egui::style::ScrollStyle::solid();
+        scroll.bar_width = 6.0;
+        scroll.bar_inner_margin = 4.0;
+        scroll.bar_outer_margin = 2.0;
+        scroll.foreground_color = false;
+        style.spacing.scroll = scroll;
     });
 }
 
