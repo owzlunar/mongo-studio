@@ -622,13 +622,34 @@ fn render_modals(
             }
         }
 
-        Window::new("Create MongoDB User")
+        let is_duplicating = state.duplicate_source_user.is_some();
+        let window_title = if is_duplicating {
+            "Duplicate MongoDB User"
+        } else {
+            "Create MongoDB User"
+        };
+
+        Window::new(window_title)
             .collapsible(false)
             .resizable(false)
             .frame(modal_frame)
-            .fixed_size([430.0, 270.0])
+            .fixed_size([440.0, 325.0])
             .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
             .show(ctx, |ui| {
+                if let Some(src_user) = &state.duplicate_source_user {
+                    ui.label(
+                        RichText::new(format!(
+                            "{} Cloning {} database role(s) from user '{src_user}'",
+                            regular::COPY,
+                            state.duplicate_source_roles.len()
+                        ))
+                        .color(palette.accent_color)
+                        .strong()
+                        .size(12.0),
+                    );
+                    ui.add_space(6.0);
+                }
+
                 ui.label(RichText::new("New Username").strong());
                 ui.add(
                     TextEdit::singleline(&mut state.new_user_username)
@@ -638,50 +659,94 @@ fn render_modals(
                 );
                 ui.add_space(6.0);
 
-                ui.label(RichText::new("Password").strong());
-                ui.add(
-                    TextEdit::singleline(&mut state.new_user_password)
-                        .password(true)
-                        .hint_text("Enter user password...")
-                        .margin(Margin::symmetric(6.0, 4.0))
-                        .desired_width(f32::INFINITY),
-                );
-                ui.add_space(8.0);
-
                 ui.columns(2, |columns| {
-                    columns[0].label(RichText::new("Initial Database").strong().size(12.0));
-                    ComboBox::from_id_source("create_user_db_combo")
-                        .selected_text(RichText::new(&state.new_user_db).monospace())
-                        .width(180.0)
-                        .show_ui(&mut columns[0], |ui| {
-                            for db_opt in &db_options {
-                                ui.selectable_value(
-                                    &mut state.new_user_db,
-                                    db_opt.clone(),
-                                    db_opt,
-                                );
-                            }
-                        });
+                    columns[0].label(RichText::new("Password").strong().size(12.0));
+                    columns[0].add(
+                        TextEdit::singleline(&mut state.new_user_password)
+                            .password(!state.new_user_show_password)
+                            .hint_text("Enter password...")
+                            .margin(Margin::symmetric(6.0, 4.0))
+                            .desired_width(f32::INFINITY),
+                    );
 
-                    columns[1].label(RichText::new("Initial Role").strong().size(12.0));
-                    ComboBox::from_id_source("create_user_role_combo")
-                        .selected_text(RichText::new(&state.new_user_role).monospace())
-                        .width(180.0)
-                        .show_ui(&mut columns[1], |ui| {
-                            for &role_opt in UserRole::COMMON_ROLES {
-                                ui.selectable_value(
-                                    &mut state.new_user_role,
-                                    role_opt.to_string(),
-                                    role_opt,
-                                );
-                            }
-                        });
+                    columns[1].label(RichText::new("Confirm Password").strong().size(12.0));
+                    columns[1].add(
+                        TextEdit::singleline(&mut state.new_user_confirm_password)
+                            .password(!state.new_user_show_password)
+                            .hint_text("Confirm password...")
+                            .margin(Margin::symmetric(6.0, 4.0))
+                            .desired_width(f32::INFINITY),
+                    );
                 });
+
+                ui.add_space(4.0);
+                ui.checkbox(
+                    &mut state.new_user_show_password,
+                    RichText::new("Show Passwords").size(11.5),
+                );
+                ui.add_space(6.0);
+
+                if is_duplicating {
+                    ui.label(
+                        RichText::new("Copied Database Roles:")
+                            .strong()
+                            .size(12.0)
+                            .color(palette.muted_text),
+                    );
+                    ScrollArea::vertical().max_height(64.0).show(ui, |ui| {
+                        for r in &state.duplicate_source_roles {
+                            ui.label(
+                                RichText::new(format!(
+                                    "  {} {}  →  {}",
+                                    regular::DATABASE,
+                                    r.db,
+                                    r.role
+                                ))
+                                .monospace()
+                                .size(11.5)
+                                .color(palette.success_color),
+                            );
+                        }
+                    });
+                } else {
+                    ui.columns(2, |columns| {
+                        columns[0].label(RichText::new("Initial Database").strong().size(12.0));
+                        ComboBox::from_id_source("create_user_db_combo")
+                            .selected_text(RichText::new(&state.new_user_db).monospace())
+                            .width(180.0)
+                            .height(220.0)
+                            .show_ui(&mut columns[0], |ui| {
+                                for db_opt in &db_options {
+                                    ui.selectable_value(
+                                        &mut state.new_user_db,
+                                        db_opt.clone(),
+                                        db_opt,
+                                    );
+                                }
+                            });
+
+                        columns[1].label(RichText::new("Initial Role").strong().size(12.0));
+                        ComboBox::from_id_source("create_user_role_combo")
+                            .selected_text(RichText::new(&state.new_user_role).monospace())
+                            .width(180.0)
+                            .show_ui(&mut columns[1], |ui| {
+                                for &role_opt in UserRole::COMMON_ROLES {
+                                    ui.selectable_value(
+                                        &mut state.new_user_role,
+                                        role_opt.to_string(),
+                                        role_opt,
+                                    );
+                                }
+                            });
+                    });
+                }
 
                 let trimmed_user = state.new_user_username.trim();
                 let is_reserved_admin = trimmed_user.eq_ignore_ascii_case("admin");
+                let passwords_match = state.new_user_password == state.new_user_confirm_password;
+
                 if is_reserved_admin {
-                    ui.add_space(6.0);
+                    ui.add_space(4.0);
                     ui.label(
                         RichText::new(format!(
                             "{} User 'admin' is reserved and cannot be created or overwritten.",
@@ -690,35 +755,150 @@ fn render_modals(
                         .color(palette.error_color)
                         .size(11.5),
                     );
+                } else if !state.new_user_confirm_password.is_empty() && !passwords_match {
+                    ui.add_space(4.0);
+                    ui.label(
+                        RichText::new(format!(
+                            "{} Passwords do not match.",
+                            regular::WARNING_CIRCLE
+                        ))
+                        .color(palette.error_color)
+                        .size(11.5),
+                    );
                 }
 
-                ui.add_space(12.0);
+                ui.add_space(10.0);
                 ui.horizontal(|ui| {
                     let can_submit = !trimmed_user.is_empty()
                         && !state.new_user_password.trim().is_empty()
+                        && passwords_match
                         && !is_reserved_admin;
 
+                    let submit_label = if is_duplicating {
+                        format!("{} Duplicate User", regular::COPY)
+                    } else {
+                        format!("{} Create User", regular::USER_PLUS)
+                    };
+
                     ui.add_enabled_ui(can_submit, |ui| {
-                        if primary_button(
-                            ui,
-                            &format!("{} Create User", regular::USER_PLUS),
-                            palette.accent_color,
-                        )
-                        .clicked()
-                        {
+                        if primary_button(ui, &submit_label, palette.accent_color).clicked() {
+                            let roles = if is_duplicating {
+                                state.duplicate_source_roles.clone()
+                            } else {
+                                vec![UserRole::new(&state.new_user_role, &state.new_user_db)]
+                            };
                             events.push(AppEvent::CreateUser {
                                 connection_index: state.create_user_conn_idx,
                                 username: trimmed_user.to_string(),
                                 password: state.new_user_password.clone(),
-                                initial_db: state.new_user_db.clone(),
-                                initial_role: state.new_user_role.clone(),
+                                roles,
                             });
+                            state.duplicate_source_user = None;
+                            state.duplicate_source_roles.clear();
                             state.show_create_user_modal = false;
                         }
                     });
 
                     if secondary_button(ui, "Cancel", palette.border_color).clicked() {
+                        state.duplicate_source_user = None;
+                        state.duplicate_source_roles.clear();
                         state.show_create_user_modal = false;
+                    }
+                });
+            });
+    }
+
+    if state.show_change_password_modal {
+        let modal_frame = Frame::window(&ctx.style())
+            .fill(palette.popup_bg)
+            .stroke(Stroke::new(1.5_f32, palette.popup_border))
+            .inner_margin(Margin::same(14.0));
+
+        Window::new("Change MongoDB User Password")
+            .collapsible(false)
+            .resizable(false)
+            .frame(modal_frame)
+            .fixed_size([410.0, 245.0])
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .show(ctx, |ui| {
+                ui.label(
+                    RichText::new(format!(
+                        "{} User: {} ({})",
+                        regular::USER_GEAR,
+                        state.change_pwd_username,
+                        state.change_pwd_conn_name
+                    ))
+                    .monospace()
+                    .strong(),
+                );
+                ui.add_space(8.0);
+
+                ui.label(RichText::new("New Password").strong());
+                ui.add(
+                    TextEdit::singleline(&mut state.change_pwd_new)
+                        .password(!state.change_pwd_show)
+                        .hint_text("Enter new password...")
+                        .margin(Margin::symmetric(6.0, 4.0))
+                        .desired_width(f32::INFINITY),
+                );
+                ui.add_space(6.0);
+
+                ui.label(RichText::new("Confirm New Password").strong());
+                ui.add(
+                    TextEdit::singleline(&mut state.change_pwd_confirm)
+                        .password(!state.change_pwd_show)
+                        .hint_text("Re-enter new password...")
+                        .margin(Margin::symmetric(6.0, 4.0))
+                        .desired_width(f32::INFINITY),
+                );
+                ui.add_space(4.0);
+
+                ui.checkbox(
+                    &mut state.change_pwd_show,
+                    RichText::new("Show Passwords").size(11.5),
+                );
+
+                let pwd_empty = state.change_pwd_new.trim().is_empty();
+                let passwords_match = state.change_pwd_new == state.change_pwd_confirm;
+
+                if !state.change_pwd_confirm.is_empty() && !passwords_match {
+                    ui.add_space(4.0);
+                    ui.label(
+                        RichText::new(format!(
+                            "{} Passwords do not match.",
+                            regular::WARNING_CIRCLE
+                        ))
+                        .color(palette.error_color)
+                        .size(11.5),
+                    );
+                }
+
+                ui.add_space(10.0);
+                ui.horizontal(|ui| {
+                    let can_submit = !pwd_empty && passwords_match;
+                    ui.add_enabled_ui(can_submit, |ui| {
+                        if primary_button(
+                            ui,
+                            &format!("{} Update Password", regular::CHECK),
+                            palette.accent_color,
+                        )
+                        .clicked()
+                        {
+                            events.push(AppEvent::ChangeUserPassword {
+                                connection_name: state.change_pwd_conn_name.clone(),
+                                username: state.change_pwd_username.clone(),
+                                new_password: state.change_pwd_new.clone(),
+                            });
+                            state.change_pwd_new.clear();
+                            state.change_pwd_confirm.clear();
+                            state.show_change_password_modal = false;
+                        }
+                    });
+
+                    if secondary_button(ui, "Cancel", palette.border_color).clicked() {
+                        state.change_pwd_new.clear();
+                        state.change_pwd_confirm.clear();
+                        state.show_change_password_modal = false;
                     }
                 });
             });

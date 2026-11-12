@@ -1,6 +1,6 @@
 use uuid::Uuid;
 
-use crate::models::{CollectionInfo, DatabaseInfo, MongoUser};
+use crate::models::{CollectionInfo, DatabaseInfo, MongoUser, UserRole};
 use crate::theme::ThemeMode;
 use crate::ui::activity_bar::ActivityView;
 
@@ -79,12 +79,15 @@ pub enum AppEvent {
     OpenCreateUserModal {
         connection_index: usize,
     },
+    OpenDuplicateUserModal {
+        connection_index: usize,
+        source_username: String,
+    },
     CreateUser {
         connection_index: usize,
         username: String,
         password: String,
-        initial_db: String,
-        initial_role: String,
+        roles: Vec<UserRole>,
     },
     GrantUserRole {
         connection_name: String,
@@ -97,6 +100,15 @@ pub enum AppEvent {
         username: String,
         db: String,
         role: String,
+    },
+    SaveUserRoles {
+        connection_name: String,
+        username: String,
+        roles: Vec<UserRole>,
+    },
+    OpenChangePasswordModal {
+        connection_name: String,
+        username: String,
     },
     ChangeUserPassword {
         connection_name: String,

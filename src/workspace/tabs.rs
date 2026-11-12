@@ -1,6 +1,8 @@
 use egui_phosphor::regular;
 use serde::{Deserialize, Serialize};
 
+use crate::models::UserRole;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum CollectionSubTab {
     Documents,
@@ -54,11 +56,11 @@ pub struct CollectionTab {
     #[serde(default)]
     pub role_db_input: String,
     #[serde(default)]
+    pub role_db_filter: String,
+    #[serde(default)]
     pub role_name_input: String,
-    #[serde(default)]
-    pub password_input: String,
-    #[serde(default)]
-    pub show_password: bool,
+    #[serde(skip)]
+    pub draft_roles: Option<Vec<UserRole>>,
 }
 
 impl PartialEq for CollectionTab {
@@ -92,9 +94,9 @@ impl CollectionTab {
             selected_row: Some(0),
             selected_user: None,
             role_db_input: "admin".to_string(),
+            role_db_filter: String::new(),
             role_name_input: "readWrite".to_string(),
-            password_input: String::new(),
-            show_password: false,
+            draft_roles: None,
         }
     }
 
@@ -113,9 +115,9 @@ impl CollectionTab {
             selected_row: None,
             selected_user: Some(username.to_string()),
             role_db_input: "admin".to_string(),
+            role_db_filter: String::new(),
             role_name_input: "readWrite".to_string(),
-            password_input: String::new(),
-            show_password: false,
+            draft_roles: None,
         }
     }
 

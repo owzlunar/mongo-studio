@@ -1,6 +1,6 @@
 use egui_dock::DockState;
 
-use crate::models::{CollectionInfo, ConnectionConfig, MongoUser};
+use crate::models::{CollectionInfo, ConnectionConfig, MongoUser, UserRole};
 use crate::theme::ThemeMode;
 use crate::ui::activity_bar::ActivityView;
 use crate::workspace::{BottomPanelState, CollectionTab, WorkspacePersistence};
@@ -31,10 +31,20 @@ pub struct AppState {
     pub new_db_collection: String,
     pub show_create_user_modal: bool,
     pub create_user_conn_idx: usize,
+    pub duplicate_source_user: Option<String>,
+    pub duplicate_source_roles: Vec<UserRole>,
     pub new_user_username: String,
     pub new_user_password: String,
+    pub new_user_confirm_password: String,
+    pub new_user_show_password: bool,
     pub new_user_db: String,
     pub new_user_role: String,
+    pub show_change_password_modal: bool,
+    pub change_pwd_conn_name: String,
+    pub change_pwd_username: String,
+    pub change_pwd_new: String,
+    pub change_pwd_confirm: String,
+    pub change_pwd_show: bool,
     pub pending_delete_user: Option<(usize, String)>,
     pub show_about_modal: bool,
 }
@@ -91,10 +101,20 @@ impl AppState {
             new_db_collection: "users".to_string(),
             show_create_user_modal: false,
             create_user_conn_idx: 0,
+            duplicate_source_user: None,
+            duplicate_source_roles: Vec::new(),
             new_user_username: String::new(),
             new_user_password: String::new(),
+            new_user_confirm_password: String::new(),
+            new_user_show_password: false,
             new_user_db: "admin".to_string(),
             new_user_role: "readWrite".to_string(),
+            show_change_password_modal: false,
+            change_pwd_conn_name: String::new(),
+            change_pwd_username: String::new(),
+            change_pwd_new: String::new(),
+            change_pwd_confirm: String::new(),
+            change_pwd_show: false,
             pending_delete_user: None,
             show_about_modal: false,
         }

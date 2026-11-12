@@ -273,6 +273,19 @@ pub fn render_connection_tree(
                                         });
                                         ui.close_menu();
                                     }
+                                    if ui
+                                        .button(format!(
+                                            "{} Duplicate User...",
+                                            regular::COPY
+                                        ))
+                                        .clicked()
+                                    {
+                                        events.push(AppEvent::OpenDuplicateUserModal {
+                                            connection_index: conn_idx,
+                                            source_username: user.username.clone(),
+                                        });
+                                        ui.close_menu();
+                                    }
                                     ui.separator();
                                     if is_protected {
                                         ui.label(

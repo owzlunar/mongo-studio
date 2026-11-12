@@ -1,4 +1,4 @@
-use egui::{Color32, ComboBox, CursorIcon, Margin, RichText, TextEdit, Ui, Vec2};
+use egui::{Color32, ComboBox, CursorIcon, Frame, Margin, RichText, ScrollArea, Stroke, TextEdit, Ui, Vec2};
 use egui_dock::TabViewer;
 use egui_extras::{Column, TableBuilder};
 use egui_phosphor::regular;
@@ -80,7 +80,26 @@ impl<'a> CollectionTabViewer<'a> {
         };
 
         let is_protected = user.is_protected_admin();
+        let conn_name_owned = conn.name.clone();
+        let username_owned = user.username.clone();
+        let server_roles = user.roles.clone();
 
+        if tab.draft_roles.is_none() {
+            tab.draft_roles = Some(server_roles.clone());
+        }
+        if tab.role_db_input.is_empty() {
+            tab.role_db_input = "admin".to_string();
+        }
+        if tab.role_name_input.is_empty() {
+            tab.role_name_input = "readWrite".to_string();
+        }
+
+        let mut db_options: Vec<String> = conn.databases.iter().map(|d| d.name.clone()).collect();
+        if !db_options.iter().any(|d| d == "admin") {
+            db_options.insert(0, "admin".to_string());
+        }
+
+        // Top Bar: Breadcrumb + Status + [Change Password] & [Delete User]
         ui.add_space(6.0);
         ui.horizontal(|ui| {
             ui.label(
@@ -119,31 +138,60 @@ impl<'a> CollectionTabViewer<'a> {
                         .color(self.palette.success_color)
                         .size(12.0),
                 );
+            }
 
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if secondary_button(
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if !is_protected
+                    && secondary_button(
                         ui,
                         &format!("{} Delete User", regular::TRASH),
                         self.palette.error_color,
                     )
                     .clicked()
-                    {
-                        self.events.push(AppEvent::RequestDeleteUser {
-                            connection_index: conn_idx,
-                            username: user.username.clone(),
-                        });
-                    }
-                });
-            }
+                {
+                    self.events.push(AppEvent::RequestDeleteUser {
+                        connection_index: conn_idx,
+                        username: username_owned.clone(),
+                    });
+                }
+
+                if !is_protected
+                    && secondary_button(
+                        ui,
+                        &format!("{} Change Password...", regular::KEY),
+                        self.palette.accent_color,
+                    )
+                    .clicked()
+                {
+                    self.events.push(AppEvent::OpenChangePasswordModal {
+                        connection_name: conn_name_owned.clone(),
+                        username: username_owned.clone(),
+                    });
+                }
+
+                if secondary_button(
+                    ui,
+                    &format!("{} Duplicate User...", regular::COPY),
+                    self.palette.border_color,
+                )
+                .on_hover_text("Create a new user copying all database roles from this user")
+                .clicked()
+                {
+                    self.events.push(AppEvent::OpenDuplicateUserModal {
+                        connection_index: conn_idx,
+                        source_username: username_owned.clone(),
+                    });
+                }
+            });
         });
 
         ui.separator();
-        ui.add_space(6.0);
+        ui.add_space(4.0);
 
         if is_protected {
-            egui::Frame::none()
+            Frame::none()
                 .fill(Color32::from_rgba_unmultiplied(220, 160, 40, 28))
-                .stroke(egui::Stroke::new(1.0_f32, self.palette.warning_color))
+                .stroke(Stroke::new(1.0_f32, self.palette.warning_color))
                 .rounding(egui::Rounding::same(4.0))
                 .inner_margin(Margin::same(10.0))
                 .show(ui, |ui| {
@@ -162,204 +210,353 @@ impl<'a> CollectionTabViewer<'a> {
                         );
                     });
                 });
-            ui.add_space(10.0);
+            ui.add_space(8.0);
         }
 
-        ui.label(
-            RichText::new(format!(
-                "{} Assigned Database Roles & Permissions ({})",
-                regular::KEY,
-                user.roles.len()
-            ))
-            .strong()
-            .size(13.5),
-        );
-        ui.add_space(6.0);
+        // Bottom Bar (only for editable users): Cancel & Apply buttons pinned to bottom-right
+        if !is_protected {
+            let footer_frame = Frame::none()
+                .fill(self.palette.panel_bg)
+                .inner_margin(Margin::symmetric(12.0, 8.0))
+                .stroke(Stroke::new(1.0_f32, self.palette.border_color));
 
-        let roles_snapshot = user.roles.clone();
-        let conn_name_owned = conn.name.clone();
-        let username_owned = user.username.clone();
+            egui::TopBottomPanel::bottom(format!("user_inspector_footer_{username_owned}"))
+                .resizable(false)
+                .exact_height(44.0)
+                .frame(footer_frame)
+                .show_inside(ui, |ui| {
+                    let has_changes = tab
+                        .draft_roles
+                        .as_ref()
+                        .is_some_and(|draft| *draft != server_roles);
 
-        TableBuilder::new(ui)
-            .striped(true)
-            .resizable(true)
-            .column(Column::initial(150.0))
-            .column(Column::initial(160.0))
-            .column(Column::remainder())
-            .column(Column::initial(100.0))
-            .header(24.0, |mut header| {
-                for col_name in ["Database", "Role Name", "Privileges Description", "Action"] {
-                    header.col(|ui| {
-                        ui.label(
-                            RichText::new(col_name)
-                                .strong()
-                                .color(self.palette.accent_color),
-                        );
-                    });
-                }
-            })
-            .body(|body| {
-                body.rows(26.0, roles_snapshot.len(), |mut row| {
-                    let role_item = &roles_snapshot[row.index()];
-                    row.col(|ui| {
-                        ui.label(
-                            RichText::new(format!("{} {}", regular::DATABASE, role_item.db))
-                                .monospace()
-                                .strong(),
-                        );
-                    });
-                    row.col(|ui| {
-                        ui.label(
-                            RichText::new(&role_item.role)
-                                .monospace()
-                                .color(self.palette.success_color),
-                        );
-                    });
-                    row.col(|ui| {
-                        ui.label(
-                            RichText::new(role_item.description())
-                                .size(11.5)
-                                .color(self.palette.muted_text),
-                        );
-                    });
-                    row.col(|ui| {
-                        if is_protected {
+                    ui.horizontal(|ui| {
+                        if has_changes {
                             ui.label(
-                                RichText::new("Locked")
-                                    .size(11.0)
-                                    .color(self.palette.muted_text),
+                                RichText::new(format!(
+                                    "{} Unsaved role changes — click Apply to save to MongoDB",
+                                    regular::WARNING_CIRCLE
+                                ))
+                                .color(self.palette.warning_color)
+                                .strong()
+                                .size(12.0),
                             );
-                        } else if ui
-                            .small_button(
-                                RichText::new(format!("{} Revoke", regular::TRASH))
-                                    .color(self.palette.error_color),
+                        } else {
+                            ui.label(
+                                RichText::new(format!(
+                                    "{} Database roles are in sync with server ({} assigned)",
+                                    regular::CHECK_CIRCLE,
+                                    server_roles.len()
+                                ))
+                                .color(self.palette.muted_text)
+                                .size(12.0),
+                            );
+                        }
+
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            ui.add_enabled_ui(has_changes, |ui| {
+                                if primary_button(
+                                    ui,
+                                    &format!("{} Apply", regular::CHECK),
+                                    self.palette.accent_color,
+                                )
+                                .clicked()
+                                {
+                                    if let Some(draft) = &tab.draft_roles {
+                                        self.events.push(AppEvent::SaveUserRoles {
+                                            connection_name: conn_name_owned.clone(),
+                                            username: username_owned.clone(),
+                                            roles: draft.clone(),
+                                        });
+                                    }
+                                }
+
+                                if secondary_button(
+                                    ui,
+                                    &format!("{} Cancel", regular::ARROW_COUNTER_CLOCKWISE),
+                                    self.palette.border_color,
+                                )
+                                .clicked()
+                                {
+                                    tab.draft_roles = Some(server_roles.clone());
+                                }
+                            });
+                        });
+                    });
+                });
+        }
+
+        // Main Full-Area Dynamic Table (Row 0 = Add New Role, Rows 1..N = Existing/Draft Roles)
+        let central_frame = Frame::none()
+            .fill(self.palette.editor_bg)
+            .inner_margin(Margin::symmetric(4.0, 2.0));
+
+        egui::CentralPanel::default()
+            .frame(central_frame)
+            .show_inside(ui, |ui| {
+                let draft_len = tab.draft_roles.as_ref().map_or(0, Vec::len);
+                ui.horizontal(|ui| {
+                    ui.label(
+                        RichText::new(format!(
+                            "{} Database Roles & Permissions ({draft_len})",
+                            regular::KEY
+                        ))
+                        .strong()
+                        .size(13.5),
+                    );
+                    if !is_protected {
+                        ui.label(
+                            RichText::new(
+                                "— Use the first row to add a database role, or edit existing roles inline.",
                             )
-                            .on_hover_cursor(CursorIcon::PointingHand)
-                            .on_hover_text("Revoke this database role from user")
-                            .clicked()
-                        {
-                            self.events.push(AppEvent::RevokeUserRole {
-                                connection_name: conn_name_owned.clone(),
-                                username: username_owned.clone(),
-                                db: role_item.db.clone(),
-                                role: role_item.role.clone(),
+                            .size(11.5)
+                            .color(self.palette.muted_text),
+                        );
+                    }
+                });
+                ui.add_space(6.0);
+
+                let avail_height = ui.available_height().max(140.0);
+
+                let mut add_clicked = false;
+                let mut remove_idx: Option<usize> = None;
+
+                TableBuilder::new(ui)
+                    .striped(true)
+                    .resizable(true)
+                    .vscroll(true)
+                    .min_scrolled_height(120.0)
+                    .max_scroll_height(avail_height)
+                    .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
+                    .column(Column::initial(220.0).at_least(150.0))
+                    .column(Column::initial(195.0).at_least(140.0))
+                    .column(Column::remainder().at_least(200.0))
+                    .column(Column::initial(110.0).at_least(90.0))
+                    .header(26.0, |mut header| {
+                        for col_name in [
+                            "Database Name",
+                            "Role Name",
+                            "Privileges Description",
+                            "Action",
+                        ] {
+                            header.col(|ui| {
+                                ui.label(
+                                    RichText::new(col_name)
+                                        .strong()
+                                        .color(self.palette.accent_color),
+                                );
                             });
                         }
+                    })
+                    .body(|mut body| {
+                        // Row 0: Dynamic Add New Database Role Row (for editable users)
+                        if !is_protected {
+                            body.row(32.0, |mut row| {
+                                row.col(|ui| {
+                                    ComboBox::from_id_source(("add_row_db_combo", &username_owned))
+                                        .selected_text(
+                                            RichText::new(format!(
+                                                "{} {}",
+                                                regular::DATABASE,
+                                                tab.role_db_input
+                                            ))
+                                            .monospace(),
+                                        )
+                                        .width(200.0)
+                                        .height(280.0)
+                                        .show_ui(ui, |ui| {
+                                            ui.add(
+                                                TextEdit::singleline(&mut tab.role_db_filter)
+                                                    .hint_text("Search database...")
+                                                    .margin(Margin::symmetric(6.0, 4.0))
+                                                    .desired_width(185.0),
+                                            );
+                                            ui.separator();
+                                            let filter_q =
+                                                tab.role_db_filter.trim().to_lowercase();
+                                            ScrollArea::vertical()
+                                                .max_height(210.0)
+                                                .show(ui, |ui| {
+                                                    for db_opt in &db_options {
+                                                        if !filter_q.is_empty()
+                                                            && !db_opt
+                                                                .to_lowercase()
+                                                                .contains(&filter_q)
+                                                        {
+                                                            continue;
+                                                        }
+                                                        ui.selectable_value(
+                                                            &mut tab.role_db_input,
+                                                            db_opt.clone(),
+                                                            db_opt,
+                                                        );
+                                                    }
+                                                });
+                                        });
+                                });
+
+                                row.col(|ui| {
+                                    ComboBox::from_id_source((
+                                        "add_row_role_combo",
+                                        &username_owned,
+                                    ))
+                                    .selected_text(
+                                        RichText::new(&tab.role_name_input)
+                                            .monospace()
+                                            .color(self.palette.success_color),
+                                    )
+                                    .width(175.0)
+                                    .show_ui(ui, |ui| {
+                                        for &role_opt in UserRole::COMMON_ROLES {
+                                            ui.selectable_value(
+                                                &mut tab.role_name_input,
+                                                role_opt.to_string(),
+                                                role_opt,
+                                            );
+                                        }
+                                    });
+                                });
+
+                                row.col(|ui| {
+                                    ui.label(
+                                        RichText::new(format!(
+                                            "[New] {}",
+                                            UserRole::role_description(&tab.role_name_input)
+                                        ))
+                                        .size(11.5)
+                                        .color(self.palette.muted_text),
+                                    );
+                                });
+
+                                row.col(|ui| {
+                                    if primary_button(
+                                        ui,
+                                        &format!("{} Add", regular::PLUS),
+                                        self.palette.accent_color,
+                                    )
+                                    .on_hover_text("Add this database role to the table")
+                                    .clicked()
+                                    {
+                                        add_clicked = true;
+                                    }
+                                });
+                            });
+                        }
+
+                        // Rows 1..N: Assigned / Staged Database Roles
+                        if let Some(draft_roles) = tab.draft_roles.as_mut() {
+                            for (idx, role_item) in draft_roles.iter_mut().enumerate() {
+                                let is_modified = !server_roles.contains(role_item);
+                                body.row(28.0, |mut row| {
+                                    row.col(|ui| {
+                                        ui.label(
+                                            RichText::new(format!(
+                                                "{} {}",
+                                                regular::DATABASE,
+                                                role_item.db
+                                            ))
+                                            .monospace()
+                                            .strong()
+                                            .color(self.palette.text_primary),
+                                        );
+                                        if is_modified {
+                                            ui.label(
+                                                RichText::new("●")
+                                                    .size(10.0)
+                                                    .color(self.palette.warning_color),
+                                            )
+                                            .on_hover_text("Modified (pending Apply)");
+                                        }
+                                    });
+
+                                    row.col(|ui| {
+                                        if is_protected {
+                                            ui.label(
+                                                RichText::new(&role_item.role)
+                                                    .monospace()
+                                                    .color(self.palette.success_color),
+                                            );
+                                        } else {
+                                            ComboBox::from_id_source((
+                                                "edit_row_role_combo",
+                                                &username_owned,
+                                                idx,
+                                                &role_item.db,
+                                            ))
+                                            .selected_text(
+                                                RichText::new(&role_item.role)
+                                                    .monospace()
+                                                    .color(self.palette.success_color),
+                                            )
+                                            .width(175.0)
+                                            .show_ui(ui, |ui| {
+                                                for &role_opt in UserRole::COMMON_ROLES {
+                                                    ui.selectable_value(
+                                                        &mut role_item.role,
+                                                        role_opt.to_string(),
+                                                        role_opt,
+                                                    );
+                                                }
+                                            });
+                                        }
+                                    });
+
+                                    row.col(|ui| {
+                                        ui.label(
+                                            RichText::new(role_item.description())
+                                                .size(11.5)
+                                                .color(self.palette.muted_text),
+                                        );
+                                    });
+
+                                    row.col(|ui| {
+                                        if is_protected {
+                                            ui.label(
+                                                RichText::new("Locked")
+                                                    .size(11.0)
+                                                    .color(self.palette.muted_text),
+                                            );
+                                        } else if ui
+                                            .small_button(
+                                                RichText::new(format!(
+                                                    "{} Remove",
+                                                    regular::TRASH
+                                                ))
+                                                .color(self.palette.error_color),
+                                            )
+                                            .on_hover_cursor(CursorIcon::PointingHand)
+                                            .on_hover_text("Remove this database role (click Apply to save)")
+                                            .clicked()
+                                        {
+                                            remove_idx = Some(idx);
+                                        }
+                                    });
+                                });
+                            }
+                        }
                     });
-                });
+
+                if add_clicked {
+                    let candidate = UserRole::new(&tab.role_name_input, &tab.role_db_input);
+                    if let Some(draft_roles) = tab.draft_roles.as_mut() {
+                        if let Some(existing_same_db) =
+                            draft_roles.iter_mut().find(|r| r.db == candidate.db)
+                        {
+                            existing_same_db.role = candidate.role;
+                        } else {
+                            draft_roles.insert(0, candidate);
+                        }
+                    }
+                }
+
+                if let Some(idx) = remove_idx {
+                    if let Some(draft_roles) = tab.draft_roles.as_mut() {
+                        if idx < draft_roles.len() {
+                            draft_roles.remove(idx);
+                        }
+                    }
+                }
             });
-
-        if is_protected {
-            return;
-        }
-
-        ui.add_space(16.0);
-        ui.separator();
-        ui.add_space(8.0);
-
-        // Grant Database Role section
-        ui.label(
-            RichText::new(format!(
-                "{} Grant Database Access & Role",
-                regular::PLUS_CIRCLE
-            ))
-            .strong()
-            .size(13.0),
-        );
-        ui.add_space(4.0);
-
-        let mut db_options: Vec<String> = conn.databases.iter().map(|d| d.name.clone()).collect();
-        if !db_options.iter().any(|d| d == "admin") {
-            db_options.insert(0, "admin".to_string());
-        }
-        if tab.role_db_input.is_empty() {
-            tab.role_db_input = "admin".to_string();
-        }
-        if tab.role_name_input.is_empty() {
-            tab.role_name_input = "readWrite".to_string();
-        }
-
-        ui.horizontal(|ui| {
-            ui.label(RichText::new("Database:").size(12.0));
-            ComboBox::from_id_source(("grant_db_combo", &user.username))
-                .selected_text(RichText::new(&tab.role_db_input).monospace())
-                .width(160.0)
-                .show_ui(ui, |ui| {
-                    for db_opt in &db_options {
-                        ui.selectable_value(&mut tab.role_db_input, db_opt.clone(), db_opt);
-                    }
-                });
-
-            ui.add_space(8.0);
-            ui.label(RichText::new("Role:").size(12.0));
-            ComboBox::from_id_source(("grant_role_combo", &user.username))
-                .selected_text(RichText::new(&tab.role_name_input).monospace())
-                .width(170.0)
-                .show_ui(ui, |ui| {
-                    for &role_opt in UserRole::COMMON_ROLES {
-                        ui.selectable_value(
-                            &mut tab.role_name_input,
-                            role_opt.to_string(),
-                            role_opt,
-                        );
-                    }
-                });
-
-            ui.add_space(8.0);
-            if primary_button(
-                ui,
-                &format!("{} Grant Role", regular::PLUS),
-                self.palette.accent_color,
-            )
-            .clicked()
-            {
-                self.events.push(AppEvent::GrantUserRole {
-                    connection_name: conn.name.clone(),
-                    username: user.username.clone(),
-                    db: tab.role_db_input.clone(),
-                    role: tab.role_name_input.clone(),
-                });
-            }
-        });
-
-        ui.add_space(14.0);
-        ui.separator();
-        ui.add_space(8.0);
-
-        // Change Password section
-        ui.label(
-            RichText::new(format!("{} Change User Password", regular::KEY))
-                .strong()
-                .size(13.0),
-        );
-        ui.add_space(4.0);
-
-        ui.horizontal(|ui| {
-            ui.add(
-                TextEdit::singleline(&mut tab.password_input)
-                    .password(!tab.show_password)
-                    .hint_text("Enter new password...")
-                    .margin(Margin::symmetric(6.0, 4.0))
-                    .desired_width(220.0),
-            );
-            ui.checkbox(&mut tab.show_password, RichText::new("Show").size(11.5));
-
-            if primary_button(
-                ui,
-                &format!("{} Update Password", regular::CHECK),
-                self.palette.accent_color,
-            )
-            .clicked()
-                && !tab.password_input.trim().is_empty()
-            {
-                self.events.push(AppEvent::ChangeUserPassword {
-                    connection_name: conn.name.clone(),
-                    username: user.username.clone(),
-                    new_password: tab.password_input.clone(),
-                });
-                tab.password_input.clear();
-            }
-        });
     }
 }
 

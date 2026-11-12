@@ -395,18 +395,44 @@ impl MongoStudioApp {
                 }
                 AppEvent::OpenCreateUserModal { connection_index } => {
                     self.state.create_user_conn_idx = connection_index;
+                    self.state.duplicate_source_user = None;
+                    self.state.duplicate_source_roles.clear();
                     self.state.new_user_username.clear();
                     self.state.new_user_password.clear();
+                    self.state.new_user_confirm_password.clear();
+                    self.state.new_user_show_password = false;
                     self.state.new_user_db = "admin".to_string();
                     self.state.new_user_role = "readWrite".to_string();
+                    self.state.show_create_user_modal = true;
+                }
+                AppEvent::OpenDuplicateUserModal {
+                    connection_index,
+                    source_username,
+                } => {
+                    let cloned_roles = self
+                        .state
+                        .connections
+                        .get(connection_index)
+                        .and_then(|c| c.users.iter().find(|u| u.username == source_username))
+                        .map_or_else(
+                            || vec![UserRole::new("readWrite", "admin")],
+                            |u| u.roles.clone(),
+                        );
+
+                    self.state.create_user_conn_idx = connection_index;
+                    self.state.duplicate_source_user = Some(source_username.clone());
+                    self.state.duplicate_source_roles = cloned_roles;
+                    self.state.new_user_username = format!("{source_username}_copy");
+                    self.state.new_user_password.clear();
+                    self.state.new_user_confirm_password.clear();
+                    self.state.new_user_show_password = false;
                     self.state.show_create_user_modal = true;
                 }
                 AppEvent::CreateUser {
                     connection_index,
                     username,
                     password,
-                    initial_db,
-                    initial_role,
+                    roles,
                 } => {
                     let trimmed = username.trim().to_string();
                     if trimmed.eq_ignore_ascii_case("admin") {
@@ -418,12 +444,17 @@ impl MongoStudioApp {
                         continue;
                     }
                     if let Some(conn) = self.state.connections.get_mut(connection_index) {
-                        let role = UserRole::new(&initial_role, &initial_db);
+                        let effective_roles = if roles.is_empty() {
+                            vec![UserRole::new("read", "admin")]
+                        } else {
+                            roles
+                        };
+                        let role_count = effective_roles.len();
                         let new_user = MongoUser {
                             id: format!("admin.{trimmed}"),
                             username: trimmed.clone(),
                             db: "admin".to_string(),
-                            roles: vec![role.clone()],
+                            roles: effective_roles.clone(),
                         };
                         conn.users.retain(|u| u.username != trimmed);
                         conn.users.push(new_user);
@@ -437,7 +468,7 @@ impl MongoStudioApp {
                             LogLevel::Success,
                             "UserManager",
                             format!(
-                                "Created user '{trimmed}' with role '{initial_role}' on '{initial_db}'"
+                                "Created user '{trimmed}' with {role_count} assigned database role(s)"
                             ),
                         );
 
@@ -448,7 +479,7 @@ impl MongoStudioApp {
                                 &uri,
                                 &trimmed,
                                 &password,
-                                &[role],
+                                &effective_roles,
                                 DEFAULT_CONNECT_TIMEOUT,
                             )
                             .await;
@@ -601,6 +632,91 @@ impl MongoStudioApp {
                             });
                         }
                     }
+                }
+                AppEvent::SaveUserRoles {
+                    connection_name,
+                    username,
+                    roles,
+                } => {
+                    if username.trim().eq_ignore_ascii_case("admin") {
+                        self.state.bottom_panel.push_log(
+                            LogLevel::Error,
+                            "UserManager",
+                            "Cannot modify roles of protected 'admin' user.",
+                        );
+                        continue;
+                    }
+                    if let Some(conn) = self
+                        .state
+                        .connections
+                        .iter_mut()
+                        .find(|c| c.name == connection_name)
+                    {
+                        if let Some(user) = conn.users.iter_mut().find(|u| u.username == username) {
+                            user.roles = roles.clone();
+                            let user_db = user.db.clone();
+                            let uri = conn.uri.clone();
+                            let conn_name = conn.name.clone();
+                            let uname = username.clone();
+                            let role_count = roles.len();
+
+                            self.state.bottom_panel.push_log(
+                                LogLevel::Success,
+                                "UserManager",
+                                format!(
+                                    "Applied {role_count} database role(s) for user '{username}'"
+                                ),
+                            );
+
+                            let tx = self.bg_tx.clone();
+                            let ctx_clone = ctx.clone();
+                            self.runtime.spawn(async move {
+                                if UserService::update_user_roles(
+                                    &uri,
+                                    &user_db,
+                                    &uname,
+                                    &roles,
+                                    DEFAULT_CONNECT_TIMEOUT,
+                                )
+                                .await
+                                .is_ok()
+                                {
+                                    if let Ok(users) =
+                                        UserService::list_users_uri(&uri, DEFAULT_CONNECT_TIMEOUT)
+                                            .await
+                                    {
+                                        let _ = tx.send(AppEvent::UserOperationResult {
+                                            connection_name: conn_name,
+                                            message: format!(
+                                                "Saved {role_count} role(s) for '{uname}' on server"
+                                            ),
+                                            result: Ok(users),
+                                        });
+                                        ctx_clone.request_repaint();
+                                    }
+                                }
+                            });
+                        }
+                    }
+                }
+                AppEvent::OpenChangePasswordModal {
+                    connection_name,
+                    username,
+                } => {
+                    if username.trim().eq_ignore_ascii_case("admin") {
+                        self.state.bottom_panel.push_log(
+                            LogLevel::Error,
+                            "UserManager",
+                            "Cannot change password of protected 'admin' user.",
+                        );
+                        continue;
+                    }
+                    self.state.change_pwd_conn_name = connection_name;
+                    self.state.change_pwd_username = username;
+                    self.state.change_pwd_new.clear();
+                    self.state.change_pwd_confirm.clear();
+                    self.state.change_pwd_show = false;
+                    self.state.show_change_password_modal = true;
                 }
                 AppEvent::ChangeUserPassword {
                     connection_name,
