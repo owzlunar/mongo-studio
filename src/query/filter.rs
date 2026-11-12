@@ -42,10 +42,11 @@ impl QueryFilter {
             return true;
         }
 
-        let raw_json_obj = doc
-            .raw_json
-            .as_deref()
-            .and_then(|raw| serde_json::from_str::<Value>(raw).ok());
+        let json_obj = if doc.cached_json.is_some() || doc.raw_json.is_some() {
+            Some(doc.cached_or_parsed_json())
+        } else {
+            None
+        };
 
         for (k, expected_val) in map {
             if let Some(actual_str) = doc.field_str(k) {
@@ -53,7 +54,7 @@ impl QueryFilter {
                     continue;
                 }
             }
-            if let Some(Value::Object(ref raw_map)) = raw_json_obj {
+            if let Some(Value::Object(raw_map)) = json_obj.as_deref() {
                 if let Some(actual_val) = raw_map.get(k) {
                     if actual_val == expected_val {
                         continue;

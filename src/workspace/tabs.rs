@@ -1,7 +1,7 @@
 use egui_phosphor::regular;
 use serde::{Deserialize, Serialize};
 
-use crate::models::UserRole;
+use crate::models::{DocumentRow, UserRole};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum CollectionSubTab {
@@ -49,8 +49,18 @@ pub struct CollectionTab {
     pub filter_query: String,
     pub projection_query: String,
     pub sort_query: String,
+    #[serde(default)]
+    pub skip: usize,
     pub limit: usize,
     pub selected_row: Option<usize>,
+    #[serde(skip)]
+    pub total_matched: Option<usize>,
+    #[serde(skip)]
+    pub is_loading: bool,
+    #[serde(skip)]
+    pub last_query_ms: Option<f64>,
+    #[serde(skip)]
+    pub cached_columns: Vec<String>,
     #[serde(default)]
     pub selected_user: Option<String>,
     #[serde(default)]
@@ -96,8 +106,13 @@ impl CollectionTab {
             filter_query: "{}".to_string(),
             projection_query: "{}".to_string(),
             sort_query: "{\"_id\": 1}".to_string(),
-            limit: 50,
+            skip: 0,
+            limit: 20,
             selected_row: Some(0),
+            total_matched: None,
+            is_loading: false,
+            last_query_ms: None,
+            cached_columns: Vec::new(),
             selected_user: None,
             role_db_input: "admin".to_string(),
             role_db_filter: String::new(),
@@ -120,8 +135,13 @@ impl CollectionTab {
             filter_query: "{}".to_string(),
             projection_query: "{}".to_string(),
             sort_query: "{}".to_string(),
-            limit: 50,
+            skip: 0,
+            limit: 20,
             selected_row: None,
+            total_matched: None,
+            is_loading: false,
+            last_query_ms: None,
+            cached_columns: Vec::new(),
             selected_user: Some(username.to_string()),
             role_db_input: "admin".to_string(),
             role_db_filter: String::new(),
@@ -130,6 +150,18 @@ impl CollectionTab {
             cached_db_options: Vec::new(),
             cached_db_conn: String::new(),
             cached_db_count: 0,
+        }
+    }
+
+    /// Recomputes `cached_columns` from `docs` when documents change.
+    pub fn refresh_cached_columns(&mut self, docs: &[DocumentRow]) {
+        self.cached_columns = DocumentRow::extract_columns(docs);
+    }
+
+    /// Populates `cached_columns` lazily only if it is currently empty and `docs` is non-empty.
+    pub fn ensure_cached_columns(&mut self, docs: &[DocumentRow]) {
+        if self.cached_columns.is_empty() && !docs.is_empty() {
+            self.cached_columns = DocumentRow::extract_columns(docs);
         }
     }
 

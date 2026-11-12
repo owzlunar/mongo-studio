@@ -1,6 +1,8 @@
+use bson::Bson;
 use uuid::Uuid;
 
-use crate::models::{CollectionInfo, DatabaseInfo, MongoUser, UserRole};
+use crate::database::DocumentPageResult;
+use crate::models::{CollectionInfo, DatabaseInfo, DocumentRow, MongoUser, UserRole};
 use crate::theme::ThemeMode;
 use crate::ui::activity_bar::ActivityView;
 
@@ -86,6 +88,125 @@ pub enum AppEvent {
         db_name: String,
         collection_name: String,
         result: Result<CollectionInfo, String>,
+    },
+    OpenCreateCollectionModal {
+        connection_index: usize,
+        db_name: String,
+    },
+    CreateCollection {
+        connection_index: usize,
+        db_name: String,
+        collection_name: String,
+    },
+    CollectionCreated {
+        connection_name: String,
+        db_name: String,
+        result: Result<CollectionInfo, String>,
+    },
+    RequestDropCollection {
+        connection_index: usize,
+        db_name: String,
+        collection_name: String,
+    },
+    ConfirmDropCollection {
+        connection_index: usize,
+        db_name: String,
+        collection_name: String,
+    },
+    CollectionDropped {
+        connection_name: String,
+        db_name: String,
+        collection_name: String,
+        result: Result<(), String>,
+    },
+    RequestDropDatabase {
+        connection_index: usize,
+        db_name: String,
+    },
+    ConfirmDropDatabase {
+        connection_index: usize,
+        db_name: String,
+    },
+    DatabaseDropped {
+        connection_name: String,
+        db_name: String,
+        result: Result<(), String>,
+    },
+    ExecuteLiveQuery {
+        connection_name: String,
+        database: String,
+        collection: String,
+        filter: String,
+        projection: String,
+        sort: String,
+        skip: usize,
+        limit: usize,
+    },
+    QueryPageLoaded {
+        connection_name: String,
+        database: String,
+        collection: String,
+        skip: usize,
+        limit: usize,
+        result: Result<DocumentPageResult, String>,
+    },
+    OpenInsertDocumentModal {
+        connection_name: String,
+        database: String,
+        collection: String,
+    },
+    InsertDocument {
+        connection_name: String,
+        database: String,
+        collection: String,
+        json_text: String,
+    },
+    DocumentInserted {
+        connection_name: String,
+        database: String,
+        collection: String,
+        result: Result<DocumentRow, String>,
+    },
+    OpenEditDocumentModal {
+        connection_name: String,
+        database: String,
+        collection: String,
+        original_id: Bson,
+        json_text: String,
+    },
+    UpdateDocument {
+        connection_name: String,
+        database: String,
+        collection: String,
+        original_id: Bson,
+        json_text: String,
+    },
+    DocumentUpdated {
+        connection_name: String,
+        database: String,
+        collection: String,
+        result: Result<DocumentRow, String>,
+    },
+    RequestDeleteDocument {
+        connection_name: String,
+        database: String,
+        collection: String,
+        doc_id: Bson,
+        display_id: String,
+    },
+    ConfirmDeleteDocument {
+        connection_name: String,
+        database: String,
+        collection: String,
+        doc_id: Bson,
+        display_id: String,
+    },
+    DocumentDeleted {
+        connection_name: String,
+        database: String,
+        collection: String,
+        display_id: String,
+        result: Result<(), String>,
     },
     OpenCreateUserModal {
         connection_index: usize,

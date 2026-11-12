@@ -5,8 +5,8 @@ use bson::{doc, Bson, DateTime};
 use mongo_studio::core::{AppError, AppState};
 use mongo_studio::database::connection::ConnectionClient;
 use mongo_studio::database::{
-    CollectionService, ConnectionManager, DatabaseService, DocumentService, IndexService,
-    UserService,
+    CollectionService, ConnectionManager, DatabaseService, DocumentQueryParams, DocumentService,
+    IndexService, UserService,
 };
 use mongo_studio::models::{
     CollectionInfo, ConnectionConfig, ConnectionStatus, DocumentRow, UserRole,
@@ -364,6 +364,338 @@ fn database_service_create_database_and_introspect_validates_names_and_errors_on
         ))
     );
     assert!(matches!(unreachable_res, Err(AppError::Connection(_))));
+}
+
+#[test]
+fn database_and_collection_services_enforce_phase4_offline_guards_before_network_io() {
+    // Arrange
+    let runtime = build_test_runtime();
+    let unreachable_uri = "mongodb://127.0.0.1:1";
+    let timeout = Duration::from_millis(200);
+
+    // Act / Assert: DatabaseService::drop_database & drop_database_blocking reject empty & system DBs
+    for empty_db in ["", "  \t "] {
+        assert_eq!(
+            runtime.block_on(DatabaseService::drop_database(
+                unreachable_uri,
+                empty_db,
+                timeout
+            )),
+            Err(AppError::Connection(
+                "database name must not be empty".to_string()
+            ))
+        );
+        assert_eq!(
+            DatabaseService::drop_database_blocking(unreachable_uri, empty_db, timeout),
+            Err(AppError::Connection(
+                "database name must not be empty".to_string()
+            ))
+        );
+    }
+
+    for system_db in ["admin", "local", "config", "Admin", " LOCAL ", "Config"] {
+        let async_err = runtime
+            .block_on(DatabaseService::drop_database(
+                unreachable_uri,
+                system_db,
+                timeout,
+            ))
+            .expect_err("system database drop must be rejected");
+        assert!(
+            async_err.to_string().contains("cannot drop system database"),
+            "unexpected error for `{system_db}`: {async_err}"
+        );
+
+        let blocking_err =
+            DatabaseService::drop_database_blocking(unreachable_uri, system_db, timeout)
+                .expect_err("system database blocking drop must be rejected");
+        assert!(
+            blocking_err
+                .to_string()
+                .contains("cannot drop system database"),
+            "unexpected blocking error for `{system_db}`: {blocking_err}"
+        );
+    }
+
+    // Act / Assert: CollectionService::create_collection & drop_collection reject empty & system.*
+    assert_eq!(
+        runtime.block_on(CollectionService::create_collection(
+            unreachable_uri,
+            "   ",
+            "orders",
+            timeout
+        )),
+        Err(AppError::Connection(
+            "database name must not be empty".to_string()
+        ))
+    );
+    assert_eq!(
+        CollectionService::create_collection_blocking(unreachable_uri, "app_db", "  ", timeout),
+        Err(AppError::Connection(
+            "collection name must not be empty".to_string()
+        ))
+    );
+    assert_eq!(
+        runtime.block_on(CollectionService::drop_collection(
+            unreachable_uri,
+            "",
+            "orders",
+            timeout
+        )),
+        Err(AppError::Connection(
+            "database name must not be empty".to_string()
+        ))
+    );
+    assert_eq!(
+        CollectionService::drop_collection_blocking(unreachable_uri, "app_db", "   ", timeout),
+        Err(AppError::Connection(
+            "collection name must not be empty".to_string()
+        ))
+    );
+
+    for sys_coll in ["system.indexes", "system.users", "  system.profile  "] {
+        let create_err = runtime
+            .block_on(CollectionService::create_collection(
+                unreachable_uri,
+                "app_db",
+                sys_coll,
+                timeout,
+            ))
+            .expect_err("system.* collection creation must be rejected");
+        assert!(
+            create_err
+                .to_string()
+                .contains("cannot modify protected system collection"),
+            "unexpected error for `{sys_coll}`: {create_err}"
+        );
+
+        let drop_err = CollectionService::drop_collection_blocking(
+            unreachable_uri,
+            "app_db",
+            sys_coll,
+            timeout,
+        )
+        .expect_err("system.* collection drop must be rejected");
+        assert!(
+            drop_err
+                .to_string()
+                .contains("cannot modify protected system collection"),
+            "unexpected drop error for `{sys_coll}`: {drop_err}"
+        );
+    }
+
+    // Act / Assert: valid names against unreachable server fail cleanly with AppError::Connection
+    assert!(matches!(
+        runtime.block_on(CollectionService::create_collection(
+            unreachable_uri,
+            "app_db",
+            "orders",
+            timeout
+        )),
+        Err(AppError::Connection(_))
+    ));
+    assert!(matches!(
+        runtime.block_on(CollectionService::drop_collection(
+            unreachable_uri,
+            "app_db",
+            "orders",
+            timeout
+        )),
+        Err(AppError::Connection(_))
+    ));
+    assert!(matches!(
+        runtime.block_on(DatabaseService::drop_database(
+            unreachable_uri,
+            "app_db",
+            timeout
+        )),
+        Err(AppError::Connection(_))
+    ));
+}
+
+#[test]
+fn document_service_enforces_phase4_offline_guards_and_validates_extended_json() {
+    // Arrange
+    let runtime = build_test_runtime();
+    let unreachable_uri = "mongodb://127.0.0.1:1";
+    let timeout = Duration::from_millis(200);
+    let default_params = DocumentQueryParams::default();
+
+    // Act / Assert: query_documents rejects empty db/collection & invalid filter/projection/sort
+    assert_eq!(
+        runtime.block_on(DocumentService::query_documents(
+            unreachable_uri,
+            "  ",
+            "items",
+            &default_params,
+            timeout
+        )),
+        Err(AppError::Connection(
+            "database name must not be empty".to_string()
+        ))
+    );
+    assert_eq!(
+        DocumentService::query_documents_blocking(
+            unreachable_uri,
+            "shop_db",
+            "  ",
+            &default_params,
+            timeout
+        ),
+        Err(AppError::Connection(
+            "collection name must not be empty".to_string()
+        ))
+    );
+
+    for bad_params in [
+        DocumentQueryParams {
+            filter: "{bad_filter".to_string(),
+            ..DocumentQueryParams::default()
+        },
+        DocumentQueryParams {
+            projection: "[1, 2]".to_string(),
+            ..DocumentQueryParams::default()
+        },
+        DocumentQueryParams {
+            sort: "{bad_sort}".to_string(),
+            ..DocumentQueryParams::default()
+        },
+    ] {
+        assert!(matches!(
+            runtime.block_on(DocumentService::query_documents(
+                unreachable_uri,
+                "shop_db",
+                "items",
+                &bad_params,
+                timeout
+            )),
+            Err(AppError::InvalidQueryJson(_))
+        ));
+    }
+
+    // Act / Assert: insert_document rejects empty target & invalid Extended JSON
+    assert_eq!(
+        runtime.block_on(DocumentService::insert_document(
+            unreachable_uri,
+            "",
+            "items",
+            "{}",
+            timeout
+        )),
+        Err(AppError::Connection(
+            "database name must not be empty".to_string()
+        ))
+    );
+    assert_eq!(
+        DocumentService::insert_document_blocking(unreachable_uri, "shop_db", "", "{}", timeout),
+        Err(AppError::Connection(
+            "collection name must not be empty".to_string()
+        ))
+    );
+    for invalid_json in ["", "   ", "[1, 2]", "{bad: 1}"] {
+        assert!(matches!(
+            runtime.block_on(DocumentService::insert_document(
+                unreachable_uri,
+                "shop_db",
+                "items",
+                invalid_json,
+                timeout
+            )),
+            Err(AppError::InvalidQueryJson(_))
+        ));
+    }
+
+    // Act / Assert: update_document rejects empty target, invalid JSON, and immutable _id mutation
+    let original_id = Bson::Int32(101);
+    assert_eq!(
+        runtime.block_on(DocumentService::update_document(
+            unreachable_uri,
+            "  ",
+            "items",
+            &original_id,
+            r#"{"name": "Updated"}"#,
+            timeout
+        )),
+        Err(AppError::Connection(
+            "database name must not be empty".to_string()
+        ))
+    );
+    assert_eq!(
+        DocumentService::update_document_blocking(
+            unreachable_uri,
+            "shop_db",
+            " ",
+            &original_id,
+            r#"{"name": "Updated"}"#,
+            timeout
+        ),
+        Err(AppError::Connection(
+            "collection name must not be empty".to_string()
+        ))
+    );
+    assert!(matches!(
+        runtime.block_on(DocumentService::update_document(
+            unreachable_uri,
+            "shop_db",
+            "items",
+            &original_id,
+            "{invalid",
+            timeout
+        )),
+        Err(AppError::InvalidQueryJson(_))
+    ));
+    let immutable_err = runtime
+        .block_on(DocumentService::update_document(
+            unreachable_uri,
+            "shop_db",
+            "items",
+            &original_id,
+            r#"{"_id": 999, "name": "Tampered"}"#,
+            timeout,
+        ))
+        .expect_err("modifying _id must be rejected");
+    assert!(
+        immutable_err
+            .to_string()
+            .contains("cannot modify immutable '_id'"),
+        "unexpected immutable _id error: {immutable_err}"
+    );
+
+    // Act / Assert: delete_document rejects empty target and fails cleanly on unreachable server
+    assert_eq!(
+        runtime.block_on(DocumentService::delete_document(
+            unreachable_uri,
+            "",
+            "items",
+            &original_id,
+            timeout
+        )),
+        Err(AppError::Connection(
+            "database name must not be empty".to_string()
+        ))
+    );
+    assert_eq!(
+        DocumentService::delete_document_blocking(
+            unreachable_uri,
+            "shop_db",
+            "   ",
+            &original_id,
+            timeout
+        ),
+        Err(AppError::Connection(
+            "collection name must not be empty".to_string()
+        ))
+    );
+    assert!(matches!(
+        runtime.block_on(DocumentService::delete_document(
+            unreachable_uri,
+            "shop_db",
+            "items",
+            &original_id,
+            timeout
+        )),
+        Err(AppError::Connection(_))
+    ));
 }
 
 #[test]
@@ -804,4 +1136,257 @@ fn live_mongodb_connection_lazy_loading_and_user_lifecycle_on_192_168_100_243_27
             );
         }
     }
+}
+
+#[test]
+fn live_phase4_crud_query_and_drop_lifecycle_on_192_168_100_243_27017() {
+    struct TempDbGuard<'a> {
+        uri: &'a str,
+        db_name: String,
+        timeout: Duration,
+        cleaned_up: bool,
+    }
+
+    impl<'a> TempDbGuard<'a> {
+        fn new(uri: &'a str, db_name: String, timeout: Duration) -> Self {
+            Self {
+                uri,
+                db_name,
+                timeout,
+                cleaned_up: false,
+            }
+        }
+
+        fn mark_cleaned_up(&mut self) {
+            self.cleaned_up = true;
+        }
+    }
+
+    impl Drop for TempDbGuard<'_> {
+        fn drop(&mut self) {
+            if !self.cleaned_up {
+                let _ = DatabaseService::drop_database_blocking(
+                    self.uri,
+                    &self.db_name,
+                    self.timeout,
+                );
+            }
+        }
+    }
+
+    // Arrange
+    let target_host = "192.168.100.243:27017";
+    let timeout = Duration::from_secs(5);
+
+    if let Err(err) = ConnectionManager::ping_uri_blocking(target_host, timeout) {
+        println!("Skipping Phase 4 live CRUD/query test on {target_host} (unreachable/blocked: {err})");
+        return;
+    }
+
+    let temp_db = format!("qa_phase4_{}", Uuid::new_v4().simple());
+    let primary_coll = "items";
+    let secondary_coll = "orders";
+    let mut db_guard = TempDbGuard::new(target_host, temp_db.clone(), timeout);
+
+    // Act 1: Create temporary database + initial collection, then create second collection
+    DatabaseService::create_database_blocking(target_host, &temp_db, primary_coll, timeout)
+        .expect("should create temporary database and initial collection");
+
+    let created_second = CollectionService::create_collection_blocking(
+        target_host,
+        &temp_db,
+        secondary_coll,
+        timeout,
+    )
+    .expect("should create second collection in temporary database");
+    assert_eq!(created_second.database, temp_db);
+    assert_eq!(created_second.name, secondary_coll);
+    assert!(created_second.loaded);
+
+    // Act 2: Insert multiple documents (Extended JSON ObjectId, Int32 _id, String _id, auto _id)
+    let explicit_oid_hex = "654f1a2b3c4d5e6f7a8b9c01";
+    let doc1 = DocumentService::insert_document_blocking(
+        target_host,
+        &temp_db,
+        primary_coll,
+        &format!(
+            r#"{{"_id": {{"$oid": "{explicit_oid_hex}"}}, "name": "Alpha", "seq": 1, "status": "active", "tags": ["a", "b"], "meta": {{"tier": 1}}}}"#
+        ),
+        timeout,
+    )
+    .expect("should insert document with Extended JSON ObjectId");
+    assert_eq!(doc1.id, explicit_oid_hex);
+    assert!(doc1.cached_json.is_some());
+
+    let doc2 = DocumentService::insert_document_blocking(
+        target_host,
+        &temp_db,
+        primary_coll,
+        r#"{"_id": 102, "name": "Beta", "seq": 2, "status": "active", "tags": ["c"], "meta": {"tier": 2}}"#,
+        timeout,
+    )
+    .expect("should insert document with Int32 _id");
+    assert_eq!(doc2.extract_bson_id().expect("Int32 _id"), Bson::Int32(102));
+
+    let doc3 = DocumentService::insert_document_blocking(
+        target_host,
+        &temp_db,
+        primary_coll,
+        r#"{"_id": "doc_103", "name": "Gamma", "seq": 3, "status": "inactive", "tags": [], "meta": {"tier": 1}}"#,
+        timeout,
+    )
+    .expect("should insert document with String _id");
+    assert_eq!(
+        doc3.extract_bson_id().expect("String _id"),
+        Bson::String("doc_103".to_string())
+    );
+
+    let doc4 = DocumentService::insert_document_blocking(
+        target_host,
+        &temp_db,
+        primary_coll,
+        r#"{"name": "Delta", "seq": 4, "status": "active", "tags": ["d"], "meta": {"tier": 3}}"#,
+        timeout,
+    )
+    .expect("should insert document with auto-generated _id");
+    assert!(matches!(doc4.extract_bson_id(), Ok(Bson::ObjectId(_))));
+
+    // Act 3: Live paginated query with filter, projection, sort, skip, and limit
+    let page1 = DocumentService::query_documents_blocking(
+        target_host,
+        &temp_db,
+        primary_coll,
+        &DocumentQueryParams {
+            filter: r#"{"status": "active"}"#.to_string(),
+            projection: r#"{"name": 1, "seq": 1, "status": 1}"#.to_string(),
+            sort: r#"{"seq": -1}"#.to_string(),
+            skip: 0,
+            limit: 2,
+        },
+        timeout,
+    )
+    .expect("should execute page 1 live query");
+
+    assert_eq!(page1.total_count, 3);
+    assert_eq!(page1.skip, 0);
+    assert_eq!(page1.limit, 2);
+    assert!(page1.query_ms >= 0.0);
+    assert_eq!(page1.documents.len(), 2);
+    assert_eq!(page1.documents[0].cell_display_value("name"), "Delta");
+    assert_eq!(page1.documents[1].cell_display_value("name"), "Beta");
+    assert_eq!(page1.documents[0].cell_display_value("tags"), "");
+
+    let page2 = DocumentService::query_documents_blocking(
+        target_host,
+        &temp_db,
+        primary_coll,
+        &DocumentQueryParams {
+            filter: r#"{"status": "active"}"#.to_string(),
+            projection: r#"{"name": 1, "seq": 1, "status": 1}"#.to_string(),
+            sort: r#"{"seq": -1}"#.to_string(),
+            skip: 2,
+            limit: 2,
+        },
+        timeout,
+    )
+    .expect("should execute page 2 live query");
+
+    assert_eq!(page2.total_count, 3);
+    assert_eq!(page2.skip, 2);
+    assert_eq!(page2.documents.len(), 1);
+    assert_eq!(page2.documents[0].cell_display_value("name"), "Alpha");
+    assert_eq!(page2.documents[0].id, explicit_oid_hex);
+
+    // Act 4: Update document (reject immutable _id change, then replace cleanly)
+    let immutable_res = DocumentService::update_document_blocking(
+        target_host,
+        &temp_db,
+        primary_coll,
+        &Bson::Int32(102),
+        r#"{"_id": 999, "name": "Tampered"}"#,
+        timeout,
+    );
+    assert!(matches!(immutable_res, Err(AppError::InvalidQueryJson(_))));
+
+    let updated = DocumentService::update_document_blocking(
+        target_host,
+        &temp_db,
+        primary_coll,
+        &Bson::Int32(102),
+        r#"{"name": "Beta Replaced", "seq": 20, "status": "archived"}"#,
+        timeout,
+    )
+    .expect("should replace document 102");
+    assert_eq!(updated.id, "102");
+    assert_eq!(updated.cell_display_value("name"), "Beta Replaced");
+    assert_eq!(updated.cell_display_value("status"), "archived");
+
+    let verify_replaced = DocumentService::query_documents_blocking(
+        target_host,
+        &temp_db,
+        primary_coll,
+        &DocumentQueryParams {
+            filter: r#"{"_id": 102}"#.to_string(),
+            ..DocumentQueryParams::default()
+        },
+        timeout,
+    )
+    .expect("should query replaced document 102");
+    assert_eq!(verify_replaced.total_count, 1);
+    assert_eq!(
+        verify_replaced.documents[0].cell_display_value("name"),
+        "Beta Replaced"
+    );
+    assert_eq!(verify_replaced.documents[0].cell_display_value("tags"), "");
+
+    // Act 5: Delete document (verify deletion and subsequent delete fails cleanly)
+    DocumentService::delete_document_blocking(
+        target_host,
+        &temp_db,
+        primary_coll,
+        &Bson::Int32(102),
+        timeout,
+    )
+    .expect("should delete document 102");
+
+    let second_delete_err = DocumentService::delete_document_blocking(
+        target_host,
+        &temp_db,
+        primary_coll,
+        &Bson::Int32(102),
+        timeout,
+    )
+    .expect_err("deleting an already-deleted document must return Err");
+    assert!(
+        second_delete_err.to_string().contains("deleted_count = 0"),
+        "unexpected second delete error: {second_delete_err}"
+    );
+
+    let remaining = DocumentService::query_documents_blocking(
+        target_host,
+        &temp_db,
+        primary_coll,
+        &DocumentQueryParams::default(),
+        timeout,
+    )
+    .expect("should query remaining documents");
+    assert_eq!(remaining.total_count, 3);
+
+    // Act 6: Drop collections and temporary database, then verify cleanup
+    CollectionService::drop_collection_blocking(target_host, &temp_db, secondary_coll, timeout)
+        .expect("should drop secondary collection");
+    CollectionService::drop_collection_blocking(target_host, &temp_db, primary_coll, timeout)
+        .expect("should drop primary collection");
+
+    DatabaseService::drop_database_blocking(target_host, &temp_db, timeout)
+        .expect("should drop temporary database");
+    db_guard.mark_cleaned_up();
+
+    let post_drop_profile =
+        ConnectionManager::connect_live_blocking("LAN Verify", target_host, timeout)
+            .expect("should reconnect to verify database cleanup");
+    assert!(
+        !post_drop_profile.databases.iter().any(|d| d.name == temp_db),
+        "temporary database `{temp_db}` should no longer exist after drop_database"
+    );
 }

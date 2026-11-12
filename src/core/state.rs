@@ -1,9 +1,19 @@
+use bson::Bson;
 use egui_dock::DockState;
 
 use crate::models::{CollectionInfo, ConnectionConfig, MongoUser, UserRole};
 use crate::theme::ThemeMode;
 use crate::ui::activity_bar::ActivityView;
 use crate::workspace::{BottomPanelState, CollectionTab, WorkspacePersistence};
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct PendingDeleteDocument {
+    pub connection_name: String,
+    pub database: String,
+    pub collection: String,
+    pub doc_id: Bson,
+    pub display_id: String,
+}
 
 pub struct AppState {
     pub connections: Vec<ConnectionConfig>,
@@ -29,6 +39,19 @@ pub struct AppState {
     pub create_db_conn_idx: usize,
     pub new_db_name: String,
     pub new_db_collection: String,
+    pub show_create_coll_modal: bool,
+    pub create_coll_conn_idx: usize,
+    pub create_coll_db_name: String,
+    pub new_coll_name: String,
+    pub pending_drop_db: Option<(usize, String)>,
+    pub pending_drop_coll: Option<(usize, String, String)>,
+    pub show_doc_editor_modal: bool,
+    pub doc_editor_conn_name: String,
+    pub doc_editor_db: String,
+    pub doc_editor_coll: String,
+    pub doc_editor_original_id: Option<Bson>,
+    pub doc_editor_json: String,
+    pub pending_delete_doc: Option<PendingDeleteDocument>,
     pub show_create_user_modal: bool,
     pub create_user_conn_idx: usize,
     pub duplicate_source_user: Option<String>,
@@ -99,6 +122,19 @@ impl AppState {
             create_db_conn_idx: 0,
             new_db_name: String::new(),
             new_db_collection: "users".to_string(),
+            show_create_coll_modal: false,
+            create_coll_conn_idx: 0,
+            create_coll_db_name: String::new(),
+            new_coll_name: String::new(),
+            pending_drop_db: None,
+            pending_drop_coll: None,
+            show_doc_editor_modal: false,
+            doc_editor_conn_name: String::new(),
+            doc_editor_db: String::new(),
+            doc_editor_coll: String::new(),
+            doc_editor_original_id: None,
+            doc_editor_json: String::new(),
+            pending_delete_doc: None,
             show_create_user_modal: false,
             create_user_conn_idx: 0,
             duplicate_source_user: None,

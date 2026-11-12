@@ -9,6 +9,6 @@ pub mod user_service;
 pub use collection_service::CollectionService;
 pub use connection_manager::ConnectionManager;
 pub use database_service::DatabaseService;
-pub use document_service::DocumentService;
+pub use document_service::{DocumentPageResult, DocumentQueryParams, DocumentService};
 pub use index_service::IndexService;
 pub use user_service::UserService;

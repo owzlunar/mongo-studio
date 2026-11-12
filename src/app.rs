@@ -2,17 +2,20 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use bson::oid::ObjectId;
+use bson::Bson;
 use egui::{Context, FontData, FontDefinitions, FontFamily, Key};
 
 use crate::core::events::AppEvent;
-use crate::core::state::AppState;
+use crate::core::state::{AppState, PendingDeleteDocument};
 use crate::database::{
-    connection::ConnectionClient, ConnectionManager, DatabaseService, UserService,
+    connection::ConnectionClient, CollectionService, ConnectionManager, DatabaseService,
+    DocumentQueryParams, DocumentService, UserService,
 };
 use crate::models::{ConnectionConfig, ConnectionStatus, DatabaseInfo, DocumentRow, UserRole};
 use crate::theme::{apply_theme, ThemePalette};
 use crate::ui::layout::render_main_layout;
-use crate::workspace::{LogLevel, WorkspacePersistence};
+use crate::workspace::{CollectionTab, LogLevel, WorkspacePersistence};
 
 const DEFAULT_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -24,6 +27,50 @@ struct RoleUpdateTask {
     roles: Vec<UserRole>,
     success_message: String,
     failure_prefix: String,
+}
+
+#[derive(Clone)]
+struct ConnectionTarget {
+    id: uuid::Uuid,
+    name: String,
+    uri: String,
+    username: String,
+    has_saved_password: bool,
+    is_connected: bool,
+}
+
+fn is_system_database_name(name: &str) -> bool {
+    let trimmed = name.trim();
+    trimmed.eq_ignore_ascii_case("admin")
+        || trimmed.eq_ignore_ascii_case("local")
+        || trimmed.eq_ignore_ascii_case("config")
+}
+
+async fn resolve_effective_uri(
+    conn_id: uuid::Uuid,
+    raw_uri: String,
+    username: String,
+    has_saved_password: bool,
+) -> Result<String, String> {
+    let (base_uri, uri_user, uri_pass) = ConnectionConfig::split_uri_credentials(&raw_uri);
+    if has_saved_password && uri_pass.is_empty() {
+        let pw = ConnectionManager::load_password_from_keyring_async(conn_id)
+            .await
+            .map_err(|err| format!("Failed to load saved password from OS Keychain: {err}"))?;
+        if let Some(pw) = pw {
+            let effective_user = if username.is_empty() {
+                uri_user
+            } else {
+                username
+            };
+            return Ok(ConnectionConfig::normalize_uri(
+                &base_uri,
+                &effective_user,
+                &pw,
+            ));
+        }
+    }
+    Ok(raw_uri)
 }
 
 pub struct MongoStudioApp {
@@ -110,6 +157,244 @@ impl MongoStudioApp {
                 events.push(AppEvent::ToggleBottomPanel);
             }
         });
+    }
+
+    fn connection_target_by_index(&self, index: usize) -> Option<ConnectionTarget> {
+        self.state
+            .connections
+            .get(index)
+            .map(|c| ConnectionTarget {
+                id: c.id,
+                name: c.name.clone(),
+                uri: c.uri.clone(),
+                username: c.username.clone(),
+                has_saved_password: c.has_saved_password,
+                is_connected: c.status.is_connected(),
+            })
+    }
+
+    fn connection_target_by_name(&self, connection_name: &str) -> Option<ConnectionTarget> {
+        self.state
+            .connections
+            .iter()
+            .find(|c| c.name == connection_name)
+            .map(|c| ConnectionTarget {
+                id: c.id,
+                name: c.name.clone(),
+                uri: c.uri.clone(),
+                username: c.username.clone(),
+                has_saved_password: c.has_saved_password,
+                is_connected: c.status.is_connected(),
+            })
+    }
+
+    fn tab_query_params(
+        &self,
+        connection_name: &str,
+        database: &str,
+        collection: &str,
+    ) -> Option<(String, String, String, usize, usize)> {
+        for (_, node) in self.state.dock_state.iter_all_nodes() {
+            if let Some(tabs) = node.tabs() {
+                if let Some(tab) = tabs.iter().find(|t| {
+                    t.selected_user.is_none()
+                        && t.connection_name == connection_name
+                        && t.database == database
+                        && t.collection == collection
+                }) {
+                    return Some((
+                        tab.filter_query.clone(),
+                        tab.projection_query.clone(),
+                        tab.sort_query.clone(),
+                        tab.skip,
+                        tab.limit,
+                    ));
+                }
+            }
+        }
+        None
+    }
+
+    fn set_tab_loading(
+        &mut self,
+        connection_name: &str,
+        database: &str,
+        collection: &str,
+        loading: bool,
+    ) {
+        for (_, tab) in self.state.dock_state.iter_all_tabs_mut() {
+            if tab.selected_user.is_none()
+                && tab.connection_name == connection_name
+                && tab.database == database
+                && tab.collection == collection
+            {
+                tab.is_loading = loading;
+            }
+        }
+    }
+
+    fn refresh_tab_columns_from_collection(
+        &mut self,
+        connection_name: &str,
+        database: &str,
+        collection: &str,
+        total_count: Option<usize>,
+    ) {
+        let docs_and_count = self
+            .state
+            .find_collection_by_conn(connection_name, database, collection)
+            .map(|c| (c.documents.clone(), c.stats.document_count));
+
+        if let Some((docs, doc_count)) = docs_and_count {
+            for (_, tab) in self.state.dock_state.iter_all_tabs_mut() {
+                if tab.selected_user.is_none()
+                    && tab.connection_name == connection_name
+                    && tab.database == database
+                    && tab.collection == collection
+                {
+                    tab.refresh_cached_columns(&docs);
+                    tab.total_matched = Some(total_count.unwrap_or(doc_count));
+                }
+            }
+        }
+    }
+
+    fn dispatch_live_query(
+        &mut self,
+        ctx: &Context,
+        connection_name: String,
+        database: String,
+        collection: String,
+        mut params: DocumentQueryParams,
+    ) {
+        params.limit = params.limit.clamp(1, 500);
+        let query_cmd = format!(
+            "db.getSiblingDB(\"{database}\").{collection}.find({})",
+            params.filter
+        );
+        if self.state.bottom_panel.query_history.last() != Some(&query_cmd) {
+            self.state.bottom_panel.query_history.push(query_cmd.clone());
+        }
+
+        let target = self.connection_target_by_name(&connection_name);
+        if let Some(conn) = target.filter(|c| c.is_connected) {
+            self.set_tab_loading(&connection_name, &database, &collection, true);
+
+            let tx = self.bg_tx.clone();
+            let ctx_clone = ctx.clone();
+            self.runtime.spawn(async move {
+                let result = match resolve_effective_uri(
+                    conn.id,
+                    conn.uri,
+                    conn.username,
+                    conn.has_saved_password,
+                )
+                .await
+                {
+                    Ok(effective_uri) => DocumentService::query_documents(
+                        &effective_uri,
+                        &database,
+                        &collection,
+                        &params,
+                        DEFAULT_CONNECT_TIMEOUT,
+                    )
+                    .await
+                    .map_err(|err| err.to_string()),
+                    Err(err) => Err(err),
+                };
+
+                // INTENTIONAL: receiver is dropped only on application shutdown.
+                let _ = tx.send(AppEvent::QueryPageLoaded {
+                    connection_name,
+                    database,
+                    collection,
+                    skip: params.skip,
+                    limit: params.limit,
+                    result,
+                });
+                ctx_clone.request_repaint();
+            });
+            return;
+        }
+
+        // Disconnected / mock fallback: filter and paginate in-memory without mutating source rows.
+        let effective_limit = params.limit;
+        let skip = params.skip;
+        let fallback_page = self
+            .state
+            .find_collection_by_conn(&connection_name, &database, &collection)
+            .map(|coll| {
+                let filtered = DocumentService::filter_documents(
+                    &coll.documents,
+                    &params.filter,
+                    usize::MAX,
+                );
+                let total_count = filtered.len();
+                let page_docs: Vec<DocumentRow> = filtered
+                    .into_iter()
+                    .skip(skip)
+                    .take(effective_limit)
+                    .collect();
+                (total_count, page_docs)
+            });
+
+        if let Some((total_count, page_docs)) = fallback_page {
+            let returned = page_docs.len();
+            for (_, tab) in self.state.dock_state.iter_all_tabs_mut() {
+                if tab.selected_user.is_none()
+                    && tab.connection_name == connection_name
+                    && tab.database == database
+                    && tab.collection == collection
+                {
+                    tab.is_loading = false;
+                    tab.skip = skip;
+                    tab.limit = effective_limit;
+                    tab.total_matched = Some(total_count);
+                    tab.last_query_ms = Some(0.1);
+                    tab.refresh_cached_columns(&page_docs);
+                    tab.selected_row = if returned == 0 { None } else { Some(0) };
+                }
+            }
+            self.state.bottom_panel.push_log(
+                LogLevel::Success,
+                "QueryRunner",
+                format!("{query_cmd} -> {returned} doc(s) (in-memory, total matched: {total_count})"),
+            );
+        } else {
+            self.set_tab_loading(&connection_name, &database, &collection, false);
+            self.state.bottom_panel.push_log(
+                LogLevel::Error,
+                "QueryRunner",
+                format!("Collection {database}.{collection} not found for connection '{connection_name}'."),
+            );
+        }
+    }
+
+    fn requery_open_collection(&mut self, ctx: &Context, connection_name: &str, database: &str, collection: &str) {
+        let (filter, projection, sort, skip, limit) = self
+            .tab_query_params(connection_name, database, collection)
+            .unwrap_or_else(|| {
+                (
+                    "{}".to_string(),
+                    "{}".to_string(),
+                    "{\"_id\": 1}".to_string(),
+                    0,
+                    20,
+                )
+            });
+        self.dispatch_live_query(
+            ctx,
+            connection_name.to_string(),
+            database.to_string(),
+            collection.to_string(),
+            DocumentQueryParams {
+                filter,
+                projection,
+                sort,
+                skip,
+                limit,
+            },
+        );
     }
 
     fn spawn_save_profiles_task(&self, ctx: &Context) {
@@ -292,25 +577,34 @@ impl MongoStudioApp {
     fn spawn_load_collection_task(
         &self,
         ctx: &Context,
-        connection_name: String,
-        uri: String,
+        target: ConnectionTarget,
         database: String,
         collection: String,
     ) {
         let tx = self.bg_tx.clone();
         let ctx_clone = ctx.clone();
         self.runtime.spawn(async move {
-            let result = ConnectionClient::introspect_single_collection(
-                &uri,
-                &database,
-                &collection,
-                DEFAULT_CONNECT_TIMEOUT,
+            let result = match resolve_effective_uri(
+                target.id,
+                target.uri,
+                target.username,
+                target.has_saved_password,
             )
             .await
-            .map_err(|e| e.to_string());
+            {
+                Ok(effective_uri) => ConnectionClient::introspect_single_collection(
+                    &effective_uri,
+                    &database,
+                    &collection,
+                    DEFAULT_CONNECT_TIMEOUT,
+                )
+                .await
+                .map_err(|e| e.to_string()),
+                Err(err) => Err(err),
+            };
             // INTENTIONAL: receiver is dropped only on application shutdown.
             let _ = tx.send(AppEvent::CollectionLoaded {
-                connection_name,
+                connection_name: target.name,
                 database,
                 collection,
                 result,
@@ -356,35 +650,43 @@ impl MongoStudioApp {
                 } => {
                     self.state
                         .open_or_focus_collection(&connection_name, &database, &collection);
+                    self.refresh_tab_columns_from_collection(
+                        &connection_name,
+                        &database,
+                        &collection,
+                        None,
+                    );
 
+                    let conn_target = self.connection_target_by_name(&connection_name);
                     let needs_load = self
                         .state
-                        .connections
-                        .iter()
-                        .find(|c| c.name == connection_name)
-                        .and_then(|c| {
-                            c.databases
-                                .iter()
-                                .find(|db| db.name == database)
-                                .and_then(|db| {
-                                    db.collections.iter().find(|coll| coll.name == collection)
-                                })
-                                .map(|coll| (!coll.loaded, c.uri.clone()))
-                        });
+                        .find_collection_by_conn(&connection_name, &database, &collection)
+                        .is_some_and(|coll| !coll.loaded);
 
-                    if let Some((true, uri)) = needs_load {
-                        self.state.bottom_panel.push_log(
-                            LogLevel::Info,
-                            "Explorer",
-                            format!("Lazy-loading collection {database}.{collection}..."),
-                        );
-                        self.spawn_load_collection_task(
-                            ctx,
-                            connection_name,
-                            uri,
-                            database,
-                            collection,
-                        );
+                    let is_connected = conn_target.as_ref().is_some_and(|t| t.is_connected);
+
+                    if needs_load {
+                        if let Some(target) = conn_target {
+                            if target.is_connected {
+                                self.set_tab_loading(&connection_name, &database, &collection, true);
+                                self.state.bottom_panel.push_log(
+                                    LogLevel::Info,
+                                    "Explorer",
+                                    format!("Lazy-loading collection {database}.{collection}..."),
+                                );
+                                self.spawn_load_collection_task(
+                                    ctx,
+                                    target,
+                                    database,
+                                    collection,
+                                );
+                                continue;
+                            }
+                        }
+                    }
+
+                    if is_connected {
+                        self.requery_open_collection(ctx, &connection_name, &database, &collection);
                     } else {
                         self.state.bottom_panel.push_log(
                             LogLevel::Info,
@@ -398,24 +700,34 @@ impl MongoStudioApp {
                     database,
                     collection,
                 } => {
-                    if let Some(conn) = self
-                        .state
-                        .connections
-                        .iter()
-                        .find(|c| c.name == connection_name)
-                    {
-                        let uri = conn.uri.clone();
+                    self.refresh_tab_columns_from_collection(
+                        &connection_name,
+                        &database,
+                        &collection,
+                        None,
+                    );
+                    if let Some(target) = self.connection_target_by_name(&connection_name) {
+                        if target.is_connected {
+                            self.set_tab_loading(&connection_name, &database, &collection, true);
+                            self.state.bottom_panel.push_log(
+                                LogLevel::Info,
+                                "Explorer",
+                                format!("Refreshing collection {database}.{collection}..."),
+                            );
+                            self.spawn_load_collection_task(ctx, target, database, collection);
+                        } else {
+                            self.requery_open_collection(
+                                ctx,
+                                &connection_name,
+                                &database,
+                                &collection,
+                            );
+                        }
+                    } else {
                         self.state.bottom_panel.push_log(
-                            LogLevel::Info,
+                            LogLevel::Error,
                             "Explorer",
-                            format!("Refreshing collection {database}.{collection}..."),
-                        );
-                        self.spawn_load_collection_task(
-                            ctx,
-                            connection_name,
-                            uri,
-                            database,
-                            collection,
+                            format!("Connection '{connection_name}' not found."),
                         );
                     }
                 }
@@ -443,6 +755,13 @@ impl MongoStudioApp {
                                 }
                             }
                         }
+                        self.refresh_tab_columns_from_collection(
+                            &connection_name,
+                            &database,
+                            &collection,
+                            Some(doc_count),
+                        );
+                        self.set_tab_loading(&connection_name, &database, &collection, false);
                         self.state.bottom_panel.push_log(
                             LogLevel::Success,
                             "Explorer",
@@ -450,8 +769,24 @@ impl MongoStudioApp {
                                 "Loaded {database}.{collection} ({doc_count} total documents)"
                             ),
                         );
+
+                        if self
+                            .tab_query_params(&connection_name, &database, &collection)
+                            .is_some()
+                            && self
+                                .connection_target_by_name(&connection_name)
+                                .is_some_and(|t| t.is_connected)
+                        {
+                            self.requery_open_collection(
+                                ctx,
+                                &connection_name,
+                                &database,
+                                &collection,
+                            );
+                        }
                     }
                     Err(err) => {
+                        self.set_tab_loading(&connection_name, &database, &collection, false);
                         self.state.bottom_panel.push_log(
                             LogLevel::Error,
                             "Explorer",
@@ -492,40 +827,54 @@ impl MongoStudioApp {
                         continue;
                     }
 
-                    if let Some(conn) = self.state.connections.get(connection_index) {
-                        let conn_name = conn.name.clone();
-                        let uri = conn.uri.clone();
-
+                    let Some(target) = self.connection_target_by_index(connection_index) else {
                         self.state.bottom_panel.push_log(
-                            LogLevel::Info,
+                            LogLevel::Error,
                             "DatabaseService",
-                            format!(
-                                "Creating database '{trimmed_db}' with initial collection '{trimmed_coll}'..."
-                            ),
+                            "Connection profile not found.",
                         );
+                        continue;
+                    };
 
-                        let tx = self.bg_tx.clone();
-                        let ctx_clone = ctx.clone();
-                        self.runtime.spawn(async move {
-                            let result = DatabaseService::create_database_and_introspect(
-                                &uri,
+                    self.state.bottom_panel.push_log(
+                        LogLevel::Info,
+                        "DatabaseService",
+                        format!(
+                            "Creating database '{trimmed_db}' with initial collection '{trimmed_coll}'..."
+                        ),
+                    );
+
+                    let tx = self.bg_tx.clone();
+                    let ctx_clone = ctx.clone();
+                    self.runtime.spawn(async move {
+                        let result = match resolve_effective_uri(
+                            target.id,
+                            target.uri,
+                            target.username,
+                            target.has_saved_password,
+                        )
+                        .await
+                        {
+                            Ok(effective_uri) => DatabaseService::create_database_and_introspect(
+                                &effective_uri,
                                 &trimmed_db,
                                 &trimmed_coll,
                                 DEFAULT_CONNECT_TIMEOUT,
                             )
                             .await
-                            .map_err(|err| err.to_string());
+                            .map_err(|err| err.to_string()),
+                            Err(err) => Err(err),
+                        };
 
-                            // INTENTIONAL: receiver is dropped only on application shutdown.
-                            let _ = tx.send(AppEvent::DatabaseCreated {
-                                connection_name: conn_name,
-                                db_name: trimmed_db,
-                                collection_name: trimmed_coll,
-                                result,
-                            });
-                            ctx_clone.request_repaint();
+                        // INTENTIONAL: receiver is dropped only on application shutdown.
+                        let _ = tx.send(AppEvent::DatabaseCreated {
+                            connection_name: target.name,
+                            db_name: trimmed_db,
+                            collection_name: trimmed_coll,
+                            result,
                         });
-                    }
+                        ctx_clone.request_repaint();
+                    });
                 }
                 AppEvent::DatabaseCreated {
                     connection_name,
@@ -552,6 +901,7 @@ impl MongoStudioApp {
                                     *slot = coll;
                                 } else {
                                     existing_db.collections.push(coll);
+                                    existing_db.collections.sort_by(|a, b| a.name.cmp(&b.name));
                                 }
                             } else {
                                 let mut new_db =
@@ -569,6 +919,12 @@ impl MongoStudioApp {
                             &db_name,
                             &collection_name,
                         );
+                        self.refresh_tab_columns_from_collection(
+                            &connection_name,
+                            &db_name,
+                            &collection_name,
+                            None,
+                        );
                         self.spawn_save_profiles_task(ctx);
 
                         self.state.bottom_panel.push_log(
@@ -585,6 +941,894 @@ impl MongoStudioApp {
                             "DatabaseService",
                             format!(
                                 "Failed to create database '{db_name}' ({collection_name}): {err}"
+                            ),
+                        );
+                    }
+                },
+                AppEvent::OpenCreateCollectionModal {
+                    connection_index,
+                    db_name,
+                } => {
+                    self.state.create_coll_conn_idx = connection_index;
+                    self.state.create_coll_db_name = db_name;
+                    self.state.new_coll_name.clear();
+                    self.state.show_create_coll_modal = true;
+                }
+                AppEvent::CreateCollection {
+                    connection_index,
+                    db_name,
+                    collection_name,
+                } => {
+                    let trimmed_db = db_name.trim().to_string();
+                    let trimmed_coll = collection_name.trim().to_string();
+                    if trimmed_db.is_empty() || trimmed_coll.is_empty() {
+                        self.state.bottom_panel.push_log(
+                            LogLevel::Error,
+                            "CollectionService",
+                            "Database name and collection name must not be empty.",
+                        );
+                        continue;
+                    }
+                    if trimmed_coll.starts_with("system.") {
+                        self.state.bottom_panel.push_log(
+                            LogLevel::Error,
+                            "CollectionService",
+                            format!("Cannot create protected system collection '{trimmed_coll}'."),
+                        );
+                        continue;
+                    }
+
+                    let Some(target) = self.connection_target_by_index(connection_index) else {
+                        self.state.bottom_panel.push_log(
+                            LogLevel::Error,
+                            "CollectionService",
+                            "Connection profile not found.",
+                        );
+                        continue;
+                    };
+
+                    self.state.bottom_panel.push_log(
+                        LogLevel::Info,
+                        "CollectionService",
+                        format!("Creating collection '{trimmed_db}.{trimmed_coll}'..."),
+                    );
+
+                    let tx = self.bg_tx.clone();
+                    let ctx_clone = ctx.clone();
+                    self.runtime.spawn(async move {
+                        let result = match resolve_effective_uri(
+                            target.id,
+                            target.uri,
+                            target.username,
+                            target.has_saved_password,
+                        )
+                        .await
+                        {
+                            Ok(effective_uri) => CollectionService::create_collection(
+                                &effective_uri,
+                                &trimmed_db,
+                                &trimmed_coll,
+                                DEFAULT_CONNECT_TIMEOUT,
+                            )
+                            .await
+                            .map_err(|err| err.to_string()),
+                            Err(err) => Err(err),
+                        };
+
+                        // INTENTIONAL: receiver is dropped only on application shutdown.
+                        let _ = tx.send(AppEvent::CollectionCreated {
+                            connection_name: target.name,
+                            db_name: trimmed_db,
+                            result,
+                        });
+                        ctx_clone.request_repaint();
+                    });
+                }
+                AppEvent::CollectionCreated {
+                    connection_name,
+                    db_name,
+                    result,
+                } => match result {
+                    Ok(coll) => {
+                        let coll_name = coll.name.clone();
+                        let doc_count = coll.stats.document_count;
+                        if let Some(conn) = self
+                            .state
+                            .connections
+                            .iter_mut()
+                            .find(|c| c.name == connection_name)
+                        {
+                            if let Some(db) =
+                                conn.databases.iter_mut().find(|d| d.name == db_name)
+                            {
+                                db.expanded = true;
+                                if let Some(slot) =
+                                    db.collections.iter_mut().find(|c| c.name == coll_name)
+                                {
+                                    *slot = coll;
+                                } else {
+                                    db.collections.push(coll);
+                                    db.collections.sort_by(|a, b| a.name.cmp(&b.name));
+                                }
+                            }
+                        }
+
+                        self.state.open_or_focus_collection(
+                            &connection_name,
+                            &db_name,
+                            &coll_name,
+                        );
+                        self.refresh_tab_columns_from_collection(
+                            &connection_name,
+                            &db_name,
+                            &coll_name,
+                            Some(doc_count),
+                        );
+                        self.spawn_save_profiles_task(ctx);
+
+                        self.state.bottom_panel.push_log(
+                            LogLevel::Success,
+                            "CollectionService",
+                            format!("Created collection '{db_name}.{coll_name}'"),
+                        );
+                    }
+                    Err(err) => {
+                        self.state.bottom_panel.push_log(
+                            LogLevel::Error,
+                            "CollectionService",
+                            format!("Failed to create collection in '{db_name}': {err}"),
+                        );
+                    }
+                },
+                AppEvent::RequestDropCollection {
+                    connection_index,
+                    db_name,
+                    collection_name,
+                } => {
+                    if collection_name.trim().starts_with("system.") {
+                        self.state.bottom_panel.push_log(
+                            LogLevel::Error,
+                            "CollectionService",
+                            format!("Cannot drop protected system collection '{collection_name}'."),
+                        );
+                    } else {
+                        self.state.pending_drop_coll =
+                            Some((connection_index, db_name, collection_name));
+                    }
+                }
+                AppEvent::ConfirmDropCollection {
+                    connection_index,
+                    db_name,
+                    collection_name,
+                } => {
+                    if collection_name.trim().starts_with("system.") {
+                        self.state.bottom_panel.push_log(
+                            LogLevel::Error,
+                            "CollectionService",
+                            format!("Cannot drop protected system collection '{collection_name}'."),
+                        );
+                        continue;
+                    }
+
+                    let Some(target) = self.connection_target_by_index(connection_index) else {
+                        self.state.bottom_panel.push_log(
+                            LogLevel::Error,
+                            "CollectionService",
+                            "Connection profile not found.",
+                        );
+                        continue;
+                    };
+
+                    self.state.bottom_panel.push_log(
+                        LogLevel::Info,
+                        "CollectionService",
+                        format!("Dropping collection '{db_name}.{collection_name}'..."),
+                    );
+
+                    let tx = self.bg_tx.clone();
+                    let ctx_clone = ctx.clone();
+                    self.runtime.spawn(async move {
+                        let result = match resolve_effective_uri(
+                            target.id,
+                            target.uri,
+                            target.username,
+                            target.has_saved_password,
+                        )
+                        .await
+                        {
+                            Ok(effective_uri) => CollectionService::drop_collection(
+                                &effective_uri,
+                                &db_name,
+                                &collection_name,
+                                DEFAULT_CONNECT_TIMEOUT,
+                            )
+                            .await
+                            .map_err(|err| err.to_string()),
+                            Err(err) => Err(err),
+                        };
+
+                        // INTENTIONAL: receiver is dropped only on application shutdown.
+                        let _ = tx.send(AppEvent::CollectionDropped {
+                            connection_name: target.name,
+                            db_name,
+                            collection_name,
+                            result,
+                        });
+                        ctx_clone.request_repaint();
+                    });
+                }
+                AppEvent::CollectionDropped {
+                    connection_name,
+                    db_name,
+                    collection_name,
+                    result,
+                } => match result {
+                    Ok(()) => {
+                        if let Some(conn) = self
+                            .state
+                            .connections
+                            .iter_mut()
+                            .find(|c| c.name == connection_name)
+                        {
+                            if let Some(db) =
+                                conn.databases.iter_mut().find(|d| d.name == db_name)
+                            {
+                                db.collections.retain(|c| c.name != collection_name);
+                            }
+                        }
+
+                        let target_tab =
+                            CollectionTab::new(&connection_name, &db_name, &collection_name);
+                        if let Some(loc) = self.state.dock_state.find_tab(&target_tab) {
+                            self.state.dock_state.remove_tab(loc);
+                        }
+
+                        self.spawn_save_profiles_task(ctx);
+                        self.state.bottom_panel.push_log(
+                            LogLevel::Success,
+                            "CollectionService",
+                            format!("Dropped collection '{db_name}.{collection_name}'"),
+                        );
+                    }
+                    Err(err) => {
+                        self.state.bottom_panel.push_log(
+                            LogLevel::Error,
+                            "CollectionService",
+                            format!(
+                                "Failed to drop collection '{db_name}.{collection_name}': {err}"
+                            ),
+                        );
+                    }
+                },
+                AppEvent::RequestDropDatabase {
+                    connection_index,
+                    db_name,
+                } => {
+                    if is_system_database_name(&db_name) {
+                        self.state.bottom_panel.push_log(
+                            LogLevel::Error,
+                            "DatabaseService",
+                            format!("Cannot drop protected system database '{db_name}'."),
+                        );
+                    } else {
+                        self.state.pending_drop_db = Some((connection_index, db_name));
+                    }
+                }
+                AppEvent::ConfirmDropDatabase {
+                    connection_index,
+                    db_name,
+                } => {
+                    if is_system_database_name(&db_name) {
+                        self.state.bottom_panel.push_log(
+                            LogLevel::Error,
+                            "DatabaseService",
+                            format!("Cannot drop protected system database '{db_name}'."),
+                        );
+                        continue;
+                    }
+
+                    let Some(target) = self.connection_target_by_index(connection_index) else {
+                        self.state.bottom_panel.push_log(
+                            LogLevel::Error,
+                            "DatabaseService",
+                            "Connection profile not found.",
+                        );
+                        continue;
+                    };
+
+                    self.state.bottom_panel.push_log(
+                        LogLevel::Info,
+                        "DatabaseService",
+                        format!("Dropping database '{db_name}'..."),
+                    );
+
+                    let tx = self.bg_tx.clone();
+                    let ctx_clone = ctx.clone();
+                    self.runtime.spawn(async move {
+                        let result = match resolve_effective_uri(
+                            target.id,
+                            target.uri,
+                            target.username,
+                            target.has_saved_password,
+                        )
+                        .await
+                        {
+                            Ok(effective_uri) => DatabaseService::drop_database(
+                                &effective_uri,
+                                &db_name,
+                                DEFAULT_CONNECT_TIMEOUT,
+                            )
+                            .await
+                            .map_err(|err| err.to_string()),
+                            Err(err) => Err(err),
+                        };
+
+                        // INTENTIONAL: receiver is dropped only on application shutdown.
+                        let _ = tx.send(AppEvent::DatabaseDropped {
+                            connection_name: target.name,
+                            db_name,
+                            result,
+                        });
+                        ctx_clone.request_repaint();
+                    });
+                }
+                AppEvent::DatabaseDropped {
+                    connection_name,
+                    db_name,
+                    result,
+                } => match result {
+                    Ok(()) => {
+                        if let Some(conn) = self
+                            .state
+                            .connections
+                            .iter_mut()
+                            .find(|c| c.name == connection_name)
+                        {
+                            conn.databases.retain(|d| d.name != db_name);
+                        }
+
+                        let tabs_to_close: Vec<CollectionTab> = self
+                            .state
+                            .dock_state
+                            .iter_all_nodes()
+                            .filter_map(|(_, node)| node.tabs())
+                            .flatten()
+                            .filter(|t| {
+                                t.selected_user.is_none()
+                                    && t.connection_name == connection_name
+                                    && t.database == db_name
+                            })
+                            .cloned()
+                            .collect();
+                        for tab_key in tabs_to_close {
+                            if let Some(loc) = self.state.dock_state.find_tab(&tab_key) {
+                                self.state.dock_state.remove_tab(loc);
+                            }
+                        }
+
+                        self.spawn_save_profiles_task(ctx);
+                        self.state.bottom_panel.push_log(
+                            LogLevel::Success,
+                            "DatabaseService",
+                            format!("Dropped database '{db_name}'"),
+                        );
+                    }
+                    Err(err) => {
+                        self.state.bottom_panel.push_log(
+                            LogLevel::Error,
+                            "DatabaseService",
+                            format!("Failed to drop database '{db_name}': {err}"),
+                        );
+                    }
+                },
+                AppEvent::ExecuteLiveQuery {
+                    connection_name,
+                    database,
+                    collection,
+                    filter,
+                    projection,
+                    sort,
+                    skip,
+                    limit,
+                } => {
+                    self.dispatch_live_query(
+                        ctx,
+                        connection_name,
+                        database,
+                        collection,
+                        DocumentQueryParams {
+                            filter,
+                            projection,
+                            sort,
+                            skip,
+                            limit,
+                        },
+                    );
+                }
+                AppEvent::QueryPageLoaded {
+                    connection_name,
+                    database,
+                    collection,
+                    skip: _,
+                    limit: _,
+                    result,
+                } => {
+                    self.set_tab_loading(&connection_name, &database, &collection, false);
+                    match result {
+                        Ok(page) => {
+                            let returned = page.documents.len();
+                            if let Some(coll) = self.state.find_collection_by_conn_mut(
+                                &connection_name,
+                                &database,
+                                &collection,
+                            ) {
+                                coll.documents = page.documents;
+                                coll.stats.document_count = page.total_count;
+                                coll.loaded = true;
+                            }
+
+                            let docs_ref = self
+                                .state
+                                .find_collection_by_conn(&connection_name, &database, &collection)
+                                .map(|c| c.documents.clone())
+                                .unwrap_or_default();
+
+                            for (_, tab) in self.state.dock_state.iter_all_tabs_mut() {
+                                if tab.selected_user.is_none()
+                                    && tab.connection_name == connection_name
+                                    && tab.database == database
+                                    && tab.collection == collection
+                                {
+                                    tab.skip = page.skip;
+                                    tab.limit = page.limit;
+                                    tab.total_matched = Some(page.total_count);
+                                    tab.last_query_ms = Some(page.query_ms);
+                                    tab.refresh_cached_columns(&docs_ref);
+                                    tab.selected_row = if returned == 0 { None } else { Some(0) };
+                                }
+                            }
+
+                            self.state.bottom_panel.push_log(
+                                LogLevel::Success,
+                                "QueryRunner",
+                                format!(
+                                    "Query {database}.{collection} returned {returned} doc(s) (total matched: {}) in {:.1} ms",
+                                    page.total_count, page.query_ms
+                                ),
+                            );
+                        }
+                        Err(err) => {
+                            self.state.bottom_panel.push_log(
+                                LogLevel::Error,
+                                "QueryRunner",
+                                format!("Query failed on {database}.{collection}: {err}"),
+                            );
+                        }
+                    }
+                }
+                AppEvent::OpenInsertDocumentModal {
+                    connection_name,
+                    database,
+                    collection,
+                } => {
+                    self.state.doc_editor_conn_name = connection_name;
+                    self.state.doc_editor_db = database;
+                    self.state.doc_editor_coll = collection;
+                    self.state.doc_editor_original_id = None;
+                    self.state.doc_editor_json = "{\n  \n}".to_string();
+                    self.state.show_doc_editor_modal = true;
+                }
+                AppEvent::InsertDocument {
+                    connection_name,
+                    database,
+                    collection,
+                    json_text,
+                } => {
+                    let parsed_doc = match DocumentRow::parse_json_to_bson_doc(&json_text) {
+                        Ok(doc) => doc,
+                        Err(err) => {
+                            self.state.bottom_panel.push_log(
+                                LogLevel::Error,
+                                "DocumentService",
+                                format!("Invalid JSON document: {err}"),
+                            );
+                            continue;
+                        }
+                    };
+
+                    if let Some(target) = self.connection_target_by_name(&connection_name) {
+                        if target.is_connected {
+                            self.state.bottom_panel.push_log(
+                                LogLevel::Info,
+                                "DocumentService",
+                                format!("Inserting document into {database}.{collection}..."),
+                            );
+
+                            let tx = self.bg_tx.clone();
+                            let ctx_clone = ctx.clone();
+                            self.runtime.spawn(async move {
+                                let result = match resolve_effective_uri(
+                                    target.id,
+                                    target.uri,
+                                    target.username,
+                                    target.has_saved_password,
+                                )
+                                .await
+                                {
+                                    Ok(effective_uri) => DocumentService::insert_document(
+                                        &effective_uri,
+                                        &database,
+                                        &collection,
+                                        &json_text,
+                                        DEFAULT_CONNECT_TIMEOUT,
+                                    )
+                                    .await
+                                    .map_err(|err| err.to_string()),
+                                    Err(err) => Err(err),
+                                };
+
+                                // INTENTIONAL: receiver is dropped only on application shutdown.
+                                let _ = tx.send(AppEvent::DocumentInserted {
+                                    connection_name: target.name,
+                                    database,
+                                    collection,
+                                    result,
+                                });
+                                ctx_clone.request_repaint();
+                            });
+                            continue;
+                        }
+                    }
+
+                    // Disconnected / mock fallback
+                    let mut doc_with_id = parsed_doc;
+                    if !doc_with_id.contains_key("_id") {
+                        doc_with_id.insert("_id", Bson::ObjectId(ObjectId::new()));
+                    }
+                    let row = DocumentRow::from_bson_doc(&doc_with_id);
+                    let inserted_id = row.id.clone();
+                    if let Some(coll) = self.state.find_collection_by_conn_mut(
+                        &connection_name,
+                        &database,
+                        &collection,
+                    ) {
+                        coll.documents.push(row);
+                        coll.stats.document_count = coll.documents.len();
+                    }
+                    self.requery_open_collection(ctx, &connection_name, &database, &collection);
+                    self.state.bottom_panel.push_log(
+                        LogLevel::Success,
+                        "DocumentService",
+                        format!("Inserted document (_id: {inserted_id}) into {database}.{collection} (in-memory)"),
+                    );
+                }
+                AppEvent::DocumentInserted {
+                    connection_name,
+                    database,
+                    collection,
+                    result,
+                } => match result {
+                    Ok(row) => {
+                        if let Some(coll) = self.state.find_collection_by_conn_mut(
+                            &connection_name,
+                            &database,
+                            &collection,
+                        ) {
+                            coll.stats.document_count = coll.stats.document_count.saturating_add(1);
+                        }
+                        self.state.bottom_panel.push_log(
+                            LogLevel::Success,
+                            "DocumentService",
+                            format!(
+                                "Inserted document (_id: {}) into {database}.{collection}",
+                                row.id
+                            ),
+                        );
+                        self.requery_open_collection(ctx, &connection_name, &database, &collection);
+                        self.spawn_save_profiles_task(ctx);
+                    }
+                    Err(err) => {
+                        self.state.bottom_panel.push_log(
+                            LogLevel::Error,
+                            "DocumentService",
+                            format!("Failed to insert document into {database}.{collection}: {err}"),
+                        );
+                    }
+                },
+                AppEvent::OpenEditDocumentModal {
+                    connection_name,
+                    database,
+                    collection,
+                    original_id,
+                    json_text,
+                } => {
+                    self.state.doc_editor_conn_name = connection_name;
+                    self.state.doc_editor_db = database;
+                    self.state.doc_editor_coll = collection;
+                    self.state.doc_editor_original_id = Some(original_id);
+                    self.state.doc_editor_json = json_text;
+                    self.state.show_doc_editor_modal = true;
+                }
+                AppEvent::UpdateDocument {
+                    connection_name,
+                    database,
+                    collection,
+                    original_id,
+                    json_text,
+                } => {
+                    let mut replacement = match DocumentRow::parse_json_to_bson_doc(&json_text) {
+                        Ok(doc) => doc,
+                        Err(err) => {
+                            self.state.bottom_panel.push_log(
+                                LogLevel::Error,
+                                "DocumentService",
+                                format!("Invalid JSON document: {err}"),
+                            );
+                            continue;
+                        }
+                    };
+                    if let Some(provided_id) = replacement.get("_id") {
+                        if *provided_id != original_id {
+                            self.state.bottom_panel.push_log(
+                                LogLevel::Error,
+                                "DocumentService",
+                                "Cannot modify immutable '_id' field when updating a document.",
+                            );
+                            continue;
+                        }
+                    } else {
+                        replacement.insert("_id", original_id.clone());
+                    }
+
+                    if let Some(target) = self.connection_target_by_name(&connection_name) {
+                        if target.is_connected {
+                            self.state.bottom_panel.push_log(
+                                LogLevel::Info,
+                                "DocumentService",
+                                format!("Updating document in {database}.{collection}..."),
+                            );
+
+                            let tx = self.bg_tx.clone();
+                            let ctx_clone = ctx.clone();
+                            self.runtime.spawn(async move {
+                                let result = match resolve_effective_uri(
+                                    target.id,
+                                    target.uri,
+                                    target.username,
+                                    target.has_saved_password,
+                                )
+                                .await
+                                {
+                                    Ok(effective_uri) => DocumentService::update_document(
+                                        &effective_uri,
+                                        &database,
+                                        &collection,
+                                        &original_id,
+                                        &json_text,
+                                        DEFAULT_CONNECT_TIMEOUT,
+                                    )
+                                    .await
+                                    .map_err(|err| err.to_string()),
+                                    Err(err) => Err(err),
+                                };
+
+                                // INTENTIONAL: receiver is dropped only on application shutdown.
+                                let _ = tx.send(AppEvent::DocumentUpdated {
+                                    connection_name: target.name,
+                                    database,
+                                    collection,
+                                    result,
+                                });
+                                ctx_clone.request_repaint();
+                            });
+                            continue;
+                        }
+                    }
+
+                    // Disconnected / mock fallback
+                    let updated_row = DocumentRow::from_bson_doc(&replacement);
+                    let updated_id = updated_row.id.clone();
+                    let mut matched = false;
+                    if let Some(coll) = self.state.find_collection_by_conn_mut(
+                        &connection_name,
+                        &database,
+                        &collection,
+                    ) {
+                        if let Some(slot) = coll.documents.iter_mut().find(|d| {
+                            d.extract_bson_id().ok().as_ref() == Some(&original_id)
+                        }) {
+                            *slot = updated_row;
+                            matched = true;
+                        }
+                    }
+                    if matched {
+                        self.requery_open_collection(ctx, &connection_name, &database, &collection);
+                        self.state.bottom_panel.push_log(
+                            LogLevel::Success,
+                            "DocumentService",
+                            format!("Updated document (_id: {updated_id}) in {database}.{collection} (in-memory)"),
+                        );
+                    } else {
+                        self.state.bottom_panel.push_log(
+                            LogLevel::Error,
+                            "DocumentService",
+                            format!("Document not found in {database}.{collection}"),
+                        );
+                    }
+                }
+                AppEvent::DocumentUpdated {
+                    connection_name,
+                    database,
+                    collection,
+                    result,
+                } => match result {
+                    Ok(row) => {
+                        self.state.bottom_panel.push_log(
+                            LogLevel::Success,
+                            "DocumentService",
+                            format!(
+                                "Updated document (_id: {}) in {database}.{collection}",
+                                row.id
+                            ),
+                        );
+                        self.requery_open_collection(ctx, &connection_name, &database, &collection);
+                        self.spawn_save_profiles_task(ctx);
+                    }
+                    Err(err) => {
+                        self.state.bottom_panel.push_log(
+                            LogLevel::Error,
+                            "DocumentService",
+                            format!("Failed to update document in {database}.{collection}: {err}"),
+                        );
+                    }
+                },
+                AppEvent::RequestDeleteDocument {
+                    connection_name,
+                    database,
+                    collection,
+                    doc_id,
+                    display_id,
+                } => {
+                    self.state.pending_delete_doc = Some(PendingDeleteDocument {
+                        connection_name,
+                        database,
+                        collection,
+                        doc_id,
+                        display_id,
+                    });
+                }
+                AppEvent::ConfirmDeleteDocument {
+                    connection_name,
+                    database,
+                    collection,
+                    doc_id,
+                    display_id,
+                } => {
+                    if let Some(target) = self.connection_target_by_name(&connection_name) {
+                        if target.is_connected {
+                            self.state.bottom_panel.push_log(
+                                LogLevel::Info,
+                                "DocumentService",
+                                format!(
+                                    "Deleting document (_id: {display_id}) from {database}.{collection}..."
+                                ),
+                            );
+
+                            let tx = self.bg_tx.clone();
+                            let ctx_clone = ctx.clone();
+                            self.runtime.spawn(async move {
+                                let result = match resolve_effective_uri(
+                                    target.id,
+                                    target.uri,
+                                    target.username,
+                                    target.has_saved_password,
+                                )
+                                .await
+                                {
+                                    Ok(effective_uri) => DocumentService::delete_document(
+                                        &effective_uri,
+                                        &database,
+                                        &collection,
+                                        &doc_id,
+                                        DEFAULT_CONNECT_TIMEOUT,
+                                    )
+                                    .await
+                                    .map_err(|err| err.to_string()),
+                                    Err(err) => Err(err),
+                                };
+
+                                // INTENTIONAL: receiver is dropped only on application shutdown.
+                                let _ = tx.send(AppEvent::DocumentDeleted {
+                                    connection_name: target.name,
+                                    database,
+                                    collection,
+                                    display_id,
+                                    result,
+                                });
+                                ctx_clone.request_repaint();
+                            });
+                            continue;
+                        }
+                    }
+
+                    // Disconnected / mock fallback
+                    let mut deleted = false;
+                    if let Some(coll) = self.state.find_collection_by_conn_mut(
+                        &connection_name,
+                        &database,
+                        &collection,
+                    ) {
+                        let before = coll.documents.len();
+                        coll.documents
+                            .retain(|d| d.extract_bson_id().ok().as_ref() != Some(&doc_id));
+                        deleted = coll.documents.len() < before;
+                        coll.stats.document_count = coll.documents.len();
+                    }
+                    if deleted {
+                        self.requery_open_collection(ctx, &connection_name, &database, &collection);
+                        self.state.bottom_panel.push_log(
+                            LogLevel::Success,
+                            "DocumentService",
+                            format!(
+                                "Deleted document (_id: {display_id}) from {database}.{collection} (in-memory)"
+                            ),
+                        );
+                    } else {
+                        self.state.bottom_panel.push_log(
+                            LogLevel::Error,
+                            "DocumentService",
+                            format!(
+                                "Document (_id: {display_id}) not found in {database}.{collection}"
+                            ),
+                        );
+                    }
+                }
+                AppEvent::DocumentDeleted {
+                    connection_name,
+                    database,
+                    collection,
+                    display_id,
+                    result,
+                } => match result {
+                    Ok(()) => {
+                        let current_page_len = self
+                            .state
+                            .find_collection_by_conn_mut(&connection_name, &database, &collection)
+                            .map_or(0, |coll| {
+                                coll.stats.document_count =
+                                    coll.stats.document_count.saturating_sub(1);
+                                coll.documents.len()
+                            });
+
+                        if current_page_len <= 1 {
+                            for (_, tab) in self.state.dock_state.iter_all_tabs_mut() {
+                                if tab.selected_user.is_none()
+                                    && tab.connection_name == connection_name
+                                    && tab.database == database
+                                    && tab.collection == collection
+                                    && tab.skip > 0
+                                {
+                                    tab.skip = tab.skip.saturating_sub(tab.limit.max(1));
+                                }
+                            }
+                        }
+
+                        self.state.bottom_panel.push_log(
+                            LogLevel::Success,
+                            "DocumentService",
+                            format!(
+                                "Deleted document (_id: {display_id}) from {database}.{collection}"
+                            ),
+                        );
+                        self.requery_open_collection(ctx, &connection_name, &database, &collection);
+                        self.spawn_save_profiles_task(ctx);
+                    }
+                    Err(err) => {
+                        self.state.bottom_panel.push_log(
+                            LogLevel::Error,
+                            "DocumentService",
+                            format!(
+                                "Failed to delete document (_id: {display_id}) from {database}.{collection}: {err}"
                             ),
                         );
                     }
@@ -1483,12 +2727,28 @@ impl MongoStudioApp {
                     collection,
                     filter,
                 } => {
-                    let query_cmd =
-                        format!("db.getSiblingDB(\"{database}\").{collection}.find({filter})");
-                    self.state.bottom_panel.query_history.push(query_cmd.clone());
-                    self.state
-                        .bottom_panel
-                        .push_log(LogLevel::Success, "QueryRunner", query_cmd);
+                    let mut target_conn = None;
+                    for (_, tab) in self.state.dock_state.iter_all_tabs_mut() {
+                        if tab.selected_user.is_none()
+                            && tab.database == database
+                            && tab.collection == collection
+                        {
+                            tab.filter_query = filter.clone();
+                            tab.skip = 0;
+                            target_conn = Some(tab.connection_name.clone());
+                            break;
+                        }
+                    }
+                    if let Some(conn_name) = target_conn {
+                        self.requery_open_collection(ctx, &conn_name, &database, &collection);
+                    } else {
+                        let query_cmd =
+                            format!("db.getSiblingDB(\"{database}\").{collection}.find({filter})");
+                        self.state.bottom_panel.query_history.push(query_cmd.clone());
+                        self.state
+                            .bottom_panel
+                            .push_log(LogLevel::Success, "QueryRunner", query_cmd);
+                    }
                 }
                 AppEvent::InsertMockDocument {
                     database,
@@ -1504,6 +2764,7 @@ impl MongoStudioApp {
                             role: "member".to_string(),
                             created_at: "2026-11-11T15:00:00Z".to_string(),
                             raw_json: None,
+                            cached_json: None,
                         });
                         coll.stats.document_count = coll.documents.len();
                     }

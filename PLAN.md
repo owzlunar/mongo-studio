@@ -10,9 +10,9 @@
 | :--- | :--- | :--- | :--- |
 | **Phase 1** | UI Framework & Workspace Shell | ✅ เสร็จสิ้น | `c1266f1` |
 | **Phase 2** | Live MongoDB Connection & Security | ✅ เสร็จสิ้น | `5e282ef` |
-| **Phase 3** | Database Explorer (Lazy-Loading) & Admin RBAC | ✅ เสร็จสิ้น *(กำลังขัดเกลาโค้ดตาม `.agents/`)* | `fdc60e3`, `0d9f910` + Polish รอบก่อนขึ้น Phase 4 |
-| **Phase 4** | Live Document Manager & Full CRUD / Query | ⬜ รอดำเนินการ | Phase ถัดไป |
-| **Phase 5** | Advanced Features, Export/Import & Release | ⬜ รอดำเนินการ | ตามแผน |
+| **Phase 3** | Database Explorer (Lazy-Loading) & Admin RBAC | ✅ เสร็จสิ้น | `fdc60e3`, `0d9f910`, `905ec2d` (Polish) |
+| **Phase 4** | Live Document Manager & Full CRUD / Query | ✅ เสร็จสิ้น | รอ `git commit` (41/41 tests ผ่าน) |
+| **Phase 5** | Advanced Features, Export/Import & Release | ⬜ รอดำเนินการ | Phase ถัดไป |
 
 ---
 
@@ -77,35 +77,35 @@
 
 ---
 
-## Phase 4 — Document Manager & Live Query / CRUD ⬜ *(Phase ถัดไป)*
+## Phase 4 — Document Manager & Live Query / CRUD ✅
 
 เป้าหมาย: เปลี่ยนหน้า Collection จากโหมดอ่านตัวอย่าง (50 docs / mock filter) ให้เป็นเครื่องมือจัดการเอกสารและ Query บน MongoDB จริงแบบครบวงจร
 
 ### 4.1 Database & Collection Explorer Operations (ส่วนที่เหลือจาก `README.md`)
-- [ ] `core-dev`: เพิ่ม `create_collection`, `drop_collection`, และ `drop_database` ใน `DatabaseService` / `CollectionService`
-- [ ] `ui-dev`: เพิ่ม Context Menu คลิกขวาที่ Database (`Create Collection...`, `Drop Database...`) และที่ Collection (`Drop Collection...`) พร้อม Confirmation Modal ป้องกันการลบพลาด
+- [x] `core-dev`: เพิ่ม `create_collection`, `drop_collection`, และ `drop_database` ใน `DatabaseService` / `CollectionService` พร้อมป้องกัน system DB (`admin`, `local`, `config`) และ `system.*`
+- [x] `ui-dev`: เพิ่ม Context Menu คลิกขวาที่ Database (`Create Collection...`, `Drop Database...`) และที่ Collection (`Open Collection`, `Refresh Collection`, `Drop Collection...`) พร้อม Confirmation Modal ป้องกันการลบพลาด
 
 ### 4.2 Live Document Query, Sort, Projection & Pagination
-- [ ] `core-dev`: เพิ่ม `DocumentService::query_documents` (async MongoDB `find` รองรับ `filter`, `projection`, `sort`, `skip`, `limit`, `count_documents`) และจัดการ Timeout / Parse BSON Error อย่างชัดเจน
-- [ ] `ui-dev`: เชื่อม Filter Bar, Sort Bar, Projection Input, Limit Selector และตัวควบคุม **Pagination** (`Previous` / `Next` / เลขหน้า / ช่วงเอกสารที่แสดง) ใน `src/ui/tab_bar.rs`
+- [x] `core-dev`: เพิ่ม `DocumentService::query_documents` (async MongoDB `find` รองรับ `filter`, `projection`, `sort`, `skip`, `limit` `1..=500`, `count_documents` แบบ concurrent) และจัดการ Timeout / Parse Extended JSON Error อย่างชัดเจน
+- [x] `ui-dev`: เชื่อม Filter Bar, Sort Bar, Projection Input, Limit Selector (`20`/`50`/`100`/`250`), Find / Reset, และตัวควบคุม **Pagination** (`< Prev` / Page X of Y / แสดงช่วง / `Next >`) ใน `src/ui/tab_bar.rs`
 
 ### 4.3 Real Document CRUD (Insert / Edit / Delete)
-- [ ] `core-dev`: เพิ่ม `insert_document`, `update_document` (แก้เอกสารทั้งก้อนด้วย `replace_one`), และ `delete_document` (`delete_one` ตาม `_id` จริง) ใน `DocumentService`
-- [ ] `ui-dev`:
-  - แทนที่ `InsertMockDocument` ด้วย **Insert / Edit Document JSON Editor Modal** (ตรวจสอบ JSON/BSON syntax ก่อนส่ง)
-  - เพิ่มปุ่ม View / Edit / Delete บนแต่ละแถวใน Table View และ JSON Tree View พร้อม Confirmation Dialog ก่อนลบเอกสาร
+- [x] `core-dev`: เพิ่ม `insert_document`, `update_document` (แก้เอกสารทั้งก้อนด้วย `replace_one` พร้อมป้องกันการแก้ `_id`), และ `delete_document` (`delete_one` ตาม `_id` จริง) ใน `DocumentService`
+- [x] `ui-dev`:
+  - แทนที่ `InsertMockDocument` ใน flow หลักด้วย **Insert / Edit Document JSON Editor Modal** (ตรวจสอบ Extended JSON syntax & `_id` immutability แบบ real-time ก่อนส่ง)
+  - เพิ่มปุ่ม `Edit` / `Delete` บนแต่ละแถวใน Table View และ JSON Tree View พร้อม Confirmation Dialog ก่อนลบเอกสาร
 
 ### 4.4 Dynamic Table Columns & Enhanced JSON Tree View
-- [ ] `core-dev`: ปรับโมเดล `DocumentRow` ให้รองรับการดึง Key/Column แบบ Dynamic จากเอกสาร BSON จริงใน Collection ไม่ยึดติดแค่ฟิลด์ตัวอย่าง (`name`, `email`, `status`, `role`)
-- [ ] `ui-dev`: ปรับ `data_grid.rs` ให้แสดงคอลัมน์ตามฟิลด์จริงของ Collection และปรับ `json_viewer.rs` ให้กาง Nested Object / Array แบบ Recursive พร้อมปุ่ม Copy JSON / Copy `_id`
+- [x] `core-dev`: ปรับโมเดล `DocumentRow` ให้รองรับการ cache `cached_json: Option<Value>`, `extract_columns`, `cell_display_value`, `extract_bson_id` และดึงคอลัมน์จริงจาก BSON โดยไม่ต้อง re-parse ทุกเฟรม
+- [x] `ui-dev`: ปรับ `data_grid.rs` ให้แสดงคอลัมน์แบบ Dynamic จาก Collection พร้อม Horizontal/Vertical Scroll และปรับ `json_viewer.rs` ให้กาง Nested Object / Array แบบ Recursive พร้อมสีรองรับทั้ง Dark/Light Mode และปุ่ม `Copy JSON` / `Copy _id` / `Edit` / `Delete`
 
 ### 4.5 Verification (`qa-tester`)
-- [ ] เขียน Integration Test ทดสอบ Live Query (`filter`/`sort`/`limit`/`skip`), Create/Drop Collection & Database และ Insert/Update/Delete Document จริง
-- [ ] ตรวจสอบ `cargo clippy --all-targets` (0 warnings) และ `cargo test` ผ่าน 100%
+- [x] ตรวจสอบ `.unwrap()` ใน production `src/` (0 จุด) และเขียน Integration Tests สำหรับ Offline Guards + Live Query (`filter`/`projection`/`sort`/`limit`/`skip`), Create/Drop Collection & Database และ Insert/Update/Delete Document บน `192.168.100.243:27017`
+- [x] ตรวจสอบ `cargo clippy --all-targets` (0 warnings) และ `cargo test` ผ่าน 41/41 (8 lib + 10 `core_workspace_tests` + 15 `database_tests` + 8 `query_tests`)
 
 ---
 
-## Phase 5 — Advanced Features, Export/Import & Release ⬜
+## Phase 5 — Advanced Features, Export/Import & Release ⬜ *(Phase ถัดไป)*
 
 เป้าหมาย: เพิ่มเครื่องมือระดับสูงสำหรับ DBA/Developer และการแพ็กเกจแอปพลิเคชัน
 

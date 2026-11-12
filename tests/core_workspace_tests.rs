@@ -1,11 +1,16 @@
-use mongo_studio::core::{AppCommand, AppEvent, AppState};
-use mongo_studio::models::{CollectionInfo, MongoUser, UserRole, COMMON_ROLES};
+use std::borrow::Cow;
+
+use bson::{doc, oid::ObjectId, Bson, DateTime};
+use mongo_studio::core::{AppCommand, AppError, AppEvent, AppState, PendingDeleteDocument};
+use mongo_studio::database::DocumentPageResult;
+use mongo_studio::models::{CollectionInfo, DocumentRow, MongoUser, UserRole, COMMON_ROLES};
 use mongo_studio::theme::{palette, ThemeMode};
 use mongo_studio::ui::activity_bar::ActivityView;
 use mongo_studio::workspace::{
     BottomPanelState, BottomPanelTab, CollectionSubTab, CollectionTab, DocumentViewMode, LogLevel,
     WorkspacePersistence,
 };
+use serde_json::{json, Value};
 
 #[test]
 fn app_command_all_items_and_event_conversions_are_complete() {
@@ -389,4 +394,317 @@ fn collection_tab_bottom_panel_and_theme_palette_behave_consistently() {
     assert_ne!(dark.editor_bg, light.editor_bg);
     assert_ne!(dark.sidebar_bg, light.sidebar_bg);
     assert_eq!(dark.accent_color, light.accent_color);
+}
+
+#[test]
+fn collection_tab_phase4_fields_column_caching_and_serde_backward_compatibility() {
+    // Arrange
+    let mut tab = CollectionTab::new("LAN Mongo", "shop_db", "orders");
+    let doc_a = DocumentRow::from_bson_doc(&doc! {
+        "_id": 1_i32,
+        "order_no": "ORD-001",
+        "total": 120.5_f64
+    });
+    let doc_b = DocumentRow::from_bson_doc(&doc! {
+        "_id": 2_i32,
+        "order_no": "ORD-002",
+        "currency": "USD"
+    });
+    let first_batch = vec![doc_a];
+    let second_batch = vec![doc_b];
+
+    // Assert defaults
+    assert_eq!(tab.skip, 0);
+    assert_eq!(tab.limit, 20);
+    assert_eq!(tab.total_matched, None);
+    assert!(!tab.is_loading);
+    assert_eq!(tab.last_query_ms, None);
+    assert!(tab.cached_columns.is_empty());
+    assert_eq!(tab.projection_query, "{}");
+    assert_eq!(tab.sort_query, "{\"_id\": 1}");
+
+    // Act: ensure_cached_columns ignores empty slice, populates once, then preserves cache
+    tab.ensure_cached_columns(&[]);
+    assert!(tab.cached_columns.is_empty());
+
+    tab.ensure_cached_columns(&first_batch);
+    assert_eq!(tab.cached_columns, vec!["_id", "order_no", "total"]);
+
+    tab.ensure_cached_columns(&second_batch);
+    assert_eq!(tab.cached_columns, vec!["_id", "order_no", "total"]);
+
+    // Act: refresh_cached_columns recomputes columns for the new page
+    tab.refresh_cached_columns(&second_batch);
+    assert_eq!(tab.cached_columns, vec!["_id", "order_no", "currency"]);
+
+    // Act: deserialize legacy Phase 3 JSON payload without `skip` or runtime fields
+    let phase3_legacy_json = json!({
+        "connection_name": "MongoDB Local",
+        "database": "admin",
+        "collection": "users",
+        "active_subtab": "Documents",
+        "view_mode": "Table",
+        "filter_query": "{\"status\": \"active\"}",
+        "projection_query": "{}",
+        "sort_query": "{\"_id\": 1}",
+        "limit": 50,
+        "selected_row": 0
+    })
+    .to_string();
+
+    let restored: CollectionTab = serde_json::from_str(&phase3_legacy_json)
+        .expect("Phase 3 CollectionTab JSON should deserialize");
+
+    // Assert
+    assert_eq!(restored.connection_name, "MongoDB Local");
+    assert_eq!(restored.database, "admin");
+    assert_eq!(restored.collection, "users");
+    assert_eq!(restored.skip, 0);
+    assert_eq!(restored.limit, 50);
+    assert_eq!(restored.total_matched, None);
+    assert!(!restored.is_loading);
+    assert_eq!(restored.last_query_ms, None);
+    assert!(restored.cached_columns.is_empty());
+}
+
+#[test]
+fn app_state_and_events_phase4_modal_and_pending_defaults_are_clean() {
+    // Arrange / Act
+    let state = AppState::default();
+
+    // Assert defaults
+    assert!(!state.show_create_coll_modal);
+    assert_eq!(state.create_coll_conn_idx, 0);
+    assert!(state.create_coll_db_name.is_empty());
+    assert!(state.new_coll_name.is_empty());
+    assert_eq!(state.pending_drop_db, None);
+    assert_eq!(state.pending_drop_coll, None);
+    assert!(!state.show_doc_editor_modal);
+    assert!(state.doc_editor_conn_name.is_empty());
+    assert!(state.doc_editor_db.is_empty());
+    assert!(state.doc_editor_coll.is_empty());
+    assert_eq!(state.doc_editor_original_id, None);
+    assert!(state.doc_editor_json.is_empty());
+    assert_eq!(state.pending_delete_doc, None);
+
+    // Assert PendingDeleteDocument & Phase 4 AppEvent construction
+    let pending = PendingDeleteDocument {
+        connection_name: "LAN Mongo".to_string(),
+        database: "shop_db".to_string(),
+        collection: "orders".to_string(),
+        doc_id: Bson::Int32(42),
+        display_id: "42".to_string(),
+    };
+    assert_eq!(pending.clone(), pending);
+
+    let page_event = AppEvent::QueryPageLoaded {
+        connection_name: "LAN Mongo".to_string(),
+        database: "shop_db".to_string(),
+        collection: "orders".to_string(),
+        skip: 20,
+        limit: 20,
+        result: Ok(DocumentPageResult {
+            documents: Vec::new(),
+            total_count: 45,
+            skip: 20,
+            limit: 20,
+            query_ms: 4.5,
+        }),
+    };
+    assert!(matches!(
+        page_event,
+        AppEvent::QueryPageLoaded {
+            skip: 20,
+            limit: 20,
+            result: Ok(ref res),
+            ..
+        } if res.total_count == 45
+    ));
+}
+
+#[test]
+fn document_row_extended_json_columns_cells_ids_and_cache_behave_accurately() {
+    // Arrange: Extended JSON parsing
+    let oid_hex = "654f1a2b3c4d5e6f7a8b9c0d";
+    let parsed_ext = DocumentRow::parse_json_to_bson_doc(&format!(
+        r#"{{"_id": {{"$oid": "{oid_hex}"}}, "count": 7, "created_at": {{"$date": "2026-05-01T10:30:00Z"}}}}"#
+    ))
+    .expect("valid Extended JSON object should parse");
+
+    // Assert: parse_json_to_bson_doc
+    assert_eq!(
+        parsed_ext
+            .get_object_id("_id")
+            .expect("_id ObjectId")
+            .to_hex(),
+        oid_hex
+    );
+    assert!(matches!(
+        DocumentRow::parse_json_to_bson_doc("   "),
+        Err(AppError::InvalidQueryJson(_))
+    ));
+    assert!(matches!(
+        DocumentRow::parse_json_to_bson_doc("[1, 2, 3]"),
+        Err(AppError::InvalidQueryJson(_))
+    ));
+    assert!(matches!(
+        DocumentRow::parse_json_to_bson_doc("42"),
+        Err(AppError::InvalidQueryJson(_))
+    ));
+    assert!(matches!(
+        DocumentRow::parse_json_to_bson_doc("{invalid: true}"),
+        Err(AppError::InvalidQueryJson(_))
+    ));
+
+    // Assert: parse_bson_doc_allow_empty & parse_filter_doc
+    assert_eq!(
+        DocumentRow::parse_bson_doc_allow_empty("  \n ").expect("blank optional doc"),
+        None
+    );
+    assert_eq!(
+        DocumentRow::parse_bson_doc_allow_empty("{}").expect("empty object optional doc"),
+        None
+    );
+    assert_eq!(
+        DocumentRow::parse_bson_doc_allow_empty(r#"{"created_at": -1}"#)
+            .expect("valid sort doc")
+            .and_then(|d| d.get("_id").or_else(|| d.get("created_at")).cloned()),
+        Some(Bson::Int64(-1))
+    );
+    assert!(DocumentRow::parse_bson_doc_allow_empty("{bad}").is_err());
+
+    assert_eq!(
+        DocumentRow::parse_filter_doc("   ").expect("blank filter -> empty doc"),
+        bson::Document::new()
+    );
+    assert_eq!(
+        DocumentRow::parse_filter_doc(r#"{"active": true}"#).expect("valid filter doc"),
+        doc! { "active": true }
+    );
+    assert!(DocumentRow::parse_filter_doc("{bad}").is_err());
+
+    // Arrange: heterogeneous documents for extract_columns & cell_display_value
+    let oid = ObjectId::parse_str(oid_hex).expect("valid ObjectId");
+    let dt = DateTime::from_millis(1_700_000_000_000);
+    let bson_doc_1 = doc! {
+        "title": "Sensor A",
+        "_id": oid,
+        "meta": { "zone": "B", "floor": 2_i32 },
+        "tags": ["iot", "cold"],
+        "created_at": dt,
+        "notes": Bson::Null,
+    };
+    let bson_doc_2 = doc! {
+        "_id": 105_i32,
+        "title": "Sensor B",
+        "enabled": false,
+    };
+    let bson_doc_3 = doc! {
+        "_id": "custom_str_id",
+        "extra_num": 99_i64,
+    };
+
+    let row_1 = DocumentRow::from_bson_doc(&bson_doc_1);
+    let row_2 = DocumentRow::from_bson_doc(&bson_doc_2);
+    let row_3 = DocumentRow::from_bson_doc(&bson_doc_3);
+
+    // Assert: extract_columns puts "_id" first and preserves first-seen order
+    assert_eq!(
+        DocumentRow::extract_columns(&[row_1.clone(), row_2.clone(), row_3.clone()]),
+        vec![
+            "_id",
+            "title",
+            "meta",
+            "tags",
+            "created_at",
+            "notes",
+            "enabled",
+            "extra_num"
+        ]
+    );
+
+    // Assert: cell_display_value formatting
+    assert_eq!(row_1.cell_display_value("_id"), oid_hex);
+    assert_eq!(row_1.cell_display_value("title"), "Sensor A");
+    assert_eq!(row_1.cell_display_value("meta"), "{2 fields}");
+    assert_eq!(row_1.cell_display_value("tags"), "[2 items]");
+    assert!(row_1.cell_display_value("created_at").contains("2023-11-14"));
+    assert_eq!(row_1.cell_display_value("notes"), "null");
+    assert_eq!(row_1.cell_display_value("missing_col"), "");
+    assert_eq!(row_2.cell_display_value("enabled"), "false");
+
+    // Assert: format_json_value_compact Extended JSON wrappers
+    assert_eq!(
+        DocumentRow::format_json_value_compact(&json!({ "$oid": oid_hex })),
+        oid_hex
+    );
+    assert_eq!(
+        DocumentRow::format_json_value_compact(&json!({ "$numberLong": "9007199254740993" })),
+        "9007199254740993"
+    );
+    assert_eq!(
+        DocumentRow::format_json_value_compact(
+            &json!({ "$binary": { "base64": "AQID", "subType": "00" } })
+        ),
+        "[Binary]"
+    );
+    assert_eq!(
+        DocumentRow::format_json_value_compact(
+            &json!({ "$regularExpression": { "pattern": "^alpha", "options": "i" } })
+        ),
+        "/^alpha/i"
+    );
+
+    // Assert: extract_bson_id for ObjectId, Int32, String, and missing/malformed _id errors
+    assert_eq!(
+        row_1.extract_bson_id().expect("ObjectId _id"),
+        Bson::ObjectId(oid)
+    );
+    assert_eq!(row_2.extract_bson_id().expect("Int32 _id"), Bson::Int32(105));
+    assert_eq!(
+        row_3.extract_bson_id().expect("String _id"),
+        Bson::String("custom_str_id".to_string())
+    );
+
+    let missing_id_row = DocumentRow {
+        id: "   ".to_string(),
+        raw_json: None,
+        cached_json: None,
+        ..DocumentRow::default()
+    };
+    assert!(matches!(
+        missing_id_row.extract_bson_id(),
+        Err(AppError::InvalidQueryJson(_))
+    ));
+
+    let malformed_raw_row = DocumentRow {
+        id: "1".to_string(),
+        raw_json: Some("{not_valid_json".to_string()),
+        cached_json: None,
+        ..DocumentRow::default()
+    };
+    assert!(matches!(
+        malformed_raw_row.extract_bson_id(),
+        Err(AppError::InvalidQueryJson(_))
+    ));
+
+    // Assert: cached_or_parsed_json zero-copy borrow vs deserialized raw_json & ensure_cached_json
+    assert!(matches!(row_1.cached_or_parsed_json(), Cow::Borrowed(_)));
+
+    let serialized_row = serde_json::to_string(&row_1).expect("DocumentRow should serialize");
+    let mut deserialized_row: DocumentRow =
+        serde_json::from_str(&serialized_row).expect("DocumentRow should deserialize");
+    assert_eq!(deserialized_row.cached_json, None);
+    assert!(matches!(
+        deserialized_row.cached_or_parsed_json(),
+        Cow::Owned(Value::Object(_))
+    ));
+    assert_eq!(deserialized_row.cell_display_value("meta"), "{2 fields}");
+
+    deserialized_row.ensure_cached_json();
+    assert!(deserialized_row.cached_json.is_some());
+    assert!(matches!(
+        deserialized_row.cached_or_parsed_json(),
+        Cow::Borrowed(Value::Object(_))
+    ));
 }

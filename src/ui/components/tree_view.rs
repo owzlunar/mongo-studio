@@ -5,6 +5,12 @@ use crate::core::events::AppEvent;
 use crate::models::{ConnectionConfig, ConnectionStatus};
 use crate::theme::ThemePalette;
 
+fn is_system_database(name: &str) -> bool {
+    name.eq_ignore_ascii_case("admin")
+        || name.eq_ignore_ascii_case("local")
+        || name.eq_ignore_ascii_case("config")
+}
+
 pub fn render_connection_tree(
     ui: &mut Ui,
     connections: &mut [ConnectionConfig],
@@ -360,6 +366,7 @@ pub fn render_connection_tree(
                 } else {
                     regular::CARET_RIGHT
                 };
+                let system_db = is_system_database(&db.name);
 
                 ui.horizontal(|ui| {
                     let db_resp = ui
@@ -369,13 +376,57 @@ pub fn render_connection_tree(
                                 .color(palette.text_primary)
                                 .strong(),
                         )
-                        .on_hover_cursor(CursorIcon::PointingHand);
+                        .on_hover_cursor(CursorIcon::PointingHand)
+                        .on_hover_text("Click to expand/collapse, right-click for database actions");
                     if db_resp.clicked() {
                         db.expanded = !db.expanded;
                     }
 
+                    db_resp.context_menu(|ui| {
+                        if ui
+                            .button(format!("{} Create Collection...", regular::PLUS))
+                            .clicked()
+                        {
+                            events.push(AppEvent::OpenCreateCollectionModal {
+                                connection_index: conn_idx,
+                                db_name: db.name.clone(),
+                            });
+                            ui.close_menu();
+                        }
+                        if !system_db {
+                            ui.separator();
+                            if ui
+                                .button(
+                                    RichText::new(format!(
+                                        "{} Drop Database...",
+                                        regular::TRASH
+                                    ))
+                                    .color(palette.error_color),
+                                )
+                                .clicked()
+                            {
+                                events.push(AppEvent::RequestDropDatabase {
+                                    connection_index: conn_idx,
+                                    db_name: db.name.clone(),
+                                });
+                                ui.close_menu();
+                            }
+                        }
+                    });
+
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         ui.add_space(4.0);
+                        if ui
+                            .small_button(RichText::new(regular::PLUS).size(10.5))
+                            .on_hover_cursor(CursorIcon::PointingHand)
+                            .on_hover_text("Create Collection")
+                            .clicked()
+                        {
+                            events.push(AppEvent::OpenCreateCollectionModal {
+                                connection_index: conn_idx,
+                                db_name: db.name.clone(),
+                            });
+                        }
                         ui.label(
                             RichText::new(format!("{}", db.collections.len()))
                                 .size(10.5)
@@ -450,6 +501,26 @@ pub fn render_connection_tree(
                                             collection: coll.name.clone(),
                                         });
                                         ui.close_menu();
+                                    }
+                                    if !coll.name.starts_with("system.") {
+                                        ui.separator();
+                                        if ui
+                                            .button(
+                                                RichText::new(format!(
+                                                    "{} Drop Collection...",
+                                                    regular::TRASH
+                                                ))
+                                                .color(palette.error_color),
+                                            )
+                                            .clicked()
+                                        {
+                                            events.push(AppEvent::RequestDropCollection {
+                                                connection_index: conn_idx,
+                                                db_name: db.name.clone(),
+                                                collection_name: coll.name.clone(),
+                                            });
+                                            ui.close_menu();
+                                        }
                                     }
                                 });
 

@@ -23,6 +23,38 @@ pub struct ConnectionClient {
 }
 
 impl ConnectionClient {
+    /// Parses a MongoDB URI and creates a configured [`Client`] with connection and server
+    /// selection timeouts applied.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AppError::Connection`] if the URI is empty, invalid, or client creation fails.
+    pub(crate) async fn connect_client(uri: &str, timeout: Duration) -> AppResult<Client> {
+        let trimmed = uri.trim();
+        if trimmed.is_empty() {
+            return Err(AppError::Connection(
+                "connection URI must not be empty".to_string(),
+            ));
+        }
+
+        let normalized = ConnectionConfig::normalize_uri(trimmed, "", "");
+        let mut options = tokio::time::timeout(timeout, ClientOptions::parse(&normalized))
+            .await
+            .map_err(|_| {
+                AppError::Connection(format!(
+                    "connection timed out after {}s",
+                    timeout.as_secs()
+                ))
+            })?
+            .map_err(|err| AppError::Connection(format!("invalid MongoDB URI: {err}")))?;
+
+        options.connect_timeout = Some(timeout);
+        options.server_selection_timeout = Some(timeout);
+
+        Client::with_options(options)
+            .map_err(|err| AppError::Connection(format!("failed to create client: {err}")))
+    }
+
     /// Creates a [`ConnectionClient`] from a connection name and MongoDB URI (mock-populated for instant offline/unit-test use).
     ///
     /// # Errors
@@ -73,29 +105,7 @@ impl ConnectionClient {
     ///
     /// Returns [`AppError::Connection`] if the URI is invalid, unreachable, or times out.
     pub async fn ping_uri(uri: &str, timeout: Duration) -> AppResult<f64> {
-        let trimmed = uri.trim();
-        if trimmed.is_empty() {
-            return Err(AppError::Connection(
-                "connection URI must not be empty".to_string(),
-            ));
-        }
-
-        let normalized = ConnectionConfig::normalize_uri(trimmed, "", "");
-        let mut options = tokio::time::timeout(timeout, ClientOptions::parse(&normalized))
-            .await
-            .map_err(|_| {
-                AppError::Connection(format!(
-                    "connection timed out after {}s while resolving URI",
-                    timeout.as_secs()
-                ))
-            })?
-            .map_err(|err| AppError::Connection(format!("invalid MongoDB URI: {err}")))?;
-
-        options.connect_timeout = Some(timeout);
-        options.server_selection_timeout = Some(timeout);
-
-        let client = Client::with_options(options)
-            .map_err(|err| AppError::Connection(format!("failed to initialize client: {err}")))?;
+        let client = Self::connect_client(uri, timeout).await?;
 
         let start = Instant::now();
         tokio::time::timeout(
@@ -237,23 +247,7 @@ impl ConnectionClient {
         coll_name: &str,
         timeout: Duration,
     ) -> AppResult<CollectionInfo> {
-        let normalized = ConnectionConfig::normalize_uri(uri, "", "");
-        let mut options = tokio::time::timeout(timeout, ClientOptions::parse(&normalized))
-            .await
-            .map_err(|_| {
-                AppError::Connection(format!(
-                    "connection timed out after {}s",
-                    timeout.as_secs()
-                ))
-            })?
-            .map_err(|err| AppError::Connection(format!("invalid MongoDB URI: {err}")))?;
-
-        options.connect_timeout = Some(timeout);
-        options.server_selection_timeout = Some(timeout);
-
-        let client = Client::with_options(options)
-            .map_err(|err| AppError::Connection(format!("failed to create client: {err}")))?;
-
+        let client = Self::connect_client(uri, timeout).await?;
         let db = client.database(db_name);
         Ok(Self::introspect_collection(&db, db_name, coll_name, timeout).await)
     }

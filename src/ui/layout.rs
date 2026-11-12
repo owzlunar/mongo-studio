@@ -7,7 +7,7 @@ use egui_phosphor::regular;
 
 use crate::core::events::AppEvent;
 use crate::core::state::AppState;
-use crate::models::{ConnectionConfig, UserRole};
+use crate::models::{ConnectionConfig, DocumentRow, UserRole};
 use crate::theme::{ThemeMode, ThemePalette};
 use crate::ui::activity_bar::render_activity_bar;
 use crate::ui::command_palette::render_command_palette;
@@ -602,6 +602,381 @@ fn render_modals(
 
                     if secondary_button(ui, "Cancel", palette.border_color).clicked() {
                         state.show_create_db_modal = false;
+                    }
+                });
+            });
+    }
+
+    if state.show_create_coll_modal {
+        let modal_frame = Frame::window(&ctx.style())
+            .fill(palette.popup_bg)
+            .stroke(Stroke::new(1.5_f32, palette.popup_border))
+            .inner_margin(Margin::same(14.0));
+
+        Window::new("Create Collection")
+            .collapsible(false)
+            .resizable(false)
+            .frame(modal_frame)
+            .fixed_size([400.0, 175.0])
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .show(ctx, |ui| {
+                ui.label(
+                    RichText::new(format!(
+                        "{} Target Database: {}",
+                        regular::DATABASE,
+                        state.create_coll_db_name
+                    ))
+                    .monospace()
+                    .strong()
+                    .color(palette.accent_color),
+                );
+                ui.add_space(6.0);
+
+                ui.label(RichText::new("Collection Name").strong());
+                ui.add(
+                    TextEdit::singleline(&mut state.new_coll_name)
+                        .hint_text("e.g. orders")
+                        .margin(Margin::symmetric(6.0, 4.0))
+                        .desired_width(f32::INFINITY),
+                );
+
+                let trimmed_coll = state.new_coll_name.trim();
+                let is_system_coll = trimmed_coll.starts_with("system.");
+                if is_system_coll {
+                    ui.add_space(4.0);
+                    ui.label(
+                        RichText::new(format!(
+                            "{} Collection name cannot start with 'system.'.",
+                            regular::WARNING_CIRCLE
+                        ))
+                        .color(palette.error_color)
+                        .size(11.5),
+                    );
+                }
+
+                ui.add_space(12.0);
+                ui.horizontal(|ui| {
+                    let can_submit = !trimmed_coll.is_empty() && !is_system_coll;
+                    ui.add_enabled_ui(can_submit, |ui| {
+                        if primary_button(
+                            ui,
+                            &format!("{} Create", regular::TABLE),
+                            palette.accent_color,
+                        )
+                        .clicked()
+                        {
+                            events.push(AppEvent::CreateCollection {
+                                connection_index: state.create_coll_conn_idx,
+                                db_name: state.create_coll_db_name.clone(),
+                                collection_name: trimmed_coll.to_string(),
+                            });
+                            state.show_create_coll_modal = false;
+                        }
+                    });
+
+                    if secondary_button(ui, "Cancel", palette.border_color).clicked() {
+                        state.show_create_coll_modal = false;
+                    }
+                });
+            });
+    }
+
+    if let Some((conn_idx, db_name)) = state.pending_drop_db.clone() {
+        let modal_frame = Frame::window(&ctx.style())
+            .fill(palette.popup_bg)
+            .stroke(Stroke::new(1.5_f32, palette.error_color))
+            .inner_margin(Margin::same(14.0));
+
+        Window::new("Confirm Drop Database")
+            .collapsible(false)
+            .resizable(false)
+            .frame(modal_frame)
+            .fixed_size([410.0, 160.0])
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .show(ctx, |ui| {
+                ui.label(
+                    RichText::new(format!(
+                        "{} Permanently drop database '{db_name}'?",
+                        regular::WARNING
+                    ))
+                    .color(palette.error_color)
+                    .strong()
+                    .size(13.5),
+                );
+                ui.add_space(6.0);
+                ui.label(
+                    "This action will delete the database and all of its collections immediately. It cannot be undone.",
+                );
+                ui.add_space(12.0);
+
+                ui.horizontal(|ui| {
+                    if primary_button(
+                        ui,
+                        &format!("{} Drop Database", regular::TRASH),
+                        palette.error_color,
+                    )
+                    .clicked()
+                    {
+                        events.push(AppEvent::ConfirmDropDatabase {
+                            connection_index: conn_idx,
+                            db_name,
+                        });
+                        state.pending_drop_db = None;
+                    }
+
+                    if secondary_button(ui, "Cancel", palette.border_color).clicked() {
+                        state.pending_drop_db = None;
+                    }
+                });
+            });
+    }
+
+    if let Some((conn_idx, db_name, coll_name)) = state.pending_drop_coll.clone() {
+        let modal_frame = Frame::window(&ctx.style())
+            .fill(palette.popup_bg)
+            .stroke(Stroke::new(1.5_f32, palette.error_color))
+            .inner_margin(Margin::same(14.0));
+
+        Window::new("Confirm Drop Collection")
+            .collapsible(false)
+            .resizable(false)
+            .frame(modal_frame)
+            .fixed_size([410.0, 160.0])
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .show(ctx, |ui| {
+                ui.label(
+                    RichText::new(format!(
+                        "{} Permanently drop collection '{db_name}.{coll_name}'?",
+                        regular::WARNING
+                    ))
+                    .color(palette.error_color)
+                    .strong()
+                    .size(13.5),
+                );
+                ui.add_space(6.0);
+                ui.label(
+                    "All documents and indexes in this collection will be permanently deleted.",
+                );
+                ui.add_space(12.0);
+
+                ui.horizontal(|ui| {
+                    if primary_button(
+                        ui,
+                        &format!("{} Drop Collection", regular::TRASH),
+                        palette.error_color,
+                    )
+                    .clicked()
+                    {
+                        events.push(AppEvent::ConfirmDropCollection {
+                            connection_index: conn_idx,
+                            db_name,
+                            collection_name: coll_name,
+                        });
+                        state.pending_drop_coll = None;
+                    }
+
+                    if secondary_button(ui, "Cancel", palette.border_color).clicked() {
+                        state.pending_drop_coll = None;
+                    }
+                });
+            });
+    }
+
+    if state.show_doc_editor_modal {
+        let modal_frame = Frame::window(&ctx.style())
+            .fill(palette.popup_bg)
+            .stroke(Stroke::new(1.5_f32, palette.popup_border))
+            .inner_margin(Margin::same(14.0));
+
+        let is_editing = state.doc_editor_original_id.is_some();
+        let window_title = if is_editing {
+            "Edit Document"
+        } else {
+            "Insert Document"
+        };
+
+        Window::new(window_title)
+            .collapsible(false)
+            .resizable(true)
+            .frame(modal_frame)
+            .default_size([560.0, 460.0])
+            .min_size([440.0, 340.0])
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .show(ctx, |ui| {
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(
+                        RichText::new(format!(
+                            "{} {} / {}.{}",
+                            regular::TABLE,
+                            state.doc_editor_conn_name,
+                            state.doc_editor_db,
+                            state.doc_editor_coll
+                        ))
+                        .monospace()
+                        .strong()
+                        .color(palette.accent_color),
+                    );
+                    if let Some(ref orig_id) = state.doc_editor_original_id {
+                        ui.separator();
+                        ui.label(
+                            RichText::new(format!(
+                                "_id: {} (immutable)",
+                                DocumentRow::bson_to_display(orig_id)
+                            ))
+                            .monospace()
+                            .size(11.5)
+                            .color(palette.warning_color),
+                        );
+                    }
+                });
+                ui.add_space(6.0);
+
+                ScrollArea::vertical()
+                    .id_source("doc_editor_json_scroll")
+                    .max_height(300.0)
+                    .show(ui, |ui| {
+                        ui.add(
+                            TextEdit::multiline(&mut state.doc_editor_json)
+                                .font(egui::FontId::monospace(12.0))
+                                .desired_width(f32::INFINITY)
+                                .desired_rows(16)
+                                .margin(Margin::same(8.0)),
+                        );
+                    });
+
+                ui.add_space(6.0);
+
+                let parsed_res = DocumentRow::parse_json_to_bson_doc(&state.doc_editor_json);
+                let id_mismatch_err = match (&state.doc_editor_original_id, &parsed_res) {
+                    (Some(orig_id), Ok(doc)) => doc
+                        .get("_id")
+                        .filter(|provided| *provided != orig_id)
+                        .map(|_| "Cannot modify immutable '_id' field when updating a document"),
+                    _ => None,
+                };
+
+                let can_save = match (&parsed_res, id_mismatch_err) {
+                    (Ok(_), None) => {
+                        ui.label(
+                            RichText::new(format!(
+                                "{} Valid Extended JSON",
+                                regular::CHECK_CIRCLE
+                            ))
+                            .color(palette.success_color)
+                            .size(11.5),
+                        );
+                        true
+                    }
+                    (_, Some(msg)) => {
+                        ui.label(
+                            RichText::new(format!("{} {msg}", regular::WARNING_CIRCLE))
+                                .color(palette.error_color)
+                                .size(11.5),
+                        );
+                        false
+                    }
+                    (Err(err), None) => {
+                        ui.label(
+                            RichText::new(format!("{} {err}", regular::WARNING_CIRCLE))
+                                .color(palette.error_color)
+                                .size(11.5),
+                        );
+                        false
+                    }
+                };
+
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    let save_label = if is_editing {
+                        format!("{} Save", regular::FLOPPY_DISK)
+                    } else {
+                        format!("{} Insert Document", regular::PLUS)
+                    };
+
+                    ui.add_enabled_ui(can_save, |ui| {
+                        if primary_button(ui, &save_label, palette.accent_color).clicked() {
+                            if let Some(original_id) = state.doc_editor_original_id.take() {
+                                events.push(AppEvent::UpdateDocument {
+                                    connection_name: state.doc_editor_conn_name.clone(),
+                                    database: state.doc_editor_db.clone(),
+                                    collection: state.doc_editor_coll.clone(),
+                                    original_id,
+                                    json_text: state.doc_editor_json.clone(),
+                                });
+                            } else {
+                                events.push(AppEvent::InsertDocument {
+                                    connection_name: state.doc_editor_conn_name.clone(),
+                                    database: state.doc_editor_db.clone(),
+                                    collection: state.doc_editor_coll.clone(),
+                                    json_text: state.doc_editor_json.clone(),
+                                });
+                            }
+                            state.show_doc_editor_modal = false;
+                        }
+                    });
+
+                    if secondary_button(ui, "Cancel", palette.border_color).clicked() {
+                        state.doc_editor_original_id = None;
+                        state.show_doc_editor_modal = false;
+                    }
+                });
+            });
+    }
+
+    if let Some(pending) = state.pending_delete_doc.clone() {
+        let modal_frame = Frame::window(&ctx.style())
+            .fill(palette.popup_bg)
+            .stroke(Stroke::new(1.5_f32, palette.error_color))
+            .inner_margin(Margin::same(14.0));
+
+        Window::new("Confirm Delete Document")
+            .collapsible(false)
+            .resizable(false)
+            .frame(modal_frame)
+            .fixed_size([430.0, 170.0])
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .show(ctx, |ui| {
+                ui.label(
+                    RichText::new(format!(
+                        "{} Permanently delete document from '{}.{}'?",
+                        regular::WARNING,
+                        pending.database,
+                        pending.collection
+                    ))
+                    .color(palette.error_color)
+                    .strong()
+                    .size(13.5),
+                );
+                ui.add_space(6.0);
+                ui.label(
+                    RichText::new(format!("_id: {}", pending.display_id))
+                        .monospace()
+                        .color(palette.warning_color),
+                );
+                ui.add_space(4.0);
+                ui.label("This document will be permanently removed from the collection.");
+                ui.add_space(12.0);
+
+                ui.horizontal(|ui| {
+                    if primary_button(
+                        ui,
+                        &format!("{} Delete", regular::TRASH),
+                        palette.error_color,
+                    )
+                    .clicked()
+                    {
+                        events.push(AppEvent::ConfirmDeleteDocument {
+                            connection_name: pending.connection_name,
+                            database: pending.database,
+                            collection: pending.collection,
+                            doc_id: pending.doc_id,
+                            display_id: pending.display_id,
+                        });
+                        state.pending_delete_doc = None;
+                    }
+
+                    if secondary_button(ui, "Cancel", palette.border_color).clicked() {
+                        state.pending_delete_doc = None;
                     }
                 });
             });

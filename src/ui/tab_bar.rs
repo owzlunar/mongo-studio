@@ -1,16 +1,19 @@
-use egui::{Color32, ComboBox, CursorIcon, Frame, Margin, RichText, ScrollArea, Stroke, TextEdit, Ui, Vec2};
+use std::borrow::Cow;
+
+use egui::{
+    Color32, ComboBox, CursorIcon, FontId, Frame, Margin, RichText, ScrollArea, Stroke, TextEdit,
+    Ui, Vec2,
+};
 use egui_dock::TabViewer;
 use egui_extras::{Column, TableBuilder};
 use egui_phosphor::regular;
 
 use crate::core::events::AppEvent;
 use crate::database::DocumentService;
-use crate::models::{CollectionInfo, ConnectionConfig, MongoUser, UserRole};
-use crate::query::filter::QueryFilter;
+use crate::models::{CollectionInfo, ConnectionConfig, DocumentRow, MongoUser, UserRole};
 use crate::theme::ThemePalette;
 use crate::ui::components::buttons::{primary_button, secondary_button};
-use crate::ui::components::data_grid::render_document_grid;
-use crate::ui::components::inputs::filter_input_row;
+use crate::ui::components::data_grid::{render_document_grid, DocumentTarget};
 use crate::ui::components::json_viewer::render_json_viewer;
 use crate::workspace::tabs::{CollectionSubTab, CollectionTab, DocumentViewMode};
 
@@ -20,7 +23,40 @@ pub struct CollectionTabViewer<'a> {
     pub events: &'a mut Vec<AppEvent>,
 }
 
+fn query_field_input(
+    ui: &mut Ui,
+    label: &str,
+    value: &mut String,
+    hint: &str,
+    width: f32,
+    is_valid: bool,
+    error_color: Color32,
+) -> bool {
+    ui.label(RichText::new(label).strong().size(12.0));
+    let mut edit = TextEdit::singleline(value)
+        .font(FontId::monospace(12.0))
+        .hint_text(hint)
+        .margin(Margin::symmetric(6.0, 4.0))
+        .min_size(Vec2::new(width, 24.0))
+        .desired_width(width);
+
+    if !is_valid {
+        edit = edit.text_color(error_color);
+    }
+
+    let response = ui.add(edit);
+    response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter))
+}
+
 impl<'a> CollectionTabViewer<'a> {
+    #[must_use]
+    fn is_connection_connected(&self, connection_name: &str) -> bool {
+        self.connections
+            .iter()
+            .find(|conn| conn.name == connection_name)
+            .is_some_and(|conn| conn.status.is_connected())
+    }
+
     #[must_use]
     fn find_collection(
         &self,
@@ -64,6 +100,19 @@ impl<'a> CollectionTabViewer<'a> {
             }
         }
         None
+    }
+
+    fn emit_live_query(&mut self, tab: &CollectionTab) {
+        self.events.push(AppEvent::ExecuteLiveQuery {
+            connection_name: tab.connection_name.clone(),
+            database: tab.database.clone(),
+            collection: tab.collection.clone(),
+            filter: tab.filter_query.clone(),
+            projection: tab.projection_query.clone(),
+            sort: tab.sort_query.clone(),
+            skip: tab.skip,
+            limit: tab.limit,
+        });
     }
 
     fn render_user_inspector(&mut self, ui: &mut Ui, tab: &mut CollectionTab) {
@@ -628,6 +677,7 @@ impl TabViewer for CollectionTabViewer<'_> {
             return;
         }
 
+        let is_connected = self.is_connection_connected(&tab.connection_name);
         let maybe_coll = self.find_collection(&tab.connection_name, &tab.database, &tab.collection);
 
         // Top sub-navigation bar: Documents | Indexes | Schema | Aggregation
@@ -702,19 +752,6 @@ impl TabViewer for CollectionTabViewer<'_> {
                     {
                         tab.view_mode = DocumentViewMode::Table;
                     }
-
-                    if secondary_button(
-                        ui,
-                        &format!("{} Insert Doc", regular::PLUS),
-                        self.palette.border_color,
-                    )
-                    .clicked()
-                    {
-                        self.events.push(AppEvent::InsertMockDocument {
-                            database: tab.database.clone(),
-                            collection: tab.collection.clone(),
-                        });
-                    }
                 }
             });
         });
@@ -734,13 +771,11 @@ impl TabViewer for CollectionTabViewer<'_> {
         if !coll.loaded {
             ui.add_space(12.0);
             ui.horizontal(|ui| {
+                ui.spinner();
                 ui.label(
-                    RichText::new(format!(
-                        "{} Loading collection documents, indexes, and schema from MongoDB...",
-                        regular::CIRCLE_HALF
-                    ))
-                    .color(self.palette.warning_color)
-                    .strong(),
+                    RichText::new("Loading collection documents, indexes, and schema from MongoDB...")
+                        .color(self.palette.warning_color)
+                        .strong(),
                 );
             });
             return;
@@ -748,99 +783,252 @@ impl TabViewer for CollectionTabViewer<'_> {
 
         match tab.active_subtab {
             CollectionSubTab::Documents => {
-                let parsed_filter = QueryFilter::parse(&tab.filter_query);
-                let is_valid = parsed_filter.is_valid_json();
+                let filter_valid = DocumentRow::parse_filter_doc(&tab.filter_query).is_ok();
+                let proj_valid = DocumentRow::parse_bson_doc_allow_empty(&tab.projection_query).is_ok();
+                let sort_valid = DocumentRow::parse_bson_doc_allow_empty(&tab.sort_query).is_ok();
+                let all_valid = filter_valid && proj_valid && sort_valid;
 
-                ui.horizontal(|ui| {
-                    let enter_pressed = filter_input_row(
+                let mut trigger_query = false;
+
+                ui.horizontal_wrapped(|ui| {
+                    if query_field_input(
                         ui,
                         "Filter",
                         &mut tab.filter_query,
-                        "{\"status\": \"active\"}",
-                        is_valid,
+                        "{}",
+                        210.0,
+                        filter_valid,
                         self.palette.error_color,
-                    );
-
-                    ui.label(RichText::new("Sort").strong().size(12.0));
-                    ui.add(
-                        egui::TextEdit::singleline(&mut tab.sort_query)
-                            .font(egui::FontId::monospace(12.0))
-                            .margin(Margin::symmetric(6.0, 4.0))
-                            .min_size(Vec2::new(110.0, 24.0))
-                            .desired_width(110.0),
-                    );
-
-                    if primary_button(
-                        ui,
-                        &format!("{} Find", regular::MAGNIFYING_GLASS),
-                        self.palette.accent_color,
-                    )
-                    .clicked()
-                        || enter_pressed
-                    {
-                        self.events.push(AppEvent::ExecuteFilterQuery {
-                            database: tab.database.clone(),
-                            collection: tab.collection.clone(),
-                            filter: tab.filter_query.clone(),
-                        });
+                    ) {
+                        trigger_query = true;
                     }
+
+                    if query_field_input(
+                        ui,
+                        "Projection",
+                        &mut tab.projection_query,
+                        "{}",
+                        140.0,
+                        proj_valid,
+                        self.palette.error_color,
+                    ) {
+                        trigger_query = true;
+                    }
+
+                    if query_field_input(
+                        ui,
+                        "Sort",
+                        &mut tab.sort_query,
+                        "{\"_id\": 1}",
+                        140.0,
+                        sort_valid,
+                        self.palette.error_color,
+                    ) {
+                        trigger_query = true;
+                    }
+                });
+
+                ui.add_space(4.0);
+
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(RichText::new("Limit").strong().size(12.0));
+                    ComboBox::from_id_source((
+                        "doc_limit_combo",
+                        &tab.connection_name,
+                        &tab.database,
+                        &tab.collection,
+                    ))
+                    .selected_text(RichText::new(tab.limit.to_string()).monospace())
+                    .width(68.0)
+                    .show_ui(ui, |ui| {
+                        for limit_opt in [20_usize, 50, 100, 250] {
+                            if ui
+                                .selectable_label(tab.limit == limit_opt, limit_opt.to_string())
+                                .clicked()
+                                && tab.limit != limit_opt
+                            {
+                                tab.limit = limit_opt;
+                                tab.skip = 0;
+                                trigger_query = true;
+                            }
+                        }
+                    });
+
+                    ui.add_enabled_ui(all_valid && !tab.is_loading, |ui| {
+                        if primary_button(
+                            ui,
+                            &format!("{} Find", regular::MAGNIFYING_GLASS),
+                            self.palette.accent_color,
+                        )
+                        .clicked()
+                        {
+                            trigger_query = true;
+                        }
+                    });
+
+                    ui.add_enabled_ui(!tab.is_loading, |ui| {
+                        if secondary_button(
+                            ui,
+                            &format!("{} Reset", regular::ARROW_COUNTER_CLOCKWISE),
+                            self.palette.border_color,
+                        )
+                        .clicked()
+                        {
+                            tab.filter_query.clear();
+                            tab.filter_query.push_str("{}");
+                            tab.projection_query.clear();
+                            tab.projection_query.push_str("{}");
+                            tab.sort_query.clear();
+                            tab.sort_query.push_str("{\"_id\": 1}");
+                            tab.skip = 0;
+                            tab.limit = 20;
+                            self.emit_live_query(tab);
+                        }
+                    });
 
                     if secondary_button(
                         ui,
-                        &format!("{} Reset", regular::ARROW_COUNTER_CLOCKWISE),
+                        &format!("{} Insert Doc", regular::PLUS),
                         self.palette.border_color,
                     )
                     .clicked()
                     {
-                        tab.filter_query.clear();
-                        tab.filter_query.push_str("{}");
-                        self.events.push(AppEvent::ExecuteFilterQuery {
+                        self.events.push(AppEvent::OpenInsertDocumentModal {
+                            connection_name: tab.connection_name.clone(),
                             database: tab.database.clone(),
                             collection: tab.collection.clone(),
-                            filter: "{}".to_string(),
                         });
                     }
 
-                    if !is_valid {
+                    if tab.is_loading {
+                        ui.spinner();
                         ui.label(
-                            RichText::new(format!("{} Invalid JSON filter", regular::WARNING))
-                                .color(self.palette.error_color)
-                                .size(11.5),
+                            RichText::new("Querying MongoDB...")
+                                .size(11.5)
+                                .color(self.palette.warning_color),
+                        );
+                    } else if !all_valid {
+                        ui.label(
+                            RichText::new(format!(
+                                "{} Invalid JSON in query parameters",
+                                regular::WARNING
+                            ))
+                            .color(self.palette.error_color)
+                            .size(11.5),
                         );
                     }
                 });
 
+                if trigger_query && all_valid && !tab.is_loading {
+                    tab.skip = 0;
+                    self.emit_live_query(tab);
+                }
+
                 ui.add_space(6.0);
 
-                let filtered_docs =
-                    DocumentService::filter_documents(&coll.documents, &tab.filter_query, tab.limit);
+                // In live mode `coll.documents` already holds the server-paginated page;
+                // in disconnected/mock mode we filter & slice in memory so `Reset` keeps all mock rows.
+                let (displayed_docs, total): (Cow<'_, [DocumentRow]>, usize) = if is_connected {
+                    let total = tab.total_matched.unwrap_or(coll.stats.document_count);
+                    (Cow::Borrowed(coll.documents.as_slice()), total)
+                } else {
+                    let filtered = DocumentService::filter_documents(
+                        &coll.documents,
+                        &tab.filter_query,
+                        usize::MAX,
+                    );
+                    let total = filtered.len();
+                    let effective_limit = tab.limit.max(1);
+                    let page_docs: Vec<DocumentRow> = filtered
+                        .into_iter()
+                        .skip(tab.skip)
+                        .take(effective_limit)
+                        .collect();
+                    (Cow::Owned(page_docs), total)
+                };
+
+                tab.ensure_cached_columns(displayed_docs.as_ref());
+
+                let displayed_len = displayed_docs.len();
+                let limit = tab.limit.max(1);
+                let has_prev = tab.skip > 0 && !tab.is_loading;
+                let has_next = !tab.is_loading && (tab.skip + displayed_len) < total;
 
                 ui.horizontal(|ui| {
+                    if ui
+                        .add_enabled(has_prev, egui::Button::new("< Prev").small())
+                        .on_hover_cursor(CursorIcon::PointingHand)
+                        .clicked()
+                    {
+                        tab.skip = tab.skip.saturating_sub(limit);
+                        self.emit_live_query(tab);
+                    }
+
+                    let page_summary = if displayed_len == 0 {
+                        match tab.last_query_ms {
+                            Some(ms) => format!("No documents  •  {ms:.1} ms"),
+                            None => "No documents".to_string(),
+                        }
+                    } else {
+                        let start_item = tab.skip + 1;
+                        let end_item = tab.skip + displayed_len;
+                        let current_page = (tab.skip / limit) + 1;
+                        let total_pages = total.max(end_item).div_ceil(limit).max(1);
+                        match tab.last_query_ms {
+                            Some(ms) => format!(
+                                "Page {current_page} of {total_pages} • Showing {start_item}-{end_item} of {total} • {ms:.1} ms"
+                            ),
+                            None => format!(
+                                "Page {current_page} of {total_pages} • Showing {start_item}-{end_item} of {total}"
+                            ),
+                        }
+                    };
+
                     ui.label(
-                        RichText::new(format!(
-                            "Showing {} of {} sampled documents (total in collection: {})",
-                            filtered_docs.len(),
-                            coll.documents.len(),
-                            coll.stats.document_count
-                        ))
-                        .size(11.5)
-                        .color(self.palette.muted_text),
+                        RichText::new(page_summary)
+                            .size(11.5)
+                            .monospace()
+                            .color(self.palette.muted_text),
                     );
+
+                    if ui
+                        .add_enabled(has_next, egui::Button::new("Next >").small())
+                        .on_hover_cursor(CursorIcon::PointingHand)
+                        .clicked()
+                    {
+                        tab.skip = tab.skip.saturating_add(limit);
+                        self.emit_live_query(tab);
+                    }
                 });
 
                 ui.add_space(4.0);
+
+                let target = DocumentTarget {
+                    connection_name: &tab.connection_name,
+                    database: &tab.database,
+                    collection: &tab.collection,
+                };
 
                 match tab.view_mode {
                     DocumentViewMode::Table => {
                         render_document_grid(
                             ui,
-                            &filtered_docs,
+                            target,
+                            displayed_docs.as_ref(),
+                            &tab.cached_columns,
                             &mut tab.selected_row,
                             self.palette,
+                            self.events,
                         );
                     }
                     DocumentViewMode::JsonTree => {
-                        render_json_viewer(ui, &filtered_docs, self.palette);
+                        render_json_viewer(
+                            ui,
+                            target,
+                            displayed_docs.as_ref(),
+                            self.palette,
+                            self.events,
+                        );
                     }
                 }
             }
@@ -959,7 +1147,7 @@ impl TabViewer for CollectionTabViewer<'_> {
                                 ui.label(
                                     RichText::new(&field.sample_value)
                                         .monospace()
-                                        .color(Color32::from_rgb(206, 145, 120)),
+                                        .color(self.palette.warning_color),
                                 );
                             });
                         });
