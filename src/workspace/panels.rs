@@ -1,6 +1,8 @@
 use egui_phosphor::regular;
 use serde::{Deserialize, Serialize};
 
+const MAX_TERMINAL_LINES: usize = 500;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum BottomPanelTab {
     Terminal,
@@ -106,5 +108,18 @@ impl BottomPanelState {
             source: source.to_string(),
             message: message.into(),
         });
+    }
+
+    pub fn push_terminal_lines(&mut self, output: &str) {
+        if output.is_empty() {
+            return;
+        }
+        for line in output.lines() {
+            self.terminal_history.push(line.to_string());
+        }
+        if self.terminal_history.len() > MAX_TERMINAL_LINES {
+            let excess = self.terminal_history.len() - MAX_TERMINAL_LINES;
+            self.terminal_history.drain(0..excess);
+        }
     }
 }

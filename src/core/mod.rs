@@ -6,4 +6,4 @@ pub mod state;
 pub use commands::{AppCommand, CommandItem};
 pub use error::{AppError, AppResult};
 pub use events::AppEvent;
-pub use state::{AppState, PendingDeleteDocument};
+pub use state::{AppState, PendingDeleteDocument, PendingDropIndex};

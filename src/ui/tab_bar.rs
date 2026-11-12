@@ -1,20 +1,24 @@
 use std::borrow::Cow;
 
 use egui::{
-    Color32, ComboBox, CursorIcon, FontId, Frame, Margin, RichText, ScrollArea, Stroke, TextEdit,
-    Ui, Vec2,
+    Color32, ComboBox, CursorIcon, FontId, Frame, Margin, Pos2, Rect, RichText, Rounding,
+    ScrollArea, Sense, Stroke, TextEdit, Ui, Vec2,
 };
 use egui_dock::TabViewer;
 use egui_extras::{Column, TableBuilder};
 use egui_phosphor::regular;
 
 use crate::core::events::AppEvent;
-use crate::database::DocumentService;
-use crate::models::{CollectionInfo, ConnectionConfig, DocumentRow, MongoUser, UserRole};
+use crate::database::{DocumentService, TransferFormat};
+use crate::models::{
+    CollectionInfo, ConnectionConfig, DocumentRow, MongoUser, SchemaField, UserRole,
+};
+use crate::query::AggregationStage;
 use crate::theme::ThemePalette;
 use crate::ui::components::buttons::{primary_button, secondary_button};
 use crate::ui::components::data_grid::{render_document_grid, DocumentTarget};
 use crate::ui::components::json_viewer::render_json_viewer;
+use crate::ui::components::syntax_highlight::json_layouter;
 use crate::workspace::tabs::{CollectionSubTab, CollectionTab, DocumentViewMode};
 
 pub struct CollectionTabViewer<'a> {
@@ -46,6 +50,121 @@ fn query_field_input(
 
     let response = ui.add(edit);
     response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter))
+}
+
+fn bson_type_color(ty: &str, palette: &ThemePalette) -> Color32 {
+    match ty {
+        "String" => Color32::from_rgb(86, 156, 214),
+        "Int32" | "Int64" | "Double" | "Decimal128" => Color32::from_rgb(78, 201, 176),
+        "ObjectId" => Color32::from_rgb(206, 145, 120),
+        "Boolean" => Color32::from_rgb(197, 134, 192),
+        "DateTime" => Color32::from_rgb(220, 220, 170),
+        "Document" => Color32::from_rgb(156, 220, 254),
+        "Array" => Color32::from_rgb(181, 206, 168),
+        "Null" => palette.muted_text,
+        _ => palette.accent_color,
+    }
+}
+
+fn render_type_distribution_bar(ui: &mut Ui, field: &SchemaField, palette: &ThemePalette) {
+    let desired_width = ui.available_width().clamp(80.0, 220.0);
+    let (rect, resp) = ui.allocate_exact_size(Vec2::new(desired_width, 14.0), Sense::hover());
+
+    if ui.is_rect_visible(rect) {
+        let painter = ui.painter();
+        painter.rect_filled(rect, Rounding::same(3.0), palette.panel_bg);
+
+        if field.type_breakdown.is_empty() {
+            if field.frequency_pct > 0.0 {
+                let color = bson_type_color(&field.bson_type, palette);
+                painter.rect_filled(rect, Rounding::same(3.0), color);
+            }
+        } else {
+            let total_pct: f32 = field
+                .type_breakdown
+                .iter()
+                .map(|(_, pct)| (*pct).max(0.0))
+                .sum();
+            let norm = if total_pct > 0.0 { total_pct } else { 100.0 };
+            let mut cursor_x = rect.left();
+            let count = field.type_breakdown.len();
+
+            for (idx, (ty, pct)) in field.type_breakdown.iter().enumerate() {
+                let frac = ((*pct).max(0.0) / norm).clamp(0.0, 1.0);
+                let next_x = if idx + 1 == count {
+                    rect.right()
+                } else {
+                    (cursor_x + rect.width() * frac).min(rect.right())
+                };
+
+                if next_x > cursor_x {
+                    let seg_rect = Rect::from_min_max(
+                        Pos2::new(cursor_x, rect.top()),
+                        Pos2::new(next_x, rect.bottom()),
+                    );
+                    let rounding = if count == 1 {
+                        Rounding::same(3.0)
+                    } else if idx == 0 {
+                        Rounding {
+                            nw: 3.0,
+                            sw: 3.0,
+                            ne: 0.0,
+                            se: 0.0,
+                        }
+                    } else if idx + 1 == count {
+                        Rounding {
+                            nw: 0.0,
+                            sw: 0.0,
+                            ne: 3.0,
+                            se: 3.0,
+                        }
+                    } else {
+                        Rounding::ZERO
+                    };
+                    painter.rect_filled(seg_rect, rounding, bson_type_color(ty, palette));
+                }
+                cursor_x = next_x;
+            }
+        }
+
+        painter.rect_stroke(
+            rect,
+            Rounding::same(3.0),
+            Stroke::new(1.0_f32, palette.border_color),
+        );
+    }
+
+    resp.on_hover_ui(|ui| {
+        ui.label(RichText::new(&field.field_name).monospace().strong());
+        ui.label(
+            RichText::new(format!(
+                "Present in {} doc(s) ({:.1}%)",
+                field.doc_count, field.frequency_pct
+            ))
+            .size(11.5)
+            .color(palette.muted_text),
+        );
+        ui.separator();
+        if field.type_breakdown.is_empty() {
+            ui.label(RichText::new(&field.bson_type).monospace().size(11.5));
+        } else {
+            for (ty, pct) in &field.type_breakdown {
+                ui.horizontal(|ui| {
+                    let (swatch, _) = ui.allocate_exact_size(Vec2::new(10.0, 10.0), Sense::hover());
+                    ui.painter().rect_filled(
+                        swatch,
+                        Rounding::same(2.0),
+                        bson_type_color(ty, palette),
+                    );
+                    ui.label(
+                        RichText::new(format!("{ty}: {pct:.1}%"))
+                            .monospace()
+                            .size(11.5),
+                    );
+                });
+            }
+        }
+    });
 }
 
 impl<'a> CollectionTabViewer<'a> {
@@ -257,7 +376,7 @@ impl<'a> CollectionTabViewer<'a> {
             Frame::none()
                 .fill(Color32::from_rgba_unmultiplied(220, 160, 40, 28))
                 .stroke(Stroke::new(1.0_f32, self.palette.warning_color))
-                .rounding(egui::Rounding::same(4.0))
+                .rounding(Rounding::same(4.0))
                 .inner_margin(Margin::same(10.0))
                 .show(ui, |ui| {
                     ui.horizontal(|ui| {
@@ -654,6 +773,758 @@ impl<'a> CollectionTabViewer<'a> {
                 }
             });
     }
+
+    fn render_indexes_subtab(&mut self, ui: &mut Ui, tab: &CollectionTab, coll: &CollectionInfo) {
+        let is_system_coll = tab.collection.starts_with("system.");
+
+        ui.add_space(4.0);
+        ui.horizontal_wrapped(|ui| {
+            ui.label(
+                RichText::new(format!(
+                    "Indexes on {}.{} ({} total)",
+                    tab.database,
+                    tab.collection,
+                    coll.indexes.len()
+                ))
+                .strong(),
+            );
+            ui.label(
+                RichText::new(
+                    "(_id_ primary index is protected; system.* collections are read-only)",
+                )
+                .size(11.5)
+                .color(self.palette.muted_text),
+            );
+
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.add_enabled_ui(!is_system_coll, |ui| {
+                    let resp = primary_button(
+                        ui,
+                        &format!("{} Create Index...", regular::PLUS),
+                        self.palette.accent_color,
+                    );
+                    let resp = if is_system_coll {
+                        resp.on_disabled_hover_text(
+                            "Cannot create indexes on protected system.* collections",
+                        )
+                    } else {
+                        resp.on_hover_text("Create a new index on this collection")
+                    };
+                    if resp.clicked() {
+                        self.events.push(AppEvent::OpenCreateIndexModal {
+                            connection_name: tab.connection_name.clone(),
+                            database: tab.database.clone(),
+                            collection: tab.collection.clone(),
+                        });
+                    }
+                });
+            });
+        });
+        ui.add_space(6.0);
+
+        TableBuilder::new(ui)
+            .striped(true)
+            .resizable(true)
+            .column(Column::initial(170.0).at_least(110.0))
+            .column(Column::initial(220.0).at_least(130.0))
+            .column(Column::initial(95.0).at_least(70.0))
+            .column(Column::initial(75.0).at_least(60.0))
+            .column(Column::initial(85.0).at_least(65.0))
+            .column(Column::remainder().at_least(90.0))
+            .header(24.0, |mut header| {
+                for col_name in [
+                    "Index Name",
+                    "Key Specification",
+                    "Type",
+                    "Unique",
+                    "Size",
+                    "Action",
+                ] {
+                    header.col(|ui| {
+                        ui.label(
+                            RichText::new(col_name)
+                                .strong()
+                                .color(self.palette.accent_color),
+                        );
+                    });
+                }
+            })
+            .body(|body| {
+                body.rows(26.0, coll.indexes.len(), |mut row| {
+                    let idx_info = &coll.indexes[row.index()];
+                    row.col(|ui| {
+                        ui.label(RichText::new(&idx_info.name).monospace().strong());
+                    });
+                    row.col(|ui| {
+                        ui.label(RichText::new(&idx_info.keys).monospace());
+                    });
+                    row.col(|ui| {
+                        ui.label(&idx_info.index_type);
+                    });
+                    row.col(|ui| {
+                        let badge = if idx_info.unique { "UNIQUE" } else { "—" };
+                        ui.label(RichText::new(badge).color(if idx_info.unique {
+                            self.palette.success_color
+                        } else {
+                            self.palette.muted_text
+                        }));
+                    });
+                    row.col(|ui| {
+                        ui.label(format!("{:.1} KB", idx_info.size_kb));
+                    });
+                    row.col(|ui| {
+                        let is_primary = idx_info.name == "_id_";
+                        let can_drop = !is_primary && !is_system_coll;
+                        ui.add_enabled_ui(can_drop, |ui| {
+                            let btn = egui::Button::new(
+                                RichText::new(format!("{} Drop", regular::TRASH)).color(
+                                    if can_drop {
+                                        self.palette.error_color
+                                    } else {
+                                        self.palette.muted_text
+                                    },
+                                ),
+                            )
+                            .small();
+
+                            let resp = ui
+                                .add(btn)
+                                .on_hover_cursor(CursorIcon::PointingHand)
+                                .on_disabled_hover_text(if is_primary {
+                                    "Primary '_id_' index cannot be dropped"
+                                } else {
+                                    "Cannot drop indexes on protected system.* collections"
+                                });
+
+                            if can_drop
+                                && resp.on_hover_text("Drop this index from MongoDB").clicked()
+                            {
+                                self.events.push(AppEvent::RequestDropIndex {
+                                    connection_name: tab.connection_name.clone(),
+                                    database: tab.database.clone(),
+                                    collection: tab.collection.clone(),
+                                    index_name: idx_info.name.clone(),
+                                });
+                            }
+                        });
+                    });
+                });
+            });
+    }
+
+    fn render_schema_subtab(
+        &mut self,
+        ui: &mut Ui,
+        tab: &mut CollectionTab,
+        coll: &CollectionInfo,
+    ) {
+        ui.add_space(4.0);
+        ui.horizontal_wrapped(|ui| {
+            ui.label(
+                RichText::new(format!(
+                    "Schema Analysis — {}.{} ({} fields)",
+                    tab.database,
+                    tab.collection,
+                    coll.schema_fields.len()
+                ))
+                .strong(),
+            );
+            ui.separator();
+            ui.label(RichText::new("Sample Size").size(12.0).strong());
+            ComboBox::from_id_source((
+                "schema_sample_size_combo",
+                &tab.connection_name,
+                &tab.database,
+                &tab.collection,
+            ))
+            .selected_text(RichText::new(tab.schema_sample_size.to_string()).monospace())
+            .width(78.0)
+            .show_ui(ui, |ui| {
+                for sample_opt in [50_usize, 100, 250, 500, 1000] {
+                    ui.selectable_value(
+                        &mut tab.schema_sample_size,
+                        sample_opt,
+                        sample_opt.to_string(),
+                    );
+                }
+            });
+
+            ui.add_enabled_ui(!tab.schema_is_analyzing, |ui| {
+                if primary_button(
+                    ui,
+                    &format!("{} Re-analyze Schema", regular::ARROWS_CLOCKWISE),
+                    self.palette.accent_color,
+                )
+                .on_hover_text("Sample documents and recompute field types and frequency")
+                .clicked()
+                {
+                    tab.schema_is_analyzing = true;
+                    self.events.push(AppEvent::AnalyzeCollectionSchema {
+                        connection_name: tab.connection_name.clone(),
+                        database: tab.database.clone(),
+                        collection: tab.collection.clone(),
+                        sample_size: tab.schema_sample_size,
+                    });
+                }
+            });
+
+            if tab.schema_is_analyzing {
+                ui.spinner();
+                ui.label(
+                    RichText::new("Analyzing schema...")
+                        .size(11.5)
+                        .color(self.palette.warning_color),
+                );
+            }
+        });
+        ui.add_space(6.0);
+
+        if coll.schema_fields.is_empty() {
+            ui.centered_and_justified(|ui| {
+                ui.label(
+                    RichText::new(
+                        "No schema fields discovered yet. Click 'Re-analyze Schema' to sample documents.",
+                    )
+                    .color(self.palette.muted_text),
+                );
+            });
+            return;
+        }
+
+        TableBuilder::new(ui)
+            .striped(true)
+            .resizable(true)
+            .column(Column::initial(175.0).at_least(110.0))
+            .column(Column::initial(145.0).at_least(100.0))
+            .column(Column::initial(140.0).at_least(100.0))
+            .column(Column::initial(180.0).at_least(110.0))
+            .column(Column::remainder().at_least(120.0))
+            .header(24.0, |mut header| {
+                for title in [
+                    "Field Path",
+                    "BSON Type(s)",
+                    "Frequency",
+                    "Type Distribution",
+                    "Sample Value",
+                ] {
+                    header.col(|ui| {
+                        ui.label(
+                            RichText::new(title)
+                                .strong()
+                                .color(self.palette.accent_color),
+                        );
+                    });
+                }
+            })
+            .body(|body| {
+                body.rows(24.0, coll.schema_fields.len(), |mut row| {
+                    let field = &coll.schema_fields[row.index()];
+                    row.col(|ui| {
+                        ui.label(RichText::new(&field.field_name).monospace().strong());
+                    });
+                    row.col(|ui| {
+                        ui.label(
+                            RichText::new(&field.bson_type)
+                                .monospace()
+                                .color(self.palette.success_color),
+                        );
+                    });
+                    row.col(|ui| {
+                        ui.add(
+                            egui::ProgressBar::new(field.frequency_pct / 100.0)
+                                .text(format!("{:.0}% ({})", field.frequency_pct, field.doc_count)),
+                        );
+                    });
+                    row.col(|ui| {
+                        render_type_distribution_bar(ui, field, self.palette);
+                    });
+                    row.col(|ui| {
+                        ui.label(
+                            RichText::new(&field.sample_value)
+                                .monospace()
+                                .color(self.palette.warning_color),
+                        );
+                    });
+                });
+            });
+    }
+
+    fn render_aggregation_subtab(&mut self, ui: &mut Ui, tab: &mut CollectionTab) {
+        ui.add_space(4.0);
+
+        let builder_validation = AggregationStage::build_pipeline(&tab.agg_stages);
+        let raw_validation = AggregationStage::parse_raw_pipeline(&tab.agg_raw_json);
+        let pipeline_valid = if tab.agg_raw_mode {
+            raw_validation.is_ok()
+        } else {
+            builder_validation.is_ok()
+        };
+
+        // Toolbar
+        ui.horizontal_wrapped(|ui| {
+            ui.label(
+                RichText::new(format!(
+                    "Aggregation Pipeline — {}.{}",
+                    tab.database, tab.collection
+                ))
+                .strong(),
+            );
+            ui.separator();
+
+            if ui
+                .selectable_label(!tab.agg_raw_mode, "Builder")
+                .on_hover_cursor(CursorIcon::PointingHand)
+                .clicked()
+            {
+                tab.agg_raw_mode = false;
+            }
+            if ui
+                .selectable_label(tab.agg_raw_mode, "Raw JSON")
+                .on_hover_cursor(CursorIcon::PointingHand)
+                .clicked()
+            {
+                tab.agg_raw_mode = true;
+            }
+
+            if !tab.agg_raw_mode {
+                if secondary_button(
+                    ui,
+                    &format!("{} Add Stage", regular::PLUS),
+                    self.palette.border_color,
+                )
+                .on_hover_text("Append a new aggregation pipeline stage")
+                .clicked()
+                {
+                    tab.agg_stages.push(AggregationStage::new(
+                        "$match",
+                        AggregationStage::default_expression("$match"),
+                        true,
+                    ));
+                }
+
+                if secondary_button(
+                    ui,
+                    &format!("{} To Raw JSON", regular::BRACKETS_CURLY),
+                    self.palette.border_color,
+                )
+                .on_hover_text("Serialize enabled stages into Raw JSON Pipeline mode")
+                .clicked()
+                {
+                    match AggregationStage::stages_to_pretty_json(&tab.agg_stages) {
+                        Ok(pretty) => {
+                            tab.agg_raw_json = pretty;
+                            tab.agg_raw_mode = true;
+                            tab.agg_error = None;
+                        }
+                        Err(err) => {
+                            tab.agg_error = Some(err.to_string());
+                        }
+                    }
+                }
+            }
+
+            if secondary_button(
+                ui,
+                &format!("{} Copy Pipeline JSON", regular::COPY),
+                self.palette.border_color,
+            )
+            .on_hover_text("Copy pipeline JSON array to clipboard")
+            .clicked()
+            {
+                let json_to_copy = if tab.agg_raw_mode {
+                    tab.agg_raw_json.clone()
+                } else {
+                    AggregationStage::stages_to_pretty_json(&tab.agg_stages)
+                        .unwrap_or_else(|_| tab.agg_raw_json.clone())
+                };
+                ui.ctx().copy_text(json_to_copy);
+            }
+
+            ui.add_enabled_ui(pipeline_valid && !tab.agg_is_running, |ui| {
+                if primary_button(
+                    ui,
+                    &format!("{} Run Pipeline", regular::LIGHTNING),
+                    self.palette.accent_color,
+                )
+                .on_hover_text("Execute aggregation pipeline against collection")
+                .clicked()
+                {
+                    tab.agg_error = None;
+                    let (raw_json, stages) = if tab.agg_raw_mode {
+                        (tab.agg_raw_json.clone(), Vec::new())
+                    } else {
+                        (String::new(), tab.agg_stages.clone())
+                    };
+                    self.events.push(AppEvent::RunAggregationPipeline {
+                        connection_name: tab.connection_name.clone(),
+                        database: tab.database.clone(),
+                        collection: tab.collection.clone(),
+                        raw_json,
+                        stages,
+                    });
+                }
+            });
+
+            if tab.agg_is_running {
+                ui.spinner();
+                ui.label(
+                    RichText::new("Running aggregation...")
+                        .size(11.5)
+                        .color(self.palette.warning_color),
+                );
+            } else if let (Some(docs), Some(ms)) = (&tab.agg_results, tab.agg_elapsed_ms) {
+                let stage_count = if tab.agg_raw_mode {
+                    raw_validation.as_ref().map_or(0, Vec::len)
+                } else {
+                    tab.agg_stages.iter().filter(|s| s.enabled).count()
+                };
+                ui.label(
+                    RichText::new(format!(
+                        "{} doc(s) • {} stage(s) • {ms:.1} ms",
+                        docs.len(),
+                        stage_count
+                    ))
+                    .monospace()
+                    .size(11.5)
+                    .color(self.palette.success_color),
+                );
+            }
+        });
+
+        ui.add_space(6.0);
+
+        // Editor Section (Builder or Raw JSON)
+        if tab.agg_raw_mode {
+            ScrollArea::vertical()
+                .id_source((
+                    "agg_raw_scroll",
+                    &tab.connection_name,
+                    &tab.database,
+                    &tab.collection,
+                ))
+                .max_height(210.0)
+                .show(ui, |ui| {
+                    let mut layouter = json_layouter(12.0);
+                    ui.add(
+                        TextEdit::multiline(&mut tab.agg_raw_json)
+                            .font(FontId::monospace(12.0))
+                            .layouter(&mut layouter)
+                            .desired_width(f32::INFINITY)
+                            .desired_rows(9)
+                            .margin(Margin::same(8.0)),
+                    );
+                });
+
+            ui.add_space(4.0);
+            match &raw_validation {
+                Ok(docs) => {
+                    ui.label(
+                        RichText::new(format!(
+                            "{} Valid JSON pipeline ({} stage(s))",
+                            regular::CHECK_CIRCLE,
+                            docs.len()
+                        ))
+                        .size(11.5)
+                        .color(self.palette.success_color),
+                    );
+                }
+                Err(err) => {
+                    ui.label(
+                        RichText::new(format!("{} {err}", regular::WARNING_CIRCLE))
+                            .size(11.5)
+                            .color(self.palette.error_color),
+                    );
+                }
+            }
+        } else {
+            let mut move_up: Option<usize> = None;
+            let mut move_down: Option<usize> = None;
+            let mut remove_idx: Option<usize> = None;
+            let stage_len = tab.agg_stages.len();
+
+            ScrollArea::vertical()
+                .id_source((
+                    "agg_builder_scroll",
+                    &tab.connection_name,
+                    &tab.database,
+                    &tab.collection,
+                ))
+                .max_height(245.0)
+                .show(ui, |ui| {
+                    if tab.agg_stages.is_empty() {
+                        ui.label(
+                            RichText::new("No stages configured. Click '+ Add Stage' to begin.")
+                                .color(self.palette.muted_text),
+                        );
+                    }
+
+                    for (idx, stage) in tab.agg_stages.iter_mut().enumerate() {
+                        Frame::none()
+                            .fill(self.palette.panel_bg)
+                            .inner_margin(Margin::same(8.0))
+                            .rounding(Rounding::same(4.0))
+                            .stroke(Stroke::new(1.0_f32, self.palette.border_color))
+                            .show(ui, |ui| {
+                                ui.horizontal(|ui| {
+                                    ui.checkbox(&mut stage.enabled, "");
+                                    ui.label(
+                                        RichText::new(format!("Stage #{}", idx + 1))
+                                            .strong()
+                                            .size(12.0)
+                                            .color(self.palette.accent_color),
+                                    );
+
+                                    let mut selected_op = stage.operator.clone();
+                                    ComboBox::from_id_source((
+                                        "agg_stage_op",
+                                        &tab.connection_name,
+                                        &tab.database,
+                                        &tab.collection,
+                                        idx,
+                                    ))
+                                    .selected_text(RichText::new(&selected_op).monospace().strong())
+                                    .width(120.0)
+                                    .show_ui(ui, |ui| {
+                                        for &op in AggregationStage::SUPPORTED_OPERATORS {
+                                            ui.selectable_value(
+                                                &mut selected_op,
+                                                op.to_string(),
+                                                op,
+                                            );
+                                        }
+                                    });
+                                    if selected_op != stage.operator {
+                                        stage.expression =
+                                            AggregationStage::default_expression(&selected_op)
+                                                .to_string();
+                                        stage.operator = selected_op;
+                                    }
+
+                                    match stage.to_pipeline_doc() {
+                                        Ok(_) if stage.enabled => {
+                                            ui.label(
+                                                RichText::new(format!(
+                                                    "{} Valid",
+                                                    regular::CHECK_CIRCLE
+                                                ))
+                                                .size(11.0)
+                                                .color(self.palette.success_color),
+                                            );
+                                        }
+                                        Ok(_) => {
+                                            ui.label(
+                                                RichText::new("Disabled")
+                                                    .size(11.0)
+                                                    .color(self.palette.muted_text),
+                                            );
+                                        }
+                                        Err(err) => {
+                                            ui.label(
+                                                RichText::new(format!(
+                                                    "{} {err}",
+                                                    regular::WARNING_CIRCLE
+                                                ))
+                                                .size(11.0)
+                                                .color(self.palette.error_color),
+                                            );
+                                        }
+                                    }
+
+                                    ui.with_layout(
+                                        egui::Layout::right_to_left(egui::Align::Center),
+                                        |ui| {
+                                            if ui
+                                                .add_enabled(
+                                                    stage_len > 1,
+                                                    egui::Button::new(
+                                                        RichText::new(regular::TRASH).color(
+                                                            if stage_len > 1 {
+                                                                self.palette.error_color
+                                                            } else {
+                                                                self.palette.muted_text
+                                                            },
+                                                        ),
+                                                    )
+                                                    .small(),
+                                                )
+                                                .on_hover_cursor(CursorIcon::PointingHand)
+                                                .on_hover_text("Remove stage")
+                                                .clicked()
+                                            {
+                                                remove_idx = Some(idx);
+                                            }
+
+                                            if ui
+                                                .add_enabled(
+                                                    idx + 1 < stage_len,
+                                                    egui::Button::new(regular::CARET_DOWN).small(),
+                                                )
+                                                .on_hover_cursor(CursorIcon::PointingHand)
+                                                .on_hover_text("Move stage down")
+                                                .clicked()
+                                            {
+                                                move_down = Some(idx);
+                                            }
+
+                                            if ui
+                                                .add_enabled(
+                                                    idx > 0,
+                                                    egui::Button::new(regular::CARET_UP).small(),
+                                                )
+                                                .on_hover_cursor(CursorIcon::PointingHand)
+                                                .on_hover_text("Move stage up")
+                                                .clicked()
+                                            {
+                                                move_up = Some(idx);
+                                            }
+                                        },
+                                    );
+                                });
+
+                                ui.add_space(4.0);
+                                let mut layouter = json_layouter(12.0);
+                                ui.add(
+                                    TextEdit::multiline(&mut stage.expression)
+                                        .font(FontId::monospace(12.0))
+                                        .layouter(&mut layouter)
+                                        .desired_width(f32::INFINITY)
+                                        .desired_rows(3)
+                                        .margin(Margin::same(6.0)),
+                                );
+                            });
+                        ui.add_space(4.0);
+                    }
+                });
+
+            if let Some(idx) = move_up {
+                if idx > 0 && idx < tab.agg_stages.len() {
+                    tab.agg_stages.swap(idx, idx - 1);
+                }
+            } else if let Some(idx) = move_down {
+                if idx + 1 < tab.agg_stages.len() {
+                    tab.agg_stages.swap(idx, idx + 1);
+                }
+            } else if let Some(idx) = remove_idx {
+                if tab.agg_stages.len() > 1 && idx < tab.agg_stages.len() {
+                    tab.agg_stages.remove(idx);
+                }
+            }
+
+            ui.add_space(2.0);
+            match &builder_validation {
+                Ok(docs) => {
+                    ui.label(
+                        RichText::new(format!(
+                            "{} Pipeline ready ({} enabled stage(s))",
+                            regular::CHECK_CIRCLE,
+                            docs.len()
+                        ))
+                        .size(11.5)
+                        .color(self.palette.success_color),
+                    );
+                }
+                Err(err) => {
+                    ui.label(
+                        RichText::new(format!("{} {err}", regular::WARNING_CIRCLE))
+                            .size(11.5)
+                            .color(self.palette.error_color),
+                    );
+                }
+            }
+        }
+
+        ui.add_space(6.0);
+        ui.separator();
+        ui.add_space(4.0);
+
+        // Results Pane
+        if let Some(ref err) = tab.agg_error {
+            Frame::none()
+                .fill(Color32::from_rgba_unmultiplied(220, 60, 60, 28))
+                .stroke(Stroke::new(1.0_f32, self.palette.error_color))
+                .rounding(Rounding::same(4.0))
+                .inner_margin(Margin::same(8.0))
+                .show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.label(
+                            RichText::new(regular::WARNING_CIRCLE)
+                                .color(self.palette.error_color)
+                                .size(14.0),
+                        );
+                        ui.label(
+                            RichText::new(err)
+                                .monospace()
+                                .color(self.palette.error_color)
+                                .size(12.0),
+                        );
+                    });
+                });
+            ui.add_space(6.0);
+        }
+
+        if let Some(ref results) = tab.agg_results {
+            ui.horizontal(|ui| {
+                ui.label(
+                    RichText::new(format!("Pipeline Output ({} document(s))", results.len()))
+                        .strong()
+                        .size(12.5),
+                );
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui
+                        .selectable_label(
+                            tab.view_mode == DocumentViewMode::JsonTree,
+                            format!("{} JSON View", regular::BRACKETS_CURLY),
+                        )
+                        .on_hover_cursor(CursorIcon::PointingHand)
+                        .clicked()
+                    {
+                        tab.view_mode = DocumentViewMode::JsonTree;
+                    }
+                    if ui
+                        .selectable_label(
+                            tab.view_mode == DocumentViewMode::Table,
+                            format!("{} Table View", regular::TABLE),
+                        )
+                        .on_hover_cursor(CursorIcon::PointingHand)
+                        .clicked()
+                    {
+                        tab.view_mode = DocumentViewMode::Table;
+                    }
+                });
+            });
+            ui.add_space(4.0);
+
+            let target = DocumentTarget {
+                connection_name: &tab.connection_name,
+                database: &tab.database,
+                collection: &tab.collection,
+            };
+
+            match tab.view_mode {
+                DocumentViewMode::Table => {
+                    let mut agg_selected = None;
+                    render_document_grid(
+                        ui,
+                        target,
+                        results,
+                        &tab.agg_cached_columns,
+                        &mut agg_selected,
+                        self.palette,
+                        self.events,
+                    );
+                }
+                DocumentViewMode::JsonTree => {
+                    render_json_viewer(ui, target, results, self.palette, self.events);
+                }
+            }
+        } else if tab.agg_error.is_none() {
+            ui.label(
+                RichText::new("Configure pipeline stages above and click 'Run Pipeline' to inspect output documents.")
+                    .color(self.palette.muted_text)
+                    .size(12.0),
+            );
+        }
+    }
 }
 
 impl TabViewer for CollectionTabViewer<'_> {
@@ -773,9 +1644,11 @@ impl TabViewer for CollectionTabViewer<'_> {
             ui.horizontal(|ui| {
                 ui.spinner();
                 ui.label(
-                    RichText::new("Loading collection documents, indexes, and schema from MongoDB...")
-                        .color(self.palette.warning_color)
-                        .strong(),
+                    RichText::new(
+                        "Loading collection documents, indexes, and schema from MongoDB...",
+                    )
+                    .color(self.palette.warning_color)
+                    .strong(),
                 );
             });
             return;
@@ -784,7 +1657,8 @@ impl TabViewer for CollectionTabViewer<'_> {
         match tab.active_subtab {
             CollectionSubTab::Documents => {
                 let filter_valid = DocumentRow::parse_filter_doc(&tab.filter_query).is_ok();
-                let proj_valid = DocumentRow::parse_bson_doc_allow_empty(&tab.projection_query).is_ok();
+                let proj_valid =
+                    DocumentRow::parse_bson_doc_allow_empty(&tab.projection_query).is_ok();
                 let sort_valid = DocumentRow::parse_bson_doc_allow_empty(&tab.sort_query).is_ok();
                 let all_valid = filter_valid && proj_valid && sort_valid;
 
@@ -899,6 +1773,111 @@ impl TabViewer for CollectionTabViewer<'_> {
                             collection: tab.collection.clone(),
                         });
                     }
+
+                    if secondary_button(
+                        ui,
+                        &format!("{} Save Query", regular::FLOPPY_DISK),
+                        self.palette.border_color,
+                    )
+                    .on_hover_text("Save current filter, projection, sort, and limit")
+                    .clicked()
+                    {
+                        self.events.push(AppEvent::OpenSaveQueryModal {
+                            connection_name: tab.connection_name.clone(),
+                            database: tab.database.clone(),
+                            collection: tab.collection.clone(),
+                            filter: tab.filter_query.clone(),
+                            projection: tab.projection_query.clone(),
+                            sort: tab.sort_query.clone(),
+                            limit: tab.limit,
+                        });
+                    }
+
+                    ui.menu_button(
+                        RichText::new(format!("{} Export", regular::CLOUD_ARROW_DOWN)).size(12.0),
+                        |ui| {
+                            for fmt in [
+                                TransferFormat::Json,
+                                TransferFormat::JsonLines,
+                                TransferFormat::Csv,
+                            ] {
+                                if ui
+                                    .button(fmt.label())
+                                    .on_hover_cursor(CursorIcon::PointingHand)
+                                    .clicked()
+                                {
+                                    ui.close_menu();
+                                    if let Some(path) = rfd::FileDialog::new()
+                                        .set_file_name(format!(
+                                            "{}.{}.{}",
+                                            tab.database,
+                                            tab.collection,
+                                            fmt.extension()
+                                        ))
+                                        .add_filter(fmt.label(), &[fmt.extension()])
+                                        .save_file()
+                                    {
+                                        self.events.push(AppEvent::ExportCollectionData {
+                                            connection_name: tab.connection_name.clone(),
+                                            database: tab.database.clone(),
+                                            collection: tab.collection.clone(),
+                                            filter: tab.filter_query.clone(),
+                                            format: fmt,
+                                            path,
+                                        });
+                                    }
+                                }
+                            }
+                        },
+                    )
+                    .response
+                    .on_hover_cursor(CursorIcon::PointingHand)
+                    .on_hover_text("Export collection documents using current filter");
+
+                    let is_system_coll = tab.collection.starts_with("system.");
+                    ui.add_enabled_ui(!is_system_coll, |ui| {
+                        let resp = ui
+                            .menu_button(
+                                RichText::new(format!("{} Import", regular::FILES)).size(12.0),
+                                |ui| {
+                                    for fmt in [
+                                        TransferFormat::Json,
+                                        TransferFormat::JsonLines,
+                                        TransferFormat::Csv,
+                                    ] {
+                                        if ui
+                                            .button(fmt.label())
+                                            .on_hover_cursor(CursorIcon::PointingHand)
+                                            .clicked()
+                                        {
+                                            ui.close_menu();
+                                            if let Some(path) = rfd::FileDialog::new()
+                                                .add_filter(fmt.label(), &[fmt.extension()])
+                                                .pick_file()
+                                            {
+                                                self.events.push(AppEvent::ImportCollectionData {
+                                                    connection_name: tab.connection_name.clone(),
+                                                    database: tab.database.clone(),
+                                                    collection: tab.collection.clone(),
+                                                    format: fmt,
+                                                    path,
+                                                });
+                                            }
+                                        }
+                                    }
+                                },
+                            )
+                            .response
+                            .on_hover_cursor(CursorIcon::PointingHand);
+
+                        if is_system_coll {
+                            resp.on_disabled_hover_text(
+                                "Cannot import into protected system.* collections",
+                            );
+                        } else {
+                            resp.on_hover_text("Import documents from JSON, JSONL, or CSV");
+                        }
+                    });
 
                     if tab.is_loading {
                         ui.spinner();
@@ -1033,143 +2012,13 @@ impl TabViewer for CollectionTabViewer<'_> {
                 }
             }
             CollectionSubTab::Indexes => {
-                ui.add_space(4.0);
-                ui.label(
-                    RichText::new(format!(
-                        "Indexes on {}.{} ({} total)",
-                        tab.database,
-                        tab.collection,
-                        coll.indexes.len()
-                    ))
-                    .strong(),
-                );
-                ui.add_space(6.0);
-
-                TableBuilder::new(ui)
-                    .striped(true)
-                    .resizable(true)
-                    .column(Column::initial(160.0))
-                    .column(Column::initial(220.0))
-                    .column(Column::initial(100.0))
-                    .column(Column::initial(80.0))
-                    .column(Column::remainder())
-                    .header(24.0, |mut header| {
-                        for col_name in ["Index Name", "Key Specification", "Type", "Unique", "Size"]
-                        {
-                            header.col(|ui| {
-                                ui.label(
-                                    RichText::new(col_name)
-                                        .strong()
-                                        .color(self.palette.accent_color),
-                                );
-                            });
-                        }
-                    })
-                    .body(|body| {
-                        body.rows(24.0, coll.indexes.len(), |mut row| {
-                            let idx_info = &coll.indexes[row.index()];
-                            row.col(|ui| {
-                                ui.label(RichText::new(&idx_info.name).monospace().strong());
-                            });
-                            row.col(|ui| {
-                                ui.label(RichText::new(&idx_info.keys).monospace());
-                            });
-                            row.col(|ui| {
-                                ui.label(&idx_info.index_type);
-                            });
-                            row.col(|ui| {
-                                let badge = if idx_info.unique { "UNIQUE" } else { "—" };
-                                ui.label(
-                                    RichText::new(badge).color(if idx_info.unique {
-                                        self.palette.success_color
-                                    } else {
-                                        self.palette.muted_text
-                                    }),
-                                );
-                            });
-                            row.col(|ui| {
-                                ui.label(format!("{:.1} KB", idx_info.size_kb));
-                            });
-                        });
-                    });
+                self.render_indexes_subtab(ui, tab, coll);
             }
             CollectionSubTab::Schema => {
-                ui.add_space(4.0);
-                ui.label(
-                    RichText::new(format!(
-                        "Schema Analysis — {}.{} (Sampled {} documents)",
-                        tab.database,
-                        tab.collection,
-                        coll.documents.len()
-                    ))
-                    .strong(),
-                );
-                ui.add_space(6.0);
-
-                TableBuilder::new(ui)
-                    .striped(true)
-                    .resizable(true)
-                    .column(Column::initial(140.0))
-                    .column(Column::initial(150.0))
-                    .column(Column::initial(180.0))
-                    .column(Column::remainder())
-                    .header(24.0, |mut header| {
-                        for title in ["Field", "BSON Type", "Frequency", "Sample Value"] {
-                            header.col(|ui| {
-                                ui.label(
-                                    RichText::new(title)
-                                        .strong()
-                                        .color(self.palette.accent_color),
-                                );
-                            });
-                        }
-                    })
-                    .body(|body| {
-                        body.rows(24.0, coll.schema_fields.len(), |mut row| {
-                            let field = &coll.schema_fields[row.index()];
-                            row.col(|ui| {
-                                ui.label(RichText::new(&field.field_name).monospace().strong());
-                            });
-                            row.col(|ui| {
-                                ui.label(
-                                    RichText::new(&field.bson_type)
-                                        .monospace()
-                                        .color(self.palette.success_color),
-                                );
-                            });
-                            row.col(|ui| {
-                                ui.add(
-                                    egui::ProgressBar::new(field.frequency_pct / 100.0)
-                                        .text(format!("{:.0}%", field.frequency_pct)),
-                                );
-                            });
-                            row.col(|ui| {
-                                ui.label(
-                                    RichText::new(&field.sample_value)
-                                        .monospace()
-                                        .color(self.palette.warning_color),
-                                );
-                            });
-                        });
-                    });
+                self.render_schema_subtab(ui, tab, coll);
             }
             CollectionSubTab::Aggregation => {
-                ui.add_space(4.0);
-                ui.label(
-                    RichText::new(format!(
-                        "Aggregation Pipeline Builder — {}.{}",
-                        tab.database, tab.collection
-                    ))
-                    .strong(),
-                );
-                ui.add_space(6.0);
-                ui.label(
-                    RichText::new(
-                        "[\n  { \"$match\": { \"status\": \"active\" } },\n  { \"$sort\": { \"_id\": 1 } }\n]",
-                    )
-                    .monospace()
-                    .color(self.palette.success_color),
-                );
+                self.render_aggregation_subtab(ui, tab);
             }
         }
     }

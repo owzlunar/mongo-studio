@@ -97,11 +97,8 @@ pub fn render_json_viewer(
                     .rounding(Rounding::same(4.0))
                     .stroke(Stroke::new(1.0_f32, palette.border_color))
                     .show(ui, |ui| {
-                        let collapsing = CollapsingState::load_with_default_open(
-                            ui.ctx(),
-                            card_id,
-                            idx < 3,
-                        );
+                        let collapsing =
+                            CollapsingState::load_with_default_open(ui.ctx(), card_id, idx < 3);
 
                         collapsing
                             .show_header(ui, |ui| {
@@ -191,10 +188,7 @@ pub fn render_json_viewer(
                                         }
 
                                         if ui
-                                            .small_button(format!(
-                                                "{} Copy JSON",
-                                                regular::COPY
-                                            ))
+                                            .small_button(format!("{} Copy JSON", regular::COPY))
                                             .on_hover_cursor(CursorIcon::PointingHand)
                                             .on_hover_text("Copy pretty Extended JSON to clipboard")
                                             .clicked()
@@ -204,10 +198,7 @@ pub fn render_json_viewer(
 
                                         if !doc.id.is_empty()
                                             && ui
-                                                .small_button(format!(
-                                                    "{} Copy _id",
-                                                    regular::COPY
-                                                ))
+                                                .small_button(format!("{} Copy _id", regular::COPY))
                                                 .on_hover_cursor(CursorIcon::PointingHand)
                                                 .on_hover_text("Copy _id to clipboard")
                                                 .clicked()
@@ -251,11 +242,7 @@ fn render_json_object(
     depth: usize,
 ) {
     if map.is_empty() {
-        ui.label(
-            RichText::new("{}")
-                .monospace()
-                .color(syntax.punctuation),
-        );
+        ui.label(RichText::new("{}").monospace().color(syntax.punctuation));
         return;
     }
 
@@ -291,44 +278,40 @@ fn render_json_entry(
     match value {
         Value::Object(map) if !map.is_empty() => {
             let header = format!("\"{key_label}\": {{{} fields}}", map.len());
-            egui::CollapsingHeader::new(
-                RichText::new(header).monospace().color(syntax.key),
-            )
-            .id_source((parent_salt, key_label, depth))
-            .default_open(depth == 0 && map.len() <= 4)
-            .show(ui, |ui| {
-                for (child_idx, (child_key, child_val)) in map.iter().enumerate() {
-                    render_json_entry(
-                        ui,
-                        child_key,
-                        child_val,
-                        syntax,
-                        (parent_salt.0, child_idx),
-                        depth + 1,
-                    );
-                }
-            });
+            egui::CollapsingHeader::new(RichText::new(header).monospace().color(syntax.key))
+                .id_source((parent_salt, key_label, depth))
+                .default_open(depth == 0 && map.len() <= 4)
+                .show(ui, |ui| {
+                    for (child_idx, (child_key, child_val)) in map.iter().enumerate() {
+                        render_json_entry(
+                            ui,
+                            child_key,
+                            child_val,
+                            syntax,
+                            (parent_salt.0, child_idx),
+                            depth + 1,
+                        );
+                    }
+                });
         }
         Value::Array(arr) if !arr.is_empty() => {
             let header = format!("\"{key_label}\": [{} items]", arr.len());
-            egui::CollapsingHeader::new(
-                RichText::new(header).monospace().color(syntax.key),
-            )
-            .id_source((parent_salt, key_label, depth))
-            .default_open(depth == 0 && arr.len() <= 4)
-            .show(ui, |ui| {
-                for (item_idx, item_val) in arr.iter().enumerate() {
-                    let idx_label = format!("[{item_idx}]");
-                    render_json_entry(
-                        ui,
-                        &idx_label,
-                        item_val,
-                        syntax,
-                        (parent_salt.0, item_idx),
-                        depth + 1,
-                    );
-                }
-            });
+            egui::CollapsingHeader::new(RichText::new(header).monospace().color(syntax.key))
+                .id_source((parent_salt, key_label, depth))
+                .default_open(depth == 0 && arr.len() <= 4)
+                .show(ui, |ui| {
+                    for (item_idx, item_val) in arr.iter().enumerate() {
+                        let idx_label = format!("[{item_idx}]");
+                        render_json_entry(
+                            ui,
+                            &idx_label,
+                            item_val,
+                            syntax,
+                            (parent_salt.0, item_idx),
+                            depth + 1,
+                        );
+                    }
+                });
         }
         Value::Object(_) => {
             ui.horizontal(|ui| {
@@ -337,11 +320,7 @@ fn render_json_entry(
                         .monospace()
                         .color(syntax.key),
                 );
-                ui.label(
-                    RichText::new("{}")
-                        .monospace()
-                        .color(syntax.punctuation),
-                );
+                ui.label(RichText::new("{}").monospace().color(syntax.punctuation));
             });
         }
         Value::Array(_) => {
@@ -351,11 +330,7 @@ fn render_json_entry(
                         .monospace()
                         .color(syntax.key),
                 );
-                ui.label(
-                    RichText::new("[]")
-                        .monospace()
-                        .color(syntax.punctuation),
-                );
+                ui.label(RichText::new("[]").monospace().color(syntax.punctuation));
             });
         }
         Value::String(s) => {

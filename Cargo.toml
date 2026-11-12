@@ -24,10 +24,16 @@ uuid = { version = "1.8", features = ["v4", "serde"] }
 tokio = { version = "1.37", features = ["rt-multi-thread", "macros", "sync", "time"] }
 bson = "2.10"
 mongodb = "2.8"
-rfd = { version = "0.14", optional = true }
+rfd = "0.14"
 keyring = "2.3"
-syntect = { version = "5.2", optional = true }
+syntect = "5.2"
 
 [features]
 default = []
-phase2-db = ["dep:rfd", "dep:syntect"]
+phase2-db = []
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+strip = true

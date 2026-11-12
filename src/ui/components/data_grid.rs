@@ -153,79 +153,72 @@ pub fn render_document_grid(
 
                         row.col(|ui| {
                             let extracted_id = doc.extract_bson_id();
-                            ui.horizontal(|ui| {
-                                match &extracted_id {
-                                    Ok(id) => {
-                                        if ui
-                                            .small_button(format!(
-                                                "{} Edit",
-                                                regular::PENCIL_SIMPLE
-                                            ))
-                                            .on_hover_cursor(CursorIcon::PointingHand)
-                                            .on_hover_text("Edit document JSON")
-                                            .clicked()
-                                        {
-                                            *selected_row = Some(idx);
-                                            events.push(AppEvent::OpenEditDocumentModal {
-                                                connection_name: target.connection_name.to_string(),
-                                                database: target.database.to_string(),
-                                                collection: target.collection.to_string(),
-                                                original_id: id.clone(),
-                                                json_text: doc.to_pretty_json(),
-                                            });
-                                        }
+                            ui.horizontal(|ui| match &extracted_id {
+                                Ok(id) => {
+                                    if ui
+                                        .small_button(format!("{} Edit", regular::PENCIL_SIMPLE))
+                                        .on_hover_cursor(CursorIcon::PointingHand)
+                                        .on_hover_text("Edit document JSON")
+                                        .clicked()
+                                    {
+                                        *selected_row = Some(idx);
+                                        events.push(AppEvent::OpenEditDocumentModal {
+                                            connection_name: target.connection_name.to_string(),
+                                            database: target.database.to_string(),
+                                            collection: target.collection.to_string(),
+                                            original_id: id.clone(),
+                                            json_text: doc.to_pretty_json(),
+                                        });
+                                    }
 
-                                        if ui
-                                            .small_button(
-                                                RichText::new(format!(
-                                                    "{} Del",
-                                                    regular::TRASH
-                                                ))
+                                    if ui
+                                        .small_button(
+                                            RichText::new(format!("{} Del", regular::TRASH))
                                                 .color(palette.error_color),
-                                            )
-                                            .on_hover_cursor(CursorIcon::PointingHand)
-                                            .on_hover_text("Delete document")
-                                            .clicked()
-                                        {
-                                            *selected_row = Some(idx);
-                                            events.push(AppEvent::RequestDeleteDocument {
-                                                connection_name: target.connection_name.to_string(),
-                                                database: target.database.to_string(),
-                                                collection: target.collection.to_string(),
-                                                doc_id: id.clone(),
-                                                display_id: doc.id.clone(),
-                                            });
-                                        }
-                                    }
-                                    Err(err) => {
-                                        ui.add_enabled(
-                                            false,
-                                            egui::Button::new(format!(
-                                                "{} Edit",
-                                                regular::PENCIL_SIMPLE
-                                            ))
-                                            .small(),
                                         )
-                                        .on_disabled_hover_text(format!("Cannot edit: {err}"));
+                                        .on_hover_cursor(CursorIcon::PointingHand)
+                                        .on_hover_text("Delete document")
+                                        .clicked()
+                                    {
+                                        *selected_row = Some(idx);
+                                        events.push(AppEvent::RequestDeleteDocument {
+                                            connection_name: target.connection_name.to_string(),
+                                            database: target.database.to_string(),
+                                            collection: target.collection.to_string(),
+                                            doc_id: id.clone(),
+                                            display_id: doc.id.clone(),
+                                        });
+                                    }
+                                }
+                                Err(err) => {
+                                    ui.add_enabled(
+                                        false,
+                                        egui::Button::new(format!(
+                                            "{} Edit",
+                                            regular::PENCIL_SIMPLE
+                                        ))
+                                        .small(),
+                                    )
+                                    .on_disabled_hover_text(format!("Cannot edit: {err}"));
 
-                                        ui.add_enabled(
-                                            false,
-                                            egui::Button::new(
-                                                RichText::new(format!(
-                                                    "{} Del",
-                                                    regular::TRASH
-                                                ))
+                                    ui.add_enabled(
+                                        false,
+                                        egui::Button::new(
+                                            RichText::new(format!("{} Del", regular::TRASH))
                                                 .color(palette.muted_text),
-                                            )
-                                            .small(),
                                         )
-                                        .on_disabled_hover_text(format!("Cannot delete: {err}"));
-                                    }
+                                        .small(),
+                                    )
+                                    .on_disabled_hover_text(format!("Cannot delete: {err}"));
                                 }
                             });
                         });
 
-                        if row.response().on_hover_cursor(CursorIcon::PointingHand).clicked() {
+                        if row
+                            .response()
+                            .on_hover_cursor(CursorIcon::PointingHand)
+                            .clicked()
+                        {
                             *selected_row = Some(idx);
                         }
                     });

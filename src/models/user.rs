@@ -39,13 +39,17 @@ impl UserRole {
     pub fn role_description(role: &str) -> &'static str {
         match role {
             "read" => "Read data on all non-system collections in the target database",
-            "readWrite" => "Read and modify data on all non-system collections in the target database",
+            "readWrite" => {
+                "Read and modify data on all non-system collections in the target database"
+            }
             "dbAdmin" => "Schema, indexing, and statistics administration on the target database",
             "userAdmin" => "Create and modify users and roles on the target database",
             "readAnyDatabase" => "Read data on all databases across the cluster",
             "readWriteAnyDatabase" => "Read and write data on all databases across the cluster",
             "userAdminAnyDatabase" => "Manage users and roles across all databases",
-            "dbAdminAnyDatabase" => "Administer collections, indexes, and stats across all databases",
+            "dbAdminAnyDatabase" => {
+                "Administer collections, indexes, and stats across all databases"
+            }
             "clusterAdmin" => "Full cluster, replica set, and sharding administration privileges",
             "root" => "Superuser access to all resources and operations",
             _ => "Custom or built-in MongoDB role on target database",
@@ -91,4 +95,3 @@ impl MongoUser {
         ]
     }
 }
-

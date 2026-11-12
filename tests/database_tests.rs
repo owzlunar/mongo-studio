@@ -1,3 +1,5 @@
+use std::fs;
+use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use bson::oid::ObjectId;
@@ -5,13 +7,15 @@ use bson::{doc, Bson, DateTime};
 use mongo_studio::core::{AppError, AppState};
 use mongo_studio::database::connection::ConnectionClient;
 use mongo_studio::database::{
-    CollectionService, ConnectionManager, DatabaseService, DocumentQueryParams, DocumentService,
-    IndexService, UserService,
+    CollectionService, ConnectionManager, CreateIndexRequest, DatabaseService, DocumentQueryParams,
+    DocumentService, IndexService, SchemaAnalyzer, ShellService, TransferFormat, TransferService,
+    UserService,
 };
 use mongo_studio::models::{
-    CollectionInfo, ConnectionConfig, ConnectionStatus, DocumentRow, UserRole,
+    CollectionInfo, ConnectionConfig, ConnectionStatus, DatabaseInfo, DocumentRow, UserRole,
 };
-use mongo_studio::query::QueryFilter;
+use mongo_studio::query::{AggregationStage, QueryFilter};
+use serde_json::Value;
 use uuid::Uuid;
 
 fn build_test_runtime() -> tokio::runtime::Runtime {
@@ -21,6 +25,36 @@ fn build_test_runtime() -> tokio::runtime::Runtime {
         .expect("current-thread Tokio runtime should build")
 }
 
+struct Phase5TempDbGuard<'a> {
+    uri: &'a str,
+    db_name: String,
+    timeout: Duration,
+}
+
+impl<'a> Phase5TempDbGuard<'a> {
+    fn new(uri: &'a str, db_name: String, timeout: Duration) -> Self {
+        Self {
+            uri,
+            db_name,
+            timeout,
+        }
+    }
+}
+
+impl Drop for Phase5TempDbGuard<'_> {
+    fn drop(&mut self) {
+        let _ = DatabaseService::drop_database_blocking(self.uri, &self.db_name, self.timeout);
+    }
+}
+
+struct TempDirGuard(PathBuf);
+
+impl Drop for TempDirGuard {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.0);
+    }
+}
+
 #[test]
 fn connection_client_from_uri_extracts_standard_and_srv_hosts() {
     // Arrange
@@ -28,8 +62,8 @@ fn connection_client_from_uri_extracts_standard_and_srv_hosts() {
     let srv_uri = "mongodb+srv://cluster0.mongodb.net/analytics?retryWrites=true";
 
     // Act
-    let standard_client =
-        ConnectionClient::from_uri("  Primary Replica  ", standard_uri).expect("valid standard URI");
+    let standard_client = ConnectionClient::from_uri("  Primary Replica  ", standard_uri)
+        .expect("valid standard URI");
     let srv_client = ConnectionClient::from_uri("Atlas SRV", srv_uri).expect("valid SRV URI");
 
     // Assert
@@ -323,8 +357,8 @@ fn connection_manager_and_database_services_provide_mock_hierarchy() {
 }
 
 #[test]
-fn database_service_create_database_and_introspect_validates_names_and_errors_on_unreachable_server()
-{
+fn database_service_create_database_and_introspect_validates_names_and_errors_on_unreachable_server(
+) {
     // Arrange
     let runtime = build_test_runtime();
     let unreachable_uri = "mongodb://127.0.0.1:1";
@@ -402,7 +436,9 @@ fn database_and_collection_services_enforce_phase4_offline_guards_before_network
             ))
             .expect_err("system database drop must be rejected");
         assert!(
-            async_err.to_string().contains("cannot drop system database"),
+            async_err
+                .to_string()
+                .contains("cannot drop system database"),
             "unexpected error for `{system_db}`: {async_err}"
         );
 
@@ -729,8 +765,7 @@ fn document_service_filtering_respects_filter_and_limit_bounds() {
     let active_docs = DocumentService::filter_documents(&docs, "{\"status\": \"active\"}", 50);
     let limited_docs = DocumentService::filter_documents(&docs, "{}", 2);
     let zero_limit_clamped = DocumentService::filter_documents(&docs, "{}", 0);
-    let no_match_docs =
-        DocumentService::filter_documents(&docs, "{\"status\": \"archived\"}", 50);
+    let no_match_docs = DocumentService::filter_documents(&docs, "{\"status\": \"archived\"}", 50);
 
     // Assert
     assert_eq!(active_docs.len(), 3);
@@ -760,22 +795,24 @@ fn user_service_protects_admin_account_and_validates_inputs() {
     assert!(UserService::ensure_not_protected_admin("analyst").is_ok());
 
     // Act / Assert: blocking operations strictly reject protected "admin" before network I/O
-    assert!(UserService::create_user_blocking(uri, "admin", "secret", &sample_roles, timeout)
-        .unwrap_err()
-        .to_string()
-        .contains("protected"));
+    assert!(
+        UserService::create_user_blocking(uri, "admin", "secret", &sample_roles, timeout)
+            .unwrap_err()
+            .to_string()
+            .contains("protected")
+    );
     assert!(
         UserService::update_user_roles_blocking(uri, "admin", "ADMIN", &sample_roles, timeout)
             .unwrap_err()
             .to_string()
             .contains("protected")
     );
-    assert!(
-        UserService::change_user_password_blocking(uri, "admin", " admin ", "newpass", timeout)
-            .unwrap_err()
-            .to_string()
-            .contains("protected")
-    );
+    assert!(UserService::change_user_password_blocking(
+        uri, "admin", " admin ", "newpass", timeout
+    )
+    .unwrap_err()
+    .to_string()
+    .contains("protected"));
     assert!(
         UserService::drop_user_blocking(uri, "admin", "Admin", timeout)
             .unwrap_err()
@@ -897,8 +934,14 @@ fn user_service_async_and_list_methods_reject_admin_invalid_inputs_and_unreachab
         timeout,
     ));
 
-    assert!(matches!(create_unreachable_res, Err(AppError::Connection(_))));
-    assert!(matches!(update_unreachable_res, Err(AppError::Connection(_))));
+    assert!(matches!(
+        create_unreachable_res,
+        Err(AppError::Connection(_))
+    ));
+    assert!(matches!(
+        update_unreachable_res,
+        Err(AppError::Connection(_))
+    ));
     assert!(matches!(drop_unreachable_res, Err(AppError::Connection(_))));
 }
 
@@ -1131,9 +1174,7 @@ fn live_mongodb_connection_lazy_loading_and_user_lifecycle_on_192_168_100_243_27
             );
         }
         Err(err) => {
-            println!(
-                "Skipping live user mutation on {target_host} (server response: {err})"
-            );
+            println!("Skipping live user mutation on {target_host} (server response: {err})");
         }
     }
 }
@@ -1165,11 +1206,8 @@ fn live_phase4_crud_query_and_drop_lifecycle_on_192_168_100_243_27017() {
     impl Drop for TempDbGuard<'_> {
         fn drop(&mut self) {
             if !self.cleaned_up {
-                let _ = DatabaseService::drop_database_blocking(
-                    self.uri,
-                    &self.db_name,
-                    self.timeout,
-                );
+                let _ =
+                    DatabaseService::drop_database_blocking(self.uri, &self.db_name, self.timeout);
             }
         }
     }
@@ -1179,7 +1217,9 @@ fn live_phase4_crud_query_and_drop_lifecycle_on_192_168_100_243_27017() {
     let timeout = Duration::from_secs(5);
 
     if let Err(err) = ConnectionManager::ping_uri_blocking(target_host, timeout) {
-        println!("Skipping Phase 4 live CRUD/query test on {target_host} (unreachable/blocked: {err})");
+        println!(
+            "Skipping Phase 4 live CRUD/query test on {target_host} (unreachable/blocked: {err})"
+        );
         return;
     }
 
@@ -1386,7 +1426,809 @@ fn live_phase4_crud_query_and_drop_lifecycle_on_192_168_100_243_27017() {
         ConnectionManager::connect_live_blocking("LAN Verify", target_host, timeout)
             .expect("should reconnect to verify database cleanup");
     assert!(
-        !post_drop_profile.databases.iter().any(|d| d.name == temp_db),
+        !post_drop_profile
+            .databases
+            .iter()
+            .any(|d| d.name == temp_db),
         "temporary database `{temp_db}` should no longer exist after drop_database"
     );
+}
+
+#[test]
+fn index_service_validates_create_and_drop_index_specs_and_protections() {
+    // Valid index specs
+    for (keys_json, unique) in [
+        (r#"{"email": 1}"#, true),
+        (r#"{"created_at": -1}"#, false),
+        (r#"{"status": 1, "created_at": -1}"#, false),
+        (r#"{"bio": "text"}"#, false),
+        (r#"{"location": "2dsphere"}"#, false),
+        (r#"{"coords": "2d"}"#, false),
+        (r#"{"token": "hashed"}"#, false),
+        (r#"{"_id": 1, "tenant_id": 1}"#, false),
+    ] {
+        let req = CreateIndexRequest {
+            keys_json: keys_json.to_string(),
+            name: None,
+            unique,
+            sparse: false,
+            background: false,
+        };
+        assert!(
+            IndexService::validate_create_index("shop_db", "users", &req).is_ok(),
+            "expected valid index spec for `{keys_json}`"
+        );
+    }
+
+    // Empty / invalid JSON / empty field / empty db or collection
+    for bad_keys in ["", "   ", "{}", "[1, 2]", "{bad_json", r#"{"  ": 1}"#] {
+        let req = CreateIndexRequest {
+            keys_json: bad_keys.to_string(),
+            name: None,
+            unique: false,
+            sparse: false,
+            background: false,
+        };
+        assert!(
+            matches!(
+                IndexService::validate_create_index("shop_db", "users", &req),
+                Err(AppError::InvalidQueryJson(_))
+            ),
+            "expected InvalidQueryJson for `{bad_keys}`"
+        );
+    }
+
+    let valid_req = CreateIndexRequest {
+        keys_json: r#"{"email": 1}"#.to_string(),
+        name: None,
+        unique: false,
+        sparse: false,
+        background: false,
+    };
+    assert!(IndexService::validate_create_index("  ", "users", &valid_req).is_err());
+    assert!(IndexService::validate_create_index("shop_db", "  ", &valid_req).is_err());
+
+    // Bad directions
+    for bad_dir in [
+        r#"{"email": 0}"#,
+        r#"{"email": 2}"#,
+        r#"{"email": "ascending"}"#,
+        r#"{"email": true}"#,
+        r#"{"email": null}"#,
+    ] {
+        let req = CreateIndexRequest {
+            keys_json: bad_dir.to_string(),
+            name: None,
+            unique: false,
+            sparse: false,
+            background: false,
+        };
+        assert!(
+            matches!(
+                IndexService::validate_create_index("shop_db", "users", &req),
+                Err(AppError::InvalidQueryJson(_))
+            ),
+            "expected InvalidQueryJson for bad direction `{bad_dir}`"
+        );
+    }
+
+    // `_id`-only edge cases must be rejected (primary `_id_` is managed by MongoDB)
+    for id_only in [r#"{"_id": 1}"#, r#"{"_id": -1}"#] {
+        let req = CreateIndexRequest {
+            keys_json: id_only.to_string(),
+            name: None,
+            unique: false,
+            sparse: false,
+            background: false,
+        };
+        assert!(
+            IndexService::validate_create_index("shop_db", "users", &req).is_err(),
+            "expected _id-only index spec `{id_only}` to be rejected"
+        );
+    }
+
+    // `system.*` collection rejection
+    for sys_coll in ["system.users", "system.indexes", "  system.profile  "] {
+        assert!(
+            IndexService::validate_create_index("admin", sys_coll, &valid_req).is_err(),
+            "expected system.* collection `{sys_coll}` to be rejected"
+        );
+    }
+
+    // `validate_drop_index` protections
+    assert!(IndexService::validate_drop_index("").is_err());
+    assert!(IndexService::validate_drop_index("   ").is_err());
+    assert!(IndexService::validate_drop_index("_id_").is_err());
+    assert!(IndexService::validate_drop_index("  _id_  ").is_err());
+    assert_eq!(
+        IndexService::validate_drop_index("  email_1  ").expect("valid index name"),
+        "email_1"
+    );
+
+    // Offline guard before network I/O
+    let runtime = build_test_runtime();
+    let timeout = Duration::from_millis(200);
+    assert!(runtime
+        .block_on(IndexService::drop_index(
+            "mongodb://127.0.0.1:1",
+            "admin",
+            "users",
+            "_id_",
+            timeout
+        ))
+        .is_err());
+    assert!(runtime
+        .block_on(IndexService::drop_index(
+            "mongodb://127.0.0.1:1",
+            "admin",
+            "system.users",
+            "email_1",
+            timeout
+        ))
+        .is_err());
+}
+
+#[test]
+fn schema_analyzer_extracts_nested_dot_paths_arrays_mixed_types_and_frequencies() {
+    // Empty slice
+    assert!(SchemaAnalyzer::analyze_bson_docs(&[]).is_empty());
+
+    // Arrange: nested docs, arrays with multiple elements per doc, and >3 mixed types
+    let docs = vec![
+        doc! {
+            "_id": ObjectId::new(),
+            "address": { "city": "Bangkok", "geo": { "lat": 13.75_f64 } },
+            "items": [
+                { "sku": "SKU-1", "qty": 2_i32 },
+                { "sku": "SKU-2", "qty": 5_i32 }
+            ],
+            "mixed": "text",
+        },
+        doc! {
+            "_id": 2_i32,
+            "address": { "city": "Tokyo" },
+            "items": [
+                { "sku": "SKU-3", "qty": 1_i32 }
+            ],
+            "mixed": 42_i32,
+        },
+        doc! {
+            "_id": "str-3",
+            "mixed": true,
+        },
+        doc! {
+            "_id": 4_i64,
+            "mixed": Bson::Null,
+        },
+    ];
+
+    // Act
+    let fields = SchemaAnalyzer::analyze_bson_docs(&docs);
+
+    // Assert: `_id` is first
+    assert_eq!(fields[0].field_name, "_id");
+    assert_eq!(fields[0].doc_count, 4);
+    assert!((fields[0].frequency_pct - 100.0).abs() < 0.01);
+
+    let city = fields
+        .iter()
+        .find(|f| f.field_name == "address.city")
+        .expect("address.city field");
+    assert_eq!(city.doc_count, 2);
+    assert!((city.frequency_pct - 50.0).abs() < 0.01);
+    assert_eq!(city.bson_type, "String");
+
+    let lat = fields
+        .iter()
+        .find(|f| f.field_name == "address.geo.lat")
+        .expect("address.geo.lat field");
+    assert_eq!(lat.doc_count, 1);
+    assert!((lat.frequency_pct - 25.0).abs() < 0.01);
+    assert_eq!(lat.bson_type, "Double");
+
+    let items_arr = fields
+        .iter()
+        .find(|f| f.field_name == "items")
+        .expect("items array field");
+    assert_eq!(items_arr.doc_count, 2);
+    assert_eq!(items_arr.bson_type, "Array");
+
+    let items_elem = fields
+        .iter()
+        .find(|f| f.field_name == "items[]")
+        .expect("items[] element path");
+    assert_eq!(items_elem.doc_count, 2);
+    assert_eq!(items_elem.bson_type, "Document");
+
+    let items_sku = fields
+        .iter()
+        .find(|f| f.field_name == "items[].sku")
+        .expect("items[].sku path");
+    // Multi-element array in doc 1 still counts doc_count once per document
+    assert_eq!(items_sku.doc_count, 2);
+    assert!((items_sku.frequency_pct - 50.0).abs() < 0.01);
+
+    let mixed = fields
+        .iter()
+        .find(|f| f.field_name == "mixed")
+        .expect("mixed field");
+    assert_eq!(mixed.doc_count, 4);
+    assert_eq!(mixed.type_breakdown.len(), 4);
+    assert_eq!(mixed.bson_type, "Mixed");
+    let breakdown_sum: f32 = mixed.type_breakdown.iter().map(|(_, pct)| *pct).sum();
+    assert!((breakdown_sum - 100.0).abs() < 0.1);
+}
+
+#[test]
+fn transfer_service_json_jsonl_and_rfc4180_csv_roundtrips_and_guards() {
+    // Arrange
+    let temp_dir = std::env::temp_dir().join(format!("mongo_studio_xfer_qa_{}", Uuid::new_v4()));
+    let _guard = TempDirGuard(temp_dir.clone());
+    let json_path = temp_dir.join("data.json");
+    let jsonl_path = temp_dir.join("data.jsonl");
+    let csv_path = temp_dir.join("data.csv");
+
+    let rows = vec![
+        DocumentRow::from_bson_doc(&doc! {
+            "_id": "row_1",
+            "company": "Acme, Inc.",
+            "quote_note": "She said \"hello\"\nLine 2",
+            "active": true,
+        }),
+        DocumentRow::from_bson_doc(&doc! {
+            "_id": "row_2",
+            "company": "Beta Labs",
+            "quote_note": "Simple note",
+            "active": false,
+        }),
+    ];
+
+    // Act: export JSON, JSONL, CSV
+    assert_eq!(
+        TransferService::export_documents_to_path(&rows, TransferFormat::Json, &json_path)
+            .expect("JSON export"),
+        2
+    );
+    assert_eq!(
+        TransferService::export_documents_to_path(&rows, TransferFormat::JsonLines, &jsonl_path)
+            .expect("JSONL export"),
+        2
+    );
+    assert_eq!(
+        TransferService::export_documents_to_path(&rows, TransferFormat::Csv, &csv_path)
+            .expect("CSV export"),
+        2
+    );
+
+    // Assert JSON roundtrip
+    let json_raw = fs::read_to_string(&json_path).expect("read JSON export");
+    let json_val: Vec<Value> = serde_json::from_str(&json_raw).expect("valid JSON array");
+    assert_eq!(json_val.len(), 2);
+    assert_eq!(json_val[0]["company"], "Acme, Inc.");
+    assert_eq!(json_val[0]["quote_note"], "She said \"hello\"\nLine 2");
+
+    // Assert JSONL roundtrip
+    let jsonl_raw = fs::read_to_string(&jsonl_path).expect("read JSONL export");
+    let jsonl_docs: Vec<_> = jsonl_raw
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .map(|l| DocumentRow::parse_json_to_bson_doc(l).expect("valid JSONL line"))
+        .collect();
+    assert_eq!(jsonl_docs.len(), 2);
+    assert_eq!(
+        jsonl_docs[0].get_str("company").expect("company"),
+        "Acme, Inc."
+    );
+
+    // Assert RFC-4180 CSV roundtrip with embedded commas, quotes, and newlines
+    let csv_raw = fs::read_to_string(&csv_path).expect("read CSV export");
+    let csv_records = TransferService::parse_csv_records(&csv_raw).expect("valid RFC-4180 CSV");
+    assert_eq!(csv_records.len(), 3);
+    assert_eq!(
+        csv_records[0],
+        vec!["_id", "company", "quote_note", "active"]
+    );
+    assert_eq!(
+        csv_records[1],
+        vec!["row_1", "Acme, Inc.", "She said \"hello\"\nLine 2", "true"]
+    );
+    assert_eq!(
+        csv_records[2],
+        vec!["row_2", "Beta Labs", "Simple note", "false"]
+    );
+
+    // BOM + CRLF + single-line parsing + unclosed quote error
+    let bom_crlf = "\u{feff}_id,note\r\n1,\"hello, \"\"world\"\"\"\r\n";
+    let bom_records = TransferService::parse_csv_records(bom_crlf).expect("BOM CRLF CSV");
+    assert_eq!(bom_records.len(), 2);
+    assert_eq!(bom_records[1], vec!["1", "hello, \"world\""]);
+    assert_eq!(
+        TransferService::parse_csv_line(r#"a,"b,c","d""e""#).expect("CSV line"),
+        vec!["a", "b,c", "d\"e"]
+    );
+    assert!(matches!(
+        TransferService::parse_csv_records("1,\"unterminated"),
+        Err(AppError::InvalidQueryJson(_))
+    ));
+
+    // Offline import_collection guards
+    let runtime = build_test_runtime();
+    let timeout = Duration::from_millis(200);
+    let unreachable_uri = "mongodb://127.0.0.1:1";
+
+    let sys_err = runtime
+        .block_on(TransferService::import_collection(
+            unreachable_uri,
+            "admin",
+            "system.users",
+            TransferFormat::Json,
+            json_path.clone(),
+            timeout,
+        ))
+        .expect_err("system.* import must be rejected");
+    assert!(sys_err.to_string().contains("system."));
+
+    assert!(matches!(
+        runtime.block_on(TransferService::import_collection(
+            unreachable_uri,
+            "shop_db",
+            "items",
+            TransferFormat::Json,
+            temp_dir.join("missing.json"),
+            timeout,
+        )),
+        Err(AppError::Persistence(_))
+    ));
+
+    let bad_json_path = temp_dir.join("bad.json");
+    fs::write(&bad_json_path, "[1, 2, 3]").expect("write bad json");
+    assert!(matches!(
+        runtime.block_on(TransferService::import_collection(
+            unreachable_uri,
+            "shop_db",
+            "items",
+            TransferFormat::Json,
+            bad_json_path,
+            timeout,
+        )),
+        Err(AppError::InvalidQueryJson(_))
+    ));
+}
+
+#[test]
+fn shell_service_extracts_use_db_and_executes_mock_commands() {
+    // `extract_use_db` cases
+    assert_eq!(
+        ShellService::extract_use_db("use shop_db"),
+        Some("shop_db".to_string())
+    );
+    assert_eq!(
+        ShellService::extract_use_db("  USE \"analytics_db\";  "),
+        Some("analytics_db".to_string())
+    );
+    assert_eq!(
+        ShellService::extract_use_db("use 'qa_db'"),
+        Some("qa_db".to_string())
+    );
+    assert_eq!(ShellService::extract_use_db("use   "), None);
+    assert_eq!(ShellService::extract_use_db("use two words"), None);
+    assert_eq!(ShellService::extract_use_db("show dbs"), None);
+
+    // `execute_mock_command` cases
+    let dbs = DatabaseInfo::mock_databases();
+
+    let help_out = ShellService::execute_mock_command("admin", &dbs, "help").expect("help");
+    assert!(help_out.contains("Supported Mongo Studio Shell"));
+    assert_eq!(
+        ShellService::execute_mock_command("admin", &dbs, "?").expect("?"),
+        help_out
+    );
+
+    assert_eq!(
+        ShellService::execute_mock_command("admin", &dbs, "use shop_db;").expect("use"),
+        "switched to db shop_db"
+    );
+
+    let show_dbs = ShellService::execute_mock_command("admin", &dbs, "show dbs").expect("show dbs");
+    assert!(show_dbs.contains("admin"));
+    assert!(show_dbs.contains("shop_db"));
+
+    let show_colls =
+        ShellService::execute_mock_command("admin", &dbs, "show collections").expect("show colls");
+    assert!(show_colls.contains("users"));
+    assert!(show_colls.contains("products"));
+
+    let active_users =
+        ShellService::execute_mock_command("admin", &dbs, r#"db.users.find({"status": "active"})"#)
+            .expect("db.users.find");
+    let parsed_users: Vec<Value> =
+        serde_json::from_str(&active_users).expect("find output is valid JSON array");
+    assert_eq!(parsed_users.len(), 3);
+
+    let sib_count = ShellService::execute_mock_command(
+        "admin",
+        &dbs,
+        r#"db.getSiblingDB("shop_db").customers.countDocuments({"status": "active"})"#,
+    )
+    .expect("countDocuments");
+    assert_eq!(sib_count, "3");
+
+    let ping = ShellService::execute_mock_command("admin", &dbs, r#"db.runCommand({"ping": 1})"#)
+        .expect("ping");
+    assert!(ping.contains("\"ok\""));
+
+    // Invalid commands & missing collections
+    for bad_cmd in [
+        "",
+        "   ",
+        "drop database",
+        "db.users.drop()",
+        "db.users.find({bad_json})",
+        "db.nonexistent.find({})",
+    ] {
+        assert!(
+            ShellService::execute_mock_command("admin", &dbs, bad_cmd).is_err(),
+            "expected error for invalid/unknown command `{bad_cmd}`"
+        );
+    }
+}
+
+#[test]
+fn live_phase5_aggregation_pipeline_on_192_168_100_243_27017() {
+    let target_host = "192.168.100.243:27017";
+    let timeout = Duration::from_secs(5);
+
+    if let Err(err) = ConnectionManager::ping_uri_blocking(target_host, timeout) {
+        println!("Skipping Phase 5 live aggregation test on {target_host} (unreachable: {err})");
+        return;
+    }
+
+    let temp_db = format!("qa_phase5_agg_{}", Uuid::new_v4().simple());
+    let coll_name = "sales";
+    let _db_guard = Phase5TempDbGuard::new(target_host, temp_db.clone(), timeout);
+
+    DatabaseService::create_database_blocking(target_host, &temp_db, coll_name, timeout)
+        .expect("should create temp db");
+
+    for payload in [
+        r#"{"category": "books", "amount": 30, "status": "active"}"#,
+        r#"{"category": "books", "amount": 20, "status": "active"}"#,
+        r#"{"category": "hardware", "amount": 150, "status": "active"}"#,
+        r#"{"category": "draft", "amount": 999, "status": "inactive"}"#,
+    ] {
+        DocumentService::insert_document_blocking(
+            target_host,
+            &temp_db,
+            coll_name,
+            payload,
+            timeout,
+        )
+        .expect("should seed aggregation doc");
+    }
+
+    let stages = vec![
+        AggregationStage::new("$match", r#"{"status": "active"}"#, true),
+        AggregationStage::new(
+            "$group",
+            r#"{"_id": "$category", "total": {"$sum": "$amount"}, "count": {"$sum": 1}}"#,
+            true,
+        ),
+        AggregationStage::new("$sort", r#"{"total": -1}"#, true),
+        AggregationStage::new("$limit", "2", true),
+    ];
+    let pipeline = AggregationStage::build_pipeline(&stages).expect("pipeline builds");
+
+    let result = DocumentService::run_aggregation_blocking(
+        target_host,
+        &temp_db,
+        coll_name,
+        &pipeline,
+        timeout,
+    )
+    .expect("live aggregation should succeed");
+
+    assert_eq!(result.stage_count, 4);
+    assert!(result.elapsed_ms >= 0.0);
+    assert_eq!(result.documents.len(), 2);
+    assert_eq!(result.documents[0].id, "hardware");
+    assert_eq!(result.documents[0].cell_display_value("total"), "150");
+    assert_eq!(result.documents[0].cell_display_value("count"), "1");
+    assert_eq!(result.documents[1].id, "books");
+    assert_eq!(result.documents[1].cell_display_value("total"), "50");
+    assert_eq!(result.documents[1].cell_display_value("count"), "2");
+}
+
+#[test]
+fn live_phase5_index_management_lifecycle_on_192_168_100_243_27017() {
+    let target_host = "192.168.100.243:27017";
+    let timeout = Duration::from_secs(5);
+
+    if let Err(err) = ConnectionManager::ping_uri_blocking(target_host, timeout) {
+        println!("Skipping Phase 5 live index test on {target_host} (unreachable: {err})");
+        return;
+    }
+
+    let temp_db = format!("qa_phase5_idx_{}", Uuid::new_v4().simple());
+    let coll_name = "accounts";
+    let _db_guard = Phase5TempDbGuard::new(target_host, temp_db.clone(), timeout);
+
+    DatabaseService::create_database_blocking(target_host, &temp_db, coll_name, timeout)
+        .expect("should create temp db");
+
+    let req = CreateIndexRequest {
+        keys_json: r#"{"email": 1}"#.to_string(),
+        name: Some("idx_email_unique".to_string()),
+        unique: true,
+        sparse: false,
+        background: false,
+    };
+
+    let created_indexes =
+        IndexService::create_index_blocking(target_host, &temp_db, coll_name, &req, timeout)
+            .expect("should create unique ascending index");
+    let created = created_indexes
+        .iter()
+        .find(|idx| idx.name == "idx_email_unique")
+        .expect("created index should appear in list");
+    assert!(created.unique);
+    assert_eq!(created.index_type, "B-Tree");
+
+    let runtime = build_test_runtime();
+    let listed = runtime
+        .block_on(IndexService::list_indexes(
+            target_host,
+            &temp_db,
+            coll_name,
+            timeout,
+        ))
+        .expect("list_indexes should succeed");
+    assert!(listed.iter().any(|idx| idx.name == "_id_"));
+    assert!(listed.iter().any(|idx| idx.name == "idx_email_unique"));
+
+    // Dropping `_id_` must fail safely
+    assert!(
+        IndexService::drop_index_blocking(target_host, &temp_db, coll_name, "_id_", timeout)
+            .is_err()
+    );
+
+    // Drop created index and verify removal
+    let remaining = IndexService::drop_index_blocking(
+        target_host,
+        &temp_db,
+        coll_name,
+        "idx_email_unique",
+        timeout,
+    )
+    .expect("should drop custom index");
+    assert!(!remaining.iter().any(|idx| idx.name == "idx_email_unique"));
+    assert!(remaining.iter().any(|idx| idx.name == "_id_"));
+}
+
+#[test]
+fn live_phase5_schema_analysis_on_192_168_100_243_27017() {
+    let target_host = "192.168.100.243:27017";
+    let timeout = Duration::from_secs(5);
+
+    if let Err(err) = ConnectionManager::ping_uri_blocking(target_host, timeout) {
+        println!("Skipping Phase 5 live schema test on {target_host} (unreachable: {err})");
+        return;
+    }
+
+    let temp_db = format!("qa_phase5_schema_{}", Uuid::new_v4().simple());
+    let coll_name = "profiles";
+    let _db_guard = Phase5TempDbGuard::new(target_host, temp_db.clone(), timeout);
+
+    DatabaseService::create_database_blocking(target_host, &temp_db, coll_name, timeout)
+        .expect("should create temp db");
+
+    for payload in [
+        r#"{"address": {"city": "Bangkok", "zip": "10110"}, "items": [{"sku": "A1", "qty": 2}], "score": 95}"#,
+        r#"{"address": {"city": "Tokyo"}, "items": [{"sku": "B1", "qty": 1}, {"sku": "B2", "qty": 3}], "score": "A+"}"#,
+    ] {
+        DocumentService::insert_document_blocking(
+            target_host,
+            &temp_db,
+            coll_name,
+            payload,
+            timeout,
+        )
+        .expect("should seed schema doc");
+    }
+
+    let fields =
+        SchemaAnalyzer::analyze_collection_blocking(target_host, &temp_db, coll_name, 50, timeout)
+            .expect("schema analysis should succeed");
+
+    assert_eq!(fields[0].field_name, "_id");
+    let city = fields
+        .iter()
+        .find(|f| f.field_name == "address.city")
+        .expect("address.city");
+    assert_eq!(city.doc_count, 2);
+    assert!((city.frequency_pct - 100.0).abs() < 0.01);
+
+    let sku = fields
+        .iter()
+        .find(|f| f.field_name == "items[].sku")
+        .expect("items[].sku");
+    assert_eq!(sku.doc_count, 2);
+
+    let score = fields
+        .iter()
+        .find(|f| f.field_name == "score")
+        .expect("score mixed field");
+    assert_eq!(score.doc_count, 2);
+    assert_eq!(score.type_breakdown.len(), 2);
+}
+
+#[test]
+fn live_phase5_export_and_import_lifecycle_on_192_168_100_243_27017() {
+    let target_host = "192.168.100.243:27017";
+    let timeout = Duration::from_secs(5);
+
+    if let Err(err) = ConnectionManager::ping_uri_blocking(target_host, timeout) {
+        println!("Skipping Phase 5 live export/import test on {target_host} (unreachable: {err})");
+        return;
+    }
+
+    let temp_db = format!("qa_phase5_xfer_{}", Uuid::new_v4().simple());
+    let src_coll = "source_docs";
+    let _db_guard = Phase5TempDbGuard::new(target_host, temp_db.clone(), timeout);
+
+    let temp_dir = std::env::temp_dir().join(format!("mongo_studio_live_xfer_{}", Uuid::new_v4()));
+    let _dir_guard = TempDirGuard(temp_dir.clone());
+
+    DatabaseService::create_database_blocking(target_host, &temp_db, src_coll, timeout)
+        .expect("should create temp db");
+
+    for payload in [
+        r#"{"_id": "d1", "company": "Acme, Inc.", "note": "She said \"hi\"\nLine 2", "status": "active"}"#,
+        r#"{"_id": "d2", "company": "Beta Co", "note": "Normal text", "status": "active"}"#,
+        r#"{"_id": "d3", "company": "Gamma", "note": "Comma, separated", "status": "archived"}"#,
+    ] {
+        DocumentService::insert_document_blocking(
+            target_host,
+            &temp_db,
+            src_coll,
+            payload,
+            timeout,
+        )
+        .expect("should seed export doc");
+    }
+
+    let runtime = build_test_runtime();
+
+    for (fmt, filename, target_coll) in [
+        (TransferFormat::Json, "export.json", "imported_json"),
+        (TransferFormat::JsonLines, "export.jsonl", "imported_jsonl"),
+        (TransferFormat::Csv, "export.csv", "imported_csv"),
+    ] {
+        let file_path = temp_dir.join(filename);
+        let export_stats = runtime
+            .block_on(TransferService::export_collection(
+                target_host,
+                &temp_db,
+                src_coll,
+                "{}",
+                fmt,
+                file_path.clone(),
+                timeout,
+            ))
+            .expect("live export should succeed");
+        assert_eq!(export_stats.count, 3);
+        assert!(file_path.exists());
+
+        let import_stats = runtime
+            .block_on(TransferService::import_collection(
+                target_host,
+                &temp_db,
+                target_coll,
+                fmt,
+                file_path,
+                timeout,
+            ))
+            .expect("live import should succeed");
+        assert_eq!(import_stats.inserted_count, 3);
+
+        let queried = DocumentService::query_documents_blocking(
+            target_host,
+            &temp_db,
+            target_coll,
+            &DocumentQueryParams {
+                sort: r#"{"_id": 1}"#.to_string(),
+                ..DocumentQueryParams::default()
+            },
+            timeout,
+        )
+        .expect("should query imported collection");
+        assert_eq!(queried.total_count, 3);
+        assert_eq!(queried.documents[0].id, "d1");
+        assert_eq!(
+            queried.documents[0].cell_display_value("company"),
+            "Acme, Inc."
+        );
+        assert_eq!(
+            queried.documents[0].cell_display_value("note"),
+            "She said \"hi\"\nLine 2"
+        );
+    }
+}
+
+#[test]
+fn live_phase5_shell_commands_on_192_168_100_243_27017() {
+    let target_host = "192.168.100.243:27017";
+    let timeout = Duration::from_secs(5);
+
+    if let Err(err) = ConnectionManager::ping_uri_blocking(target_host, timeout) {
+        println!("Skipping Phase 5 live shell test on {target_host} (unreachable: {err})");
+        return;
+    }
+
+    let temp_db = format!("qa_phase5_shell_{}", Uuid::new_v4().simple());
+    let coll_name = "orders";
+    let _db_guard = Phase5TempDbGuard::new(target_host, temp_db.clone(), timeout);
+
+    DatabaseService::create_database_blocking(target_host, &temp_db, coll_name, timeout)
+        .expect("should create temp db");
+    DocumentService::insert_document_blocking(
+        target_host,
+        &temp_db,
+        coll_name,
+        r#"{"_id": 1, "item": "Laptop", "status": "active"}"#,
+        timeout,
+    )
+    .expect("seed active order");
+    DocumentService::insert_document_blocking(
+        target_host,
+        &temp_db,
+        coll_name,
+        r#"{"_id": 2, "item": "Mouse", "status": "archived"}"#,
+        timeout,
+    )
+    .expect("seed archived order");
+
+    let show_dbs_out =
+        ShellService::execute_command_blocking(target_host, "admin", "show dbs", timeout)
+            .expect("show dbs");
+    assert!(show_dbs_out.contains(&temp_db));
+
+    let use_cmd = format!("use {temp_db}");
+    let use_out = ShellService::execute_command_blocking(target_host, "admin", &use_cmd, timeout)
+        .expect("use temp_db");
+    assert_eq!(use_out, format!("switched to db {temp_db}"));
+
+    let show_colls_out =
+        ShellService::execute_command_blocking(target_host, &temp_db, "show collections", timeout)
+            .expect("show collections");
+    assert!(show_colls_out.contains(coll_name));
+
+    let find_out = ShellService::execute_command_blocking(
+        target_host,
+        &temp_db,
+        r#"db.orders.find({"status": "active"})"#,
+        timeout,
+    )
+    .expect("shell find");
+    let found_docs: Vec<Value> = serde_json::from_str(&find_out).expect("valid shell find JSON");
+    assert_eq!(found_docs.len(), 1);
+    assert_eq!(found_docs[0]["item"], "Laptop");
+
+    let count_out = ShellService::execute_command_blocking(
+        target_host,
+        &temp_db,
+        r#"db.orders.countDocuments({"status": "active"})"#,
+        timeout,
+    )
+    .expect("shell countDocuments");
+    assert_eq!(count_out, "1");
+
+    let ping_out = ShellService::execute_command_blocking(
+        target_host,
+        &temp_db,
+        r#"db.runCommand({"ping": 1})"#,
+        timeout,
+    )
+    .expect("shell runCommand ping");
+    let ping_json: Value = serde_json::from_str(&ping_out).expect("valid ping JSON");
+    assert!(ping_json.get("ok").is_some());
 }

@@ -7,7 +7,10 @@ use mongodb::Client;
 use crate::core::{AppError, AppResult};
 use crate::database::connection::ConnectionClient;
 use crate::models::DocumentRow;
+use crate::query::aggregation::AggregationStage;
 use crate::query::filter::QueryFilter;
+
+const MAX_AGGREGATION_DISPLAY_ROWS: usize = 1000;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DocumentQueryParams {
@@ -37,6 +40,13 @@ pub struct DocumentPageResult {
     pub skip: usize,
     pub limit: usize,
     pub query_ms: f64,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct AggregationResult {
+    pub documents: Vec<DocumentRow>,
+    pub stage_count: usize,
+    pub elapsed_ms: f64,
 }
 
 #[derive(Debug, Default, Clone, Copy)]
@@ -188,12 +198,125 @@ impl DocumentService {
     ) -> AppResult<DocumentPageResult> {
         let runtime = Self::build_single_thread_runtime()?;
         runtime.block_on(Self::query_documents(
-            uri,
-            db_name,
-            coll_name,
-            params,
-            timeout,
+            uri, db_name, coll_name, params, timeout,
         ))
+    }
+
+    /// Executes an aggregation pipeline on `db_name.coll_name`, capping returned display rows to
+    /// 1,000 documents for UI responsiveness.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AppError::InvalidQueryJson`] if `pipeline` is empty, or [`AppError::Connection`]
+    /// if target validation, connection, or pipeline execution fails.
+    pub async fn run_aggregation(
+        uri: &str,
+        db_name: &str,
+        coll_name: &str,
+        pipeline: &[Document],
+        timeout: Duration,
+    ) -> AppResult<AggregationResult> {
+        let (trimmed_db, trimmed_coll) = Self::validate_target(db_name, coll_name)?;
+        if pipeline.is_empty() {
+            return Err(AppError::InvalidQueryJson(
+                "aggregation pipeline must not be empty".to_string(),
+            ));
+        }
+
+        let client = Self::connect_client(uri, timeout).await?;
+        let coll = client
+            .database(trimmed_db)
+            .collection::<Document>(trimmed_coll);
+
+        let start = Instant::now();
+        let mut cursor = tokio::time::timeout(timeout, coll.aggregate(pipeline.to_vec(), None))
+            .await
+            .map_err(|_| AppError::Connection("aggregation timed out".to_string()))?
+            .map_err(|err| AppError::Connection(format!("aggregation failed: {err}")))?;
+
+        let mut documents = Vec::with_capacity(64);
+        while documents.len() < MAX_AGGREGATION_DISPLAY_ROWS
+            && tokio::time::timeout(timeout, cursor.advance())
+                .await
+                .map_err(|_| AppError::Connection("aggregation cursor timed out".to_string()))?
+                .map_err(|err| AppError::Connection(format!("aggregation cursor error: {err}")))?
+        {
+            let doc = cursor.deserialize_current().map_err(|err| {
+                AppError::Connection(format!("failed to decode aggregation document: {err}"))
+            })?;
+            documents.push(DocumentRow::from_bson_doc(&doc));
+        }
+
+        let elapsed_ms = start.elapsed().as_secs_f64() * 1000.0;
+        Ok(AggregationResult {
+            documents,
+            stage_count: pipeline.len(),
+            elapsed_ms,
+        })
+    }
+
+    /// Synchronously executes an aggregation pipeline against a live MongoDB server.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AppError`] if validation, connection, or pipeline execution fails.
+    pub fn run_aggregation_blocking(
+        uri: &str,
+        db_name: &str,
+        coll_name: &str,
+        pipeline: &[Document],
+        timeout: Duration,
+    ) -> AppResult<AggregationResult> {
+        let runtime = Self::build_single_thread_runtime()?;
+        runtime.block_on(Self::run_aggregation(
+            uri, db_name, coll_name, pipeline, timeout,
+        ))
+    }
+
+    /// Evaluates enabled aggregation stages in memory (`$match`, `$skip`, `$limit`) for
+    /// disconnected/mock preview mode.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AppError::InvalidQueryJson`] if the pipeline has no enabled stages or contains
+    /// invalid stage expressions.
+    pub fn run_aggregation_in_memory(
+        docs: &[DocumentRow],
+        stages: &[AggregationStage],
+    ) -> AppResult<Vec<DocumentRow>> {
+        let pipeline = AggregationStage::build_pipeline(stages)?;
+        let mut current = docs.to_vec();
+
+        for stage_doc in &pipeline {
+            if let Ok(match_doc) = stage_doc.get_document("$match") {
+                let ext = Bson::Document(match_doc.clone()).into_relaxed_extjson();
+                let filter_json = serde_json::to_string(&ext).map_err(|err| {
+                    AppError::InvalidQueryJson(format!("invalid $match filter: {err}"))
+                })?;
+                let filter = QueryFilter::parse(&filter_json);
+                current.retain(|row| filter.matches(row));
+            } else if let Some(skip_val) = stage_doc.get("$skip") {
+                let skip_n = match skip_val {
+                    Bson::Int32(n) => usize::try_from((*n).max(0)).unwrap_or(0),
+                    Bson::Int64(n) => usize::try_from((*n).max(0)).unwrap_or(0),
+                    _ => 0,
+                };
+                if skip_n >= current.len() {
+                    current.clear();
+                } else if skip_n > 0 {
+                    current.drain(0..skip_n);
+                }
+            } else if let Some(limit_val) = stage_doc.get("$limit") {
+                let limit_n = match limit_val {
+                    Bson::Int32(n) => usize::try_from((*n).max(0)).unwrap_or(usize::MAX),
+                    Bson::Int64(n) => usize::try_from((*n).max(0)).unwrap_or(usize::MAX),
+                    _ => usize::MAX,
+                };
+                current.truncate(limit_n);
+            }
+        }
+
+        Ok(current)
     }
 
     /// Inserts a JSON/Extended JSON document into `db_name.coll_name` and returns the resulting
@@ -244,11 +367,7 @@ impl DocumentService {
     ) -> AppResult<DocumentRow> {
         let runtime = Self::build_single_thread_runtime()?;
         runtime.block_on(Self::insert_document(
-            uri,
-            db_name,
-            coll_name,
-            doc_json,
-            timeout,
+            uri, db_name, coll_name, doc_json, timeout,
         ))
     }
 
@@ -351,10 +470,13 @@ impl DocumentService {
             .database(trimmed_db)
             .collection::<Document>(trimmed_coll);
 
-        let res = tokio::time::timeout(timeout, coll.delete_one(doc! { "_id": doc_id.clone() }, None))
-            .await
-            .map_err(|_| AppError::Connection("deleteOne timed out".to_string()))?
-            .map_err(|err| AppError::Connection(format!("deleteOne failed: {err}")))?;
+        let res = tokio::time::timeout(
+            timeout,
+            coll.delete_one(doc! { "_id": doc_id.clone() }, None),
+        )
+        .await
+        .map_err(|_| AppError::Connection("deleteOne timed out".to_string()))?
+        .map_err(|err| AppError::Connection(format!("deleteOne failed: {err}")))?;
 
         if res.deleted_count == 0 {
             return Err(AppError::Connection(
@@ -379,11 +501,7 @@ impl DocumentService {
     ) -> AppResult<()> {
         let runtime = Self::build_single_thread_runtime()?;
         runtime.block_on(Self::delete_document(
-            uri,
-            db_name,
-            coll_name,
-            doc_id,
-            timeout,
+            uri, db_name, coll_name, doc_id, timeout,
         ))
     }
 }
@@ -408,5 +526,18 @@ mod tests {
         let ordered = DocumentService::prepend_id(Bson::Int32(1), d);
         let keys: Vec<&str> = ordered.keys().map(String::as_str).collect();
         assert_eq!(keys, vec!["_id", "name", "age"]);
+    }
+
+    #[test]
+    fn run_aggregation_in_memory_applies_match_skip_limit() {
+        let docs = DocumentRow::mock_for_collection("users");
+        let stages = vec![
+            AggregationStage::new("$match", r#"{"status": "active"}"#, true),
+            AggregationStage::new("$skip", "1", true),
+            AggregationStage::new("$limit", "1", true),
+        ];
+        let result = DocumentService::run_aggregation_in_memory(&docs, &stages).unwrap();
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].name, "Bob");
     }
 }

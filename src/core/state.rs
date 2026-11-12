@@ -1,7 +1,9 @@
 use bson::Bson;
 use egui_dock::DockState;
 
-use crate::models::{CollectionInfo, ConnectionConfig, MongoUser, UserRole};
+use crate::models::{
+    CollectionInfo, ConnectionConfig, MongoUser, QueryStore, SavedQuery, UserRole,
+};
 use crate::theme::ThemeMode;
 use crate::ui::activity_bar::ActivityView;
 use crate::workspace::{BottomPanelState, CollectionTab, WorkspacePersistence};
@@ -13,6 +15,14 @@ pub struct PendingDeleteDocument {
     pub collection: String,
     pub doc_id: Bson,
     pub display_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PendingDropIndex {
+    pub connection_name: String,
+    pub database: String,
+    pub collection: String,
+    pub index_name: String,
 }
 
 pub struct AppState {
@@ -69,6 +79,28 @@ pub struct AppState {
     pub change_pwd_confirm: String,
     pub change_pwd_show: bool,
     pub pending_delete_user: Option<(usize, String)>,
+    pub saved_queries: Vec<SavedQuery>,
+    pub show_create_index_modal: bool,
+    pub create_index_conn_name: String,
+    pub create_index_db: String,
+    pub create_index_coll: String,
+    pub new_index_keys: String,
+    pub new_index_name: String,
+    pub new_index_unique: bool,
+    pub new_index_sparse: bool,
+    pub new_index_background: bool,
+    pub pending_drop_index: Option<PendingDropIndex>,
+    pub show_save_query_modal: bool,
+    pub save_query_name: String,
+    pub save_query_conn: String,
+    pub save_query_db: String,
+    pub save_query_coll: String,
+    pub save_query_filter: String,
+    pub save_query_projection: String,
+    pub save_query_sort: String,
+    pub save_query_limit: usize,
+    pub shell_current_db: String,
+    pub is_transferring: bool,
     pub show_about_modal: bool,
 }
 
@@ -90,10 +122,14 @@ impl AppState {
             persisted.open_tabs
         };
 
-        let bottom_panel = BottomPanelState {
+        let query_store = QueryStore::load();
+        let mut bottom_panel = BottomPanelState {
             visible: persisted.bottom_panel_visible,
             ..BottomPanelState::default()
         };
+        if !query_store.query_history.is_empty() {
+            bottom_panel.query_history = query_store.query_history;
+        }
 
         Self {
             connections: vec![
@@ -152,6 +188,28 @@ impl AppState {
             change_pwd_confirm: String::new(),
             change_pwd_show: false,
             pending_delete_user: None,
+            saved_queries: query_store.saved_queries,
+            show_create_index_modal: false,
+            create_index_conn_name: String::new(),
+            create_index_db: String::new(),
+            create_index_coll: String::new(),
+            new_index_keys: String::new(),
+            new_index_name: String::new(),
+            new_index_unique: false,
+            new_index_sparse: false,
+            new_index_background: false,
+            pending_drop_index: None,
+            show_save_query_modal: false,
+            save_query_name: String::new(),
+            save_query_conn: String::new(),
+            save_query_db: String::new(),
+            save_query_coll: String::new(),
+            save_query_filter: String::new(),
+            save_query_projection: String::new(),
+            save_query_sort: String::new(),
+            save_query_limit: 20,
+            shell_current_db: "admin".to_string(),
+            is_transferring: false,
             show_about_modal: false,
         }
     }
@@ -233,11 +291,7 @@ impl AppState {
         database: &str,
         collection: &str,
     ) -> Option<&mut CollectionInfo> {
-        if self
-            .connections
-            .iter()
-            .any(|c| c.name == connection_name)
-        {
+        if self.connections.iter().any(|c| c.name == connection_name) {
             self.connections
                 .iter_mut()
                 .filter(|conn| conn.name == connection_name)

@@ -76,7 +76,10 @@ impl ConnectionConfig {
     /// Truncates a profile name to [`Self::MAX_PROFILE_NAME_LEN`] characters.
     #[must_use]
     pub fn clamp_profile_name(name: &str) -> String {
-        name.trim().chars().take(Self::MAX_PROFILE_NAME_LEN).collect()
+        name.trim()
+            .chars()
+            .take(Self::MAX_PROFILE_NAME_LEN)
+            .collect()
     }
 
     /// Extracts the display host from a MongoDB URI, stripping any `mongodb://` or

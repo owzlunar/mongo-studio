@@ -49,10 +49,13 @@ impl UserService {
         timeout_msg: &str,
         error_prefix: &str,
     ) -> AppResult<Document> {
-        tokio::time::timeout(timeout, client.database(target_db).run_command(command, None))
-            .await
-            .map_err(|_| AppError::Connection(timeout_msg.to_string()))?
-            .map_err(|err| AppError::Connection(format!("{error_prefix}: {err}")))
+        tokio::time::timeout(
+            timeout,
+            client.database(target_db).run_command(command, None),
+        )
+        .await
+        .map_err(|_| AppError::Connection(timeout_msg.to_string()))?
+        .map_err(|err| AppError::Connection(format!("{error_prefix}: {err}")))
     }
 
     async fn fetch_users_result(client: &Client, timeout: Duration) -> AppResult<Vec<MongoUser>> {
@@ -159,10 +162,7 @@ impl UserService {
         let mut options = tokio::time::timeout(timeout, ClientOptions::parse(&normalized))
             .await
             .map_err(|_| {
-                AppError::Connection(format!(
-                    "connection timed out after {}s",
-                    timeout.as_secs()
-                ))
+                AppError::Connection(format!("connection timed out after {}s", timeout.as_secs()))
             })?
             .map_err(|err| AppError::Connection(format!("invalid MongoDB URI: {err}")))?;
 

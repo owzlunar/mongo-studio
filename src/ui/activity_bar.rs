@@ -1,4 +1,7 @@
-use egui::{Color32, Context, CursorIcon, FontId, Frame, Margin, Pos2, Rect, RichText, Sense, Stroke, Ui, Vec2};
+use egui::{
+    Color32, Context, CursorIcon, FontId, Frame, Margin, Pos2, Rect, RichText, Sense, Stroke, Ui,
+    Vec2,
+};
 use egui_phosphor::regular;
 use serde::{Deserialize, Serialize};
 
@@ -59,14 +62,22 @@ fn draw_activity_icon(
         };
 
         if is_active {
-            painter.rect_filled(rect, 4.0, Color32::from_rgba_unmultiplied(255, 255, 255, 18));
+            painter.rect_filled(
+                rect,
+                4.0,
+                Color32::from_rgba_unmultiplied(255, 255, 255, 18),
+            );
             let indicator = Rect::from_min_max(
                 Pos2::new(rect.left(), rect.top() + 6.0),
                 Pos2::new(rect.left() + 2.5, rect.bottom() - 6.0),
             );
             painter.rect_filled(indicator, 1.0, accent);
         } else if hovered {
-            painter.rect_filled(rect, 4.0, Color32::from_rgba_unmultiplied(255, 255, 255, 10));
+            painter.rect_filled(
+                rect,
+                4.0,
+                Color32::from_rgba_unmultiplied(255, 255, 255, 10),
+            );
         }
 
         painter.text(

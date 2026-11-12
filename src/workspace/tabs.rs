@@ -2,6 +2,22 @@ use egui_phosphor::regular;
 use serde::{Deserialize, Serialize};
 
 use crate::models::{DocumentRow, UserRole};
+use crate::query::AggregationStage;
+
+const DEFAULT_AGG_RAW_JSON: &str =
+    "[\n  {\n    \"$match\": {\n      \"status\": \"active\"\n    }\n  }\n]";
+
+fn default_agg_stages() -> Vec<AggregationStage> {
+    vec![AggregationStage::default()]
+}
+
+fn default_agg_raw_json() -> String {
+    DEFAULT_AGG_RAW_JSON.to_string()
+}
+
+const fn default_sample_size() -> usize {
+    100
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum CollectionSubTab {
@@ -77,6 +93,26 @@ pub struct CollectionTab {
     pub cached_db_conn: String,
     #[serde(skip)]
     pub cached_db_count: usize,
+    #[serde(default = "default_agg_stages")]
+    pub agg_stages: Vec<AggregationStage>,
+    #[serde(default)]
+    pub agg_raw_mode: bool,
+    #[serde(default = "default_agg_raw_json")]
+    pub agg_raw_json: String,
+    #[serde(skip)]
+    pub agg_results: Option<Vec<DocumentRow>>,
+    #[serde(skip)]
+    pub agg_elapsed_ms: Option<f64>,
+    #[serde(skip)]
+    pub agg_error: Option<String>,
+    #[serde(skip)]
+    pub agg_is_running: bool,
+    #[serde(skip)]
+    pub agg_cached_columns: Vec<String>,
+    #[serde(default = "default_sample_size")]
+    pub schema_sample_size: usize,
+    #[serde(skip)]
+    pub schema_is_analyzing: bool,
 }
 
 impl PartialEq for CollectionTab {
@@ -121,6 +157,16 @@ impl CollectionTab {
             cached_db_options: Vec::new(),
             cached_db_conn: String::new(),
             cached_db_count: 0,
+            agg_stages: default_agg_stages(),
+            agg_raw_mode: false,
+            agg_raw_json: default_agg_raw_json(),
+            agg_results: None,
+            agg_elapsed_ms: None,
+            agg_error: None,
+            agg_is_running: false,
+            agg_cached_columns: Vec::new(),
+            schema_sample_size: default_sample_size(),
+            schema_is_analyzing: false,
         }
     }
 
@@ -150,6 +196,16 @@ impl CollectionTab {
             cached_db_options: Vec::new(),
             cached_db_conn: String::new(),
             cached_db_count: 0,
+            agg_stages: default_agg_stages(),
+            agg_raw_mode: false,
+            agg_raw_json: default_agg_raw_json(),
+            agg_results: None,
+            agg_elapsed_ms: None,
+            agg_error: None,
+            agg_is_running: false,
+            agg_cached_columns: Vec::new(),
+            schema_sample_size: default_sample_size(),
+            schema_is_analyzing: false,
         }
     }
 

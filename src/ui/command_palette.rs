@@ -1,4 +1,6 @@
-use egui::{Context, CursorIcon, Frame, Key, Margin, RichText, ScrollArea, Stroke, TextEdit, Vec2, Window};
+use egui::{
+    Context, CursorIcon, Frame, Key, Margin, RichText, ScrollArea, Stroke, TextEdit, Vec2, Window,
+};
 use egui_phosphor::regular;
 
 use crate::core::commands::AppCommand;

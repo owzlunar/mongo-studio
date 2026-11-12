@@ -1,12 +1,544 @@
-use egui::{Context, CursorIcon, Frame, Margin, RichText, ScrollArea, Stroke, TextEdit, Vec2};
+use egui::{
+    ComboBox, Context, CursorIcon, Frame, Margin, RichText, Rounding, ScrollArea, Stroke, TextEdit,
+    Vec2,
+};
 use egui_phosphor::regular;
 
 use crate::core::events::AppEvent;
 use crate::core::state::AppState;
-use crate::theme::ThemePalette;
+use crate::database::ConnectionManager;
+use crate::models::QueryStore;
+use crate::query::AggregationStage;
+use crate::theme::{ThemeMode, ThemePalette};
 use crate::ui::activity_bar::ActivityView;
-use crate::ui::components::buttons::primary_button;
+use crate::ui::components::buttons::{primary_button, secondary_button};
 use crate::ui::components::tree_view::render_connection_tree;
+use crate::workspace::{CollectionSubTab, WorkspacePersistence};
+
+fn render_saved_queries_sidebar(
+    ui: &mut egui::Ui,
+    state: &AppState,
+    palette: &ThemePalette,
+    events: &mut Vec<AppEvent>,
+) {
+    ui.horizontal(|ui| {
+        ui.label(
+            RichText::new("SAVED QUERIES")
+                .size(11.5)
+                .strong()
+                .color(palette.muted_text),
+        );
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            ui.label(
+                RichText::new(format!("({})", state.saved_queries.len()))
+                    .size(11.0)
+                    .color(palette.muted_text),
+            );
+        });
+    });
+    ui.separator();
+    ui.add_space(6.0);
+
+    if state.saved_queries.is_empty() {
+        ui.label(
+            RichText::new("No saved queries yet. Use 'Save Query' inside any collection tab.")
+                .size(12.0)
+                .color(palette.muted_text),
+        );
+        return;
+    }
+
+    ScrollArea::vertical()
+        .auto_shrink([false, false])
+        .show(ui, |ui| {
+            for sq in &state.saved_queries {
+                let tooltip = format!(
+                    "Target: {} / {}.{}\nFilter: {}\nProjection: {}\nSort: {}\nLimit: {}",
+                    sq.connection_name,
+                    sq.database,
+                    sq.collection,
+                    sq.filter,
+                    sq.projection,
+                    sq.sort,
+                    sq.limit
+                );
+
+                Frame::none()
+                    .fill(palette.panel_bg)
+                    .inner_margin(Margin::symmetric(8.0, 6.0))
+                    .rounding(Rounding::same(4.0))
+                    .stroke(Stroke::new(1.0_f32, palette.border_color))
+                    .show(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            let run_resp = ui
+                                .selectable_label(
+                                    false,
+                                    RichText::new(format!("{} {}", regular::FILE_TEXT, sq.name))
+                                        .strong(),
+                                )
+                                .on_hover_cursor(CursorIcon::PointingHand)
+                                .on_hover_text(&tooltip);
+
+                            if run_resp.clicked() {
+                                events.push(AppEvent::RunSavedQuery { query: sq.clone() });
+                            }
+
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    if ui
+                                        .small_button(
+                                            RichText::new(regular::TRASH)
+                                                .color(palette.error_color),
+                                        )
+                                        .on_hover_cursor(CursorIcon::PointingHand)
+                                        .on_hover_text("Delete saved query")
+                                        .clicked()
+                                    {
+                                        events.push(AppEvent::DeleteSavedQuery { id: sq.id });
+                                    }
+                                },
+                            );
+                        });
+
+                        ui.label(
+                            RichText::new(format!(
+                                "{} / {}.{}",
+                                sq.connection_name, sq.database, sq.collection
+                            ))
+                            .monospace()
+                            .size(11.0)
+                            .color(palette.muted_text),
+                        )
+                        .on_hover_text(tooltip);
+                    });
+                ui.add_space(4.0);
+            }
+        });
+}
+
+fn render_aggregation_sidebar(
+    ui: &mut egui::Ui,
+    state: &mut AppState,
+    palette: &ThemePalette,
+    events: &mut Vec<AppEvent>,
+) {
+    ui.label(
+        RichText::new("AGGREGATION PIPELINES")
+            .size(11.5)
+            .strong()
+            .color(palette.muted_text),
+    );
+    ui.separator();
+    ui.add_space(6.0);
+
+    let maybe_tab = state
+        .dock_state
+        .iter_all_tabs_mut()
+        .map(|(_, t)| t)
+        .find(|t| t.selected_user.is_none());
+
+    let Some(tab) = maybe_tab else {
+        ui.label(
+            RichText::new("Open a collection from Connections Explorer first to build an aggregation pipeline.")
+                .color(palette.muted_text),
+        );
+        ui.add_space(8.0);
+        if secondary_button(
+            ui,
+            &format!("{} Go to Connections", regular::PLUGS_CONNECTED),
+            palette.border_color,
+        )
+        .clicked()
+        {
+            events.push(AppEvent::SelectActivity(ActivityView::Connections));
+        }
+        return;
+    };
+
+    ui.label(
+        RichText::new(format!(
+            "{} Target: {}",
+            regular::TABLE,
+            tab.full_namespace()
+        ))
+        .monospace()
+        .strong()
+        .color(palette.accent_color),
+    );
+    ui.label(
+        RichText::new(format!("Connection: {}", tab.connection_name))
+            .size(11.5)
+            .color(palette.muted_text),
+    );
+    ui.add_space(8.0);
+
+    if primary_button(
+        ui,
+        &format!("{} Open Aggregation Pipeline", regular::FUNNEL),
+        palette.accent_color,
+    )
+    .clicked()
+    {
+        tab.active_subtab = CollectionSubTab::Aggregation;
+    }
+
+    ui.add_space(10.0);
+    ui.separator();
+    ui.add_space(6.0);
+    ui.label(
+        RichText::new("QUICK PRESETS")
+            .size(11.0)
+            .strong()
+            .color(palette.muted_text),
+    );
+    ui.add_space(4.0);
+
+    let presets: [(&str, &str, Vec<AggregationStage>); 3] = [
+        (
+            "Count by Status",
+            "Group documents by '$status' and sort descending by count",
+            vec![
+                AggregationStage::new(
+                    "$group",
+                    "{\n  \"_id\": \"$status\",\n  \"count\": { \"$sum\": 1 }\n}",
+                    true,
+                ),
+                AggregationStage::new("$sort", "{\n  \"count\": -1\n}", true),
+            ],
+        ),
+        (
+            "Recent Top 10",
+            "Sort by '_id' descending and limit to 10 documents",
+            vec![
+                AggregationStage::new("$sort", "{\n  \"_id\": -1\n}", true),
+                AggregationStage::new("$limit", "10", true),
+            ],
+        ),
+        (
+            "Unwind Array",
+            "Unwind '$items' array and limit to 20 documents",
+            vec![
+                AggregationStage::new("$unwind", "\"$items\"", true),
+                AggregationStage::new("$limit", "20", true),
+            ],
+        ),
+    ];
+
+    for (label, hint, stages) in presets {
+        if secondary_button(
+            ui,
+            &format!("{} {label}", regular::LIGHTNING),
+            palette.border_color,
+        )
+        .on_hover_text(hint)
+        .clicked()
+        {
+            tab.agg_stages = stages;
+            tab.agg_raw_mode = false;
+            if let Ok(pretty) = AggregationStage::stages_to_pretty_json(&tab.agg_stages) {
+                tab.agg_raw_json = pretty;
+            }
+            tab.agg_error = None;
+            tab.active_subtab = CollectionSubTab::Aggregation;
+        }
+        ui.add_space(4.0);
+    }
+}
+
+fn render_schema_sidebar(
+    ui: &mut egui::Ui,
+    state: &mut AppState,
+    palette: &ThemePalette,
+    events: &mut Vec<AppEvent>,
+) {
+    ui.label(
+        RichText::new("SCHEMA ANALYZER")
+            .size(11.5)
+            .strong()
+            .color(palette.muted_text),
+    );
+    ui.separator();
+    ui.add_space(6.0);
+
+    let target_info = {
+        let maybe_tab = state
+            .dock_state
+            .iter_all_tabs_mut()
+            .map(|(_, t)| t)
+            .find(|t| t.selected_user.is_none());
+
+        if let Some(tab) = maybe_tab {
+            ui.label(
+                RichText::new(format!(
+                    "{} Active: {}",
+                    regular::TABLE,
+                    tab.full_namespace()
+                ))
+                .monospace()
+                .strong()
+                .color(palette.accent_color),
+            );
+            ui.label(
+                RichText::new(format!("Connection: {}", tab.connection_name))
+                    .size(11.5)
+                    .color(palette.muted_text),
+            );
+            ui.add_space(6.0);
+
+            ui.horizontal(|ui| {
+                ui.label(RichText::new("Sample Size").size(11.5).strong());
+                ComboBox::from_id_source("sidebar_schema_sample_size")
+                    .selected_text(RichText::new(tab.schema_sample_size.to_string()).monospace())
+                    .width(74.0)
+                    .show_ui(ui, |ui| {
+                        for sample_opt in [50_usize, 100, 250, 500, 1000] {
+                            ui.selectable_value(
+                                &mut tab.schema_sample_size,
+                                sample_opt,
+                                sample_opt.to_string(),
+                            );
+                        }
+                    });
+            });
+            ui.add_space(6.0);
+
+            ui.horizontal(|ui| {
+                ui.add_enabled_ui(!tab.schema_is_analyzing, |ui| {
+                    if primary_button(
+                        ui,
+                        &format!("{} Analyze Active Collection", regular::CHART_BAR),
+                        palette.accent_color,
+                    )
+                    .clicked()
+                    {
+                        tab.schema_is_analyzing = true;
+                        tab.active_subtab = CollectionSubTab::Schema;
+                        events.push(AppEvent::AnalyzeCollectionSchema {
+                            connection_name: tab.connection_name.clone(),
+                            database: tab.database.clone(),
+                            collection: tab.collection.clone(),
+                            sample_size: tab.schema_sample_size,
+                        });
+                    }
+                });
+                if tab.schema_is_analyzing {
+                    ui.spinner();
+                }
+            });
+
+            Some((
+                tab.connection_name.clone(),
+                tab.database.clone(),
+                tab.collection.clone(),
+            ))
+        } else {
+            None
+        }
+    };
+
+    let Some((conn_name, db_name, coll_name)) = target_info else {
+        ui.label(
+            RichText::new(
+                "Open a collection tab to inspect nested BSON field paths and type distributions.",
+            )
+            .color(palette.muted_text),
+        );
+        return;
+    };
+
+    ui.add_space(8.0);
+    ui.separator();
+    ui.add_space(4.0);
+
+    let Some(coll) = state.find_collection_by_conn(&conn_name, &db_name, &coll_name) else {
+        ui.label(
+            RichText::new("Collection metadata not loaded yet.")
+                .size(11.5)
+                .color(palette.muted_text),
+        );
+        return;
+    };
+
+    ui.label(
+        RichText::new(format!("DISCOVERED FIELDS ({})", coll.schema_fields.len()))
+            .size(11.0)
+            .strong()
+            .color(palette.muted_text),
+    );
+    ui.add_space(4.0);
+
+    if coll.schema_fields.is_empty() {
+        ui.label(
+            RichText::new("No schema fields yet — click 'Analyze Active Collection'.")
+                .size(11.5)
+                .color(palette.muted_text),
+        );
+        return;
+    }
+
+    ScrollArea::vertical()
+        .auto_shrink([false, false])
+        .show(ui, |ui| {
+            for field in &coll.schema_fields {
+                Frame::none()
+                    .fill(palette.panel_bg)
+                    .inner_margin(Margin::symmetric(6.0, 4.0))
+                    .rounding(Rounding::same(3.0))
+                    .stroke(Stroke::new(1.0_f32, palette.border_color))
+                    .show(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            ui.label(
+                                RichText::new(&field.field_name)
+                                    .monospace()
+                                    .strong()
+                                    .size(11.5),
+                            );
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    ui.label(
+                                        RichText::new(format!("{:.0}%", field.frequency_pct))
+                                            .monospace()
+                                            .size(11.0)
+                                            .color(palette.accent_color),
+                                    );
+                                },
+                            );
+                        });
+                        let breakdown_text = if field.type_breakdown.is_empty() {
+                            field.bson_type.clone()
+                        } else {
+                            field
+                                .type_breakdown
+                                .iter()
+                                .map(|(ty, pct)| format!("{ty} {pct:.0}%"))
+                                .collect::<Vec<_>>()
+                                .join(" • ")
+                        };
+                        ui.label(
+                            RichText::new(breakdown_text)
+                                .monospace()
+                                .size(10.5)
+                                .color(palette.success_color),
+                        );
+                    });
+                ui.add_space(3.0);
+            }
+        });
+}
+
+fn render_settings_sidebar(
+    ui: &mut egui::Ui,
+    state: &AppState,
+    palette: &ThemePalette,
+    events: &mut Vec<AppEvent>,
+) {
+    ui.label(
+        RichText::new("SETTINGS")
+            .size(11.5)
+            .strong()
+            .color(palette.muted_text),
+    );
+    ui.separator();
+    ui.add_space(6.0);
+
+    ui.label(RichText::new("Color Theme").strong().size(12.0));
+    ui.add_space(4.0);
+    ui.horizontal(|ui| {
+        let is_dark = state.theme_mode == ThemeMode::Dark;
+        if ui
+            .selectable_label(is_dark, format!("{} Dark", regular::MOON))
+            .on_hover_cursor(CursorIcon::PointingHand)
+            .clicked()
+        {
+            events.push(AppEvent::SwitchTheme(ThemeMode::Dark));
+        }
+        if ui
+            .selectable_label(!is_dark, format!("{} Light", regular::SUN))
+            .on_hover_cursor(CursorIcon::PointingHand)
+            .clicked()
+        {
+            events.push(AppEvent::SwitchTheme(ThemeMode::Light));
+        }
+    });
+
+    ui.add_space(10.0);
+    ui.separator();
+    ui.add_space(6.0);
+
+    ui.label(RichText::new("Workspace Layout").strong().size(12.0));
+    ui.add_space(4.0);
+    if secondary_button(
+        ui,
+        &format!("{} Toggle Sidebar (Ctrl+B)", regular::SIDEBAR_SIMPLE),
+        palette.border_color,
+    )
+    .clicked()
+    {
+        events.push(AppEvent::ToggleSidebar);
+    }
+    ui.add_space(4.0);
+    if secondary_button(
+        ui,
+        &format!("{} Toggle Bottom Panel (Ctrl+J)", regular::TERMINAL_WINDOW),
+        palette.border_color,
+    )
+    .clicked()
+    {
+        events.push(AppEvent::ToggleBottomPanel);
+    }
+    ui.add_space(4.0);
+    if secondary_button(
+        ui,
+        &format!(
+            "{} Reset Workspace Layout",
+            regular::ARROW_COUNTER_CLOCKWISE
+        ),
+        palette.border_color,
+    )
+    .clicked()
+    {
+        events.push(AppEvent::ResetWorkspaceLayout);
+    }
+
+    ui.add_space(10.0);
+    ui.separator();
+    ui.add_space(6.0);
+
+    ui.label(RichText::new("Config File Locations").strong().size(12.0));
+    ui.add_space(4.0);
+
+    let config_paths = [
+        ("Connections", ConnectionManager::profiles_file_path()),
+        ("Saved Queries", QueryStore::config_file_path()),
+        ("Workspace", WorkspacePersistence::config_file_path()),
+    ];
+
+    ScrollArea::vertical()
+        .auto_shrink([false, false])
+        .show(ui, |ui| {
+            for (label, maybe_path) in config_paths {
+                ui.label(
+                    RichText::new(label)
+                        .size(11.0)
+                        .strong()
+                        .color(palette.accent_color),
+                );
+                let path_str = maybe_path
+                    .map(|p| p.display().to_string())
+                    .unwrap_or_else(|| "Unavailable on this platform".to_string());
+                ui.label(
+                    RichText::new(&path_str)
+                        .monospace()
+                        .size(10.5)
+                        .color(palette.muted_text),
+                )
+                .on_hover_text(path_str);
+                ui.add_space(4.0);
+            }
+        });
+}
 
 pub fn render_sidebar(
     ctx: &Context,
@@ -28,139 +560,78 @@ pub fn render_sidebar(
         .default_width(250.0)
         .width_range(190.0..=420.0)
         .frame(frame)
-        .show(ctx, |ui| {
-            match state.active_activity {
-                ActivityView::Connections => {
-                    ui.horizontal(|ui| {
-                        ui.label(
-                            RichText::new("CONNECTIONS")
-                                .size(11.5)
-                                .strong()
-                                .color(palette.muted_text),
-                        );
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            let refresh_btn =
-                                egui::Button::new(RichText::new(regular::ARROWS_CLOCKWISE).size(13.0))
-                                    .min_size(Vec2::new(22.0, 22.0));
-                            if ui
-                                .add(refresh_btn)
-                                .on_hover_cursor(CursorIcon::PointingHand)
-                                .on_hover_text("Refresh Explorer")
-                                .clicked()
-                            {
-                                events.push(AppEvent::RefreshConnections);
-                            }
-
-                            if primary_button(
-                                ui,
-                                &format!("{} Add Connection", regular::PLUS),
-                                palette.accent_color,
-                            )
-                            .on_hover_text("Add MongoDB Connection")
-                            .clicked()
-                            {
-                                events.push(AppEvent::OpenNewConnectionModal);
-                            }
-                        });
-                    });
-
-                    ui.add_space(6.0);
-
-                    ui.add(
-                        TextEdit::singleline(&mut state.sidebar_search)
-                            .hint_text("Filter databases / collections...")
-                            .margin(Margin::symmetric(6.0, 4.0))
-                            .min_size(Vec2::new(120.0, 24.0))
-                            .desired_width(f32::INFINITY),
-                    );
-
-                    ui.add_space(8.0);
-                    ui.separator();
-                    ui.add_space(4.0);
-
-                    ScrollArea::vertical()
-                        .auto_shrink([false, false])
-                        .show(ui, |ui| {
-                            render_connection_tree(
-                                ui,
-                                &mut state.connections,
-                                &state.sidebar_search,
-                                palette,
-                                events,
-                            );
-                        });
-                }
-                ActivityView::SavedQueries => {
+        .show(ctx, |ui| match state.active_activity {
+            ActivityView::Connections => {
+                ui.horizontal(|ui| {
                     ui.label(
-                        RichText::new("SAVED QUERIES")
+                        RichText::new("CONNECTIONS")
                             .size(11.5)
                             .strong()
                             .color(palette.muted_text),
                     );
-                    ui.separator();
-                    ui.add_space(6.0);
-
-                    let presets = [
-                        ("Active Users", "admin", "users", "{\"status\": \"active\"}"),
-                        ("All Products", "admin", "products", "{}"),
-                        ("Pending Orders", "admin", "orders", "{\"status\": \"active\"}"),
-                        ("VIP Customers", "shop_db", "customers", "{\"role\": \"admin\"}"),
-                    ];
-
-                    for (title, db, coll, filter) in presets {
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let refresh_btn =
+                            egui::Button::new(RichText::new(regular::ARROWS_CLOCKWISE).size(13.0))
+                                .min_size(Vec2::new(22.0, 22.0));
                         if ui
-                            .selectable_label(
-                                false,
-                                format!("{} {title} ({db}.{coll})", regular::FILE_TEXT),
-                            )
+                            .add(refresh_btn)
                             .on_hover_cursor(CursorIcon::PointingHand)
-                            .on_hover_text(filter)
+                            .on_hover_text("Refresh Explorer")
                             .clicked()
                         {
-                            events.push(AppEvent::OpenCollection {
-                                connection_name: "MongoDB Local".to_string(),
-                                database: db.to_string(),
-                                collection: coll.to_string(),
-                            });
-                            events.push(AppEvent::ExecuteFilterQuery {
-                                database: db.to_string(),
-                                collection: coll.to_string(),
-                                filter: filter.to_string(),
-                            });
+                            events.push(AppEvent::RefreshConnections);
                         }
-                    }
-                }
-                ActivityView::Aggregation => {
-                    ui.label(
-                        RichText::new("AGGREGATION PIPELINES")
-                            .size(11.5)
-                            .strong()
-                            .color(palette.muted_text),
-                    );
-                    ui.separator();
-                    ui.add_space(6.0);
-                    ui.label("Select a collection tab and switch to the 'Aggregation' sub-tab to build stages.");
-                }
-                ActivityView::SchemaAnalyzer => {
-                    ui.label(
-                        RichText::new("SCHEMA ANALYZER")
-                            .size(11.5)
-                            .strong()
-                            .color(palette.muted_text),
-                    );
-                    ui.separator();
-                    ui.add_space(6.0);
-                    ui.label("Inspect BSON field types and frequency distribution across sampled documents.");
-                }
-                ActivityView::Settings => {
-                    ui.label(
-                        RichText::new("SETTINGS")
-                            .size(11.5)
-                            .strong()
-                            .color(palette.muted_text),
-                    );
-                    ui.separator();
-                }
+
+                        if primary_button(
+                            ui,
+                            &format!("{} Add Connection", regular::PLUS),
+                            palette.accent_color,
+                        )
+                        .on_hover_text("Add MongoDB Connection")
+                        .clicked()
+                        {
+                            events.push(AppEvent::OpenNewConnectionModal);
+                        }
+                    });
+                });
+
+                ui.add_space(6.0);
+
+                ui.add(
+                    TextEdit::singleline(&mut state.sidebar_search)
+                        .hint_text("Filter databases / collections...")
+                        .margin(Margin::symmetric(6.0, 4.0))
+                        .min_size(Vec2::new(120.0, 24.0))
+                        .desired_width(f32::INFINITY),
+                );
+
+                ui.add_space(8.0);
+                ui.separator();
+                ui.add_space(4.0);
+
+                ScrollArea::vertical()
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
+                        render_connection_tree(
+                            ui,
+                            &mut state.connections,
+                            &state.sidebar_search,
+                            palette,
+                            events,
+                        );
+                    });
+            }
+            ActivityView::SavedQueries => {
+                render_saved_queries_sidebar(ui, state, palette, events);
+            }
+            ActivityView::Aggregation => {
+                render_aggregation_sidebar(ui, state, palette, events);
+            }
+            ActivityView::SchemaAnalyzer => {
+                render_schema_sidebar(ui, state, palette, events);
+            }
+            ActivityView::Settings => {
+                render_settings_sidebar(ui, state, palette, events);
             }
         });
 }

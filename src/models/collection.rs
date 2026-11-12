@@ -29,6 +29,10 @@ pub struct SchemaField {
     pub bson_type: String,
     pub frequency_pct: f32,
     pub sample_value: String,
+    #[serde(default)]
+    pub type_breakdown: Vec<(String, f32)>,
+    #[serde(default)]
+    pub doc_count: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -74,6 +78,8 @@ impl CollectionInfo {
     #[must_use]
     pub fn mock(database: &str, name: &str) -> Self {
         let documents = DocumentRow::mock_for_collection(name);
+        let doc_total = documents.len();
+        let role_count = (doc_total * 85).div_ceil(100).min(doc_total);
         let indexes = vec![
             IndexInfo {
                 name: "_id_".to_string(),
@@ -103,30 +109,40 @@ impl CollectionInfo {
                 bson_type: "ObjectId / Int32".to_string(),
                 frequency_pct: 100.0,
                 sample_value: "1".to_string(),
+                type_breakdown: vec![("ObjectId".to_string(), 50.0), ("Int32".to_string(), 50.0)],
+                doc_count: doc_total,
             },
             SchemaField {
                 field_name: "name".to_string(),
                 bson_type: "String".to_string(),
                 frequency_pct: 100.0,
                 sample_value: "\"Alice\"".to_string(),
+                type_breakdown: vec![("String".to_string(), 100.0)],
+                doc_count: doc_total,
             },
             SchemaField {
                 field_name: "email".to_string(),
                 bson_type: "String".to_string(),
                 frequency_pct: 100.0,
                 sample_value: "\"alice@example.com\"".to_string(),
+                type_breakdown: vec![("String".to_string(), 100.0)],
+                doc_count: doc_total,
             },
             SchemaField {
                 field_name: "status".to_string(),
                 bson_type: "String".to_string(),
                 frequency_pct: 100.0,
                 sample_value: "\"active\"".to_string(),
+                type_breakdown: vec![("String".to_string(), 100.0)],
+                doc_count: doc_total,
             },
             SchemaField {
                 field_name: "role".to_string(),
                 bson_type: "String".to_string(),
                 frequency_pct: 85.0,
                 sample_value: "\"admin\"".to_string(),
+                type_breakdown: vec![("String".to_string(), 100.0)],
+                doc_count: role_count,
             },
         ];
 

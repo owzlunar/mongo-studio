@@ -1,16 +1,26 @@
 use std::borrow::Cow;
+use std::fs;
+use std::path::PathBuf;
 
 use bson::{doc, oid::ObjectId, Bson, DateTime};
-use mongo_studio::core::{AppCommand, AppError, AppEvent, AppState, PendingDeleteDocument};
-use mongo_studio::database::DocumentPageResult;
-use mongo_studio::models::{CollectionInfo, DocumentRow, MongoUser, UserRole, COMMON_ROLES};
+use mongo_studio::core::{
+    AppCommand, AppError, AppEvent, AppState, PendingDeleteDocument, PendingDropIndex,
+};
+use mongo_studio::database::{CreateIndexRequest, DocumentPageResult, TransferFormat};
+use mongo_studio::models::{
+    CollectionInfo, DocumentRow, MongoUser, QueryStore, SavedQuery, UserRole, COMMON_ROLES,
+    MAX_QUERY_HISTORY,
+};
+use mongo_studio::query::AggregationStage;
 use mongo_studio::theme::{palette, ThemeMode};
 use mongo_studio::ui::activity_bar::ActivityView;
+use mongo_studio::ui::components::syntax_highlight::highlight_json_job;
 use mongo_studio::workspace::{
     BottomPanelState, BottomPanelTab, CollectionSubTab, CollectionTab, DocumentViewMode, LogLevel,
     WorkspacePersistence,
 };
 use serde_json::{json, Value};
+use uuid::Uuid;
 
 #[test]
 fn app_command_all_items_and_event_conversions_are_complete() {
@@ -628,7 +638,9 @@ fn document_row_extended_json_columns_cells_ids_and_cache_behave_accurately() {
     assert_eq!(row_1.cell_display_value("title"), "Sensor A");
     assert_eq!(row_1.cell_display_value("meta"), "{2 fields}");
     assert_eq!(row_1.cell_display_value("tags"), "[2 items]");
-    assert!(row_1.cell_display_value("created_at").contains("2023-11-14"));
+    assert!(row_1
+        .cell_display_value("created_at")
+        .contains("2023-11-14"));
     assert_eq!(row_1.cell_display_value("notes"), "null");
     assert_eq!(row_1.cell_display_value("missing_col"), "");
     assert_eq!(row_2.cell_display_value("enabled"), "false");
@@ -660,7 +672,10 @@ fn document_row_extended_json_columns_cells_ids_and_cache_behave_accurately() {
         row_1.extract_bson_id().expect("ObjectId _id"),
         Bson::ObjectId(oid)
     );
-    assert_eq!(row_2.extract_bson_id().expect("Int32 _id"), Bson::Int32(105));
+    assert_eq!(
+        row_2.extract_bson_id().expect("Int32 _id"),
+        Bson::Int32(105)
+    );
     assert_eq!(
         row_3.extract_bson_id().expect("String _id"),
         Bson::String("custom_str_id".to_string())
@@ -707,4 +722,264 @@ fn document_row_extended_json_columns_cells_ids_and_cache_behave_accurately() {
         deserialized_row.cached_or_parsed_json(),
         Cow::Borrowed(Value::Object(_))
     ));
+}
+
+#[test]
+fn collection_tab_phase5_agg_and_schema_defaults_and_legacy_serde_compatibility() {
+    // Arrange / Act: fresh CollectionTab defaults
+    let tab = CollectionTab::new("LAN Mongo", "shop_db", "orders");
+
+    // Assert: Phase 5 agg_* & schema_* defaults
+    assert_eq!(tab.agg_stages, vec![AggregationStage::default()]);
+    assert!(!tab.agg_raw_mode);
+    assert!(tab.agg_raw_json.contains("\"$match\""));
+    assert_eq!(tab.agg_results, None);
+    assert_eq!(tab.agg_elapsed_ms, None);
+    assert_eq!(tab.agg_error, None);
+    assert!(!tab.agg_is_running);
+    assert!(tab.agg_cached_columns.is_empty());
+    assert_eq!(tab.schema_sample_size, 100);
+    assert!(!tab.schema_is_analyzing);
+
+    // Arrange: legacy Phase 3/4 JSON payload missing all Phase 5 agg_* and schema_* fields
+    let legacy_phase4_json = json!({
+        "connection_name": "MongoDB Local",
+        "database": "admin",
+        "collection": "users",
+        "active_subtab": "Documents",
+        "view_mode": "Table",
+        "filter_query": "{\"status\": \"active\"}",
+        "projection_query": "{}",
+        "sort_query": "{\"_id\": 1}",
+        "skip": 20,
+        "limit": 50,
+        "selected_row": 0
+    })
+    .to_string();
+
+    // Act
+    let restored: CollectionTab = serde_json::from_str(&legacy_phase4_json)
+        .expect("legacy Phase 4 CollectionTab JSON should deserialize cleanly");
+
+    // Assert
+    assert_eq!(restored.skip, 20);
+    assert_eq!(restored.limit, 50);
+    assert_eq!(restored.agg_stages, vec![AggregationStage::default()]);
+    assert!(!restored.agg_raw_mode);
+    assert!(restored.agg_raw_json.contains("\"$match\""));
+    assert_eq!(restored.agg_results, None);
+    assert_eq!(restored.agg_elapsed_ms, None);
+    assert_eq!(restored.agg_error, None);
+    assert!(!restored.agg_is_running);
+    assert!(restored.agg_cached_columns.is_empty());
+    assert_eq!(restored.schema_sample_size, 100);
+    assert!(!restored.schema_is_analyzing);
+}
+
+#[test]
+fn saved_query_and_query_store_cap_history_atomic_roundtrip_and_missing_file_fallback() {
+    struct TempDirGuard(PathBuf);
+
+    impl Drop for TempDirGuard {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    // Arrange
+    let temp_dir = std::env::temp_dir().join(format!("mongo_studio_qstore_{}", Uuid::new_v4()));
+    let _guard = TempDirGuard(temp_dir.clone());
+    let store_path = temp_dir.join("nested").join("queries.json");
+    let missing_path = temp_dir.join("missing_queries.json");
+    let corrupt_path = temp_dir.join("corrupt_queries.json");
+
+    // Act / Assert: SavedQuery::new trims name & clamps limit >= 1
+    let custom_query = SavedQuery::new(
+        "  VIP Orders  ",
+        "LAN Mongo",
+        "shop_db",
+        "orders",
+        r#"{"total": {"$gt": 100}}"#,
+        r#"{"order_no": 1}"#,
+        r#"{"_id": -1}"#,
+        0,
+    );
+    assert_eq!(custom_query.name, "VIP Orders");
+    assert_eq!(custom_query.limit, 1);
+
+    // Act / Assert: missing queries.json falls back cleanly to 4 defaults
+    let missing_loaded = QueryStore::load_from_path(&missing_path);
+    assert_eq!(missing_loaded.saved_queries.len(), 4);
+    assert_eq!(missing_loaded.saved_queries[0].name, "Active Users");
+    assert!(missing_loaded.query_history.is_empty());
+
+    // Act / Assert: corrupt queries.json falls back gracefully without panicking
+    fs::create_dir_all(&temp_dir).expect("should create temp dir");
+    fs::write(&corrupt_path, "{corrupt json").expect("should write corrupt test file");
+    let corrupt_loaded = QueryStore::load_from_path(&corrupt_path);
+    assert_eq!(corrupt_loaded.saved_queries.len(), 4);
+
+    // Act / Assert: push_history ignores blank, deduplicates consecutive entries, caps at MAX_QUERY_HISTORY
+    let mut store = QueryStore::default();
+    store.saved_queries.push(custom_query.clone());
+    store.push_history("   ");
+    assert!(store.query_history.is_empty());
+
+    store.push_history("  db.users.find({})  ");
+    store.push_history("db.users.find({})");
+    assert_eq!(store.query_history.len(), 1);
+
+    for idx in 0..(MAX_QUERY_HISTORY + 25) {
+        store.push_history(format!("db.orders.find({{\"seq\": {idx}}})"));
+    }
+    assert_eq!(store.query_history.len(), MAX_QUERY_HISTORY);
+    assert_eq!(
+        store.query_history.first().map(String::as_str),
+        Some("db.orders.find({\"seq\": 25})")
+    );
+    assert_eq!(
+        store.query_history.last().map(String::as_str),
+        Some("db.orders.find({\"seq\": 124})")
+    );
+
+    // Direct cap_history() verification when entries exceed MAX_QUERY_HISTORY
+    store.query_history.push("extra_1".to_string());
+    store.query_history.push("extra_2".to_string());
+    assert_eq!(store.query_history.len(), MAX_QUERY_HISTORY + 2);
+    store.cap_history();
+    assert_eq!(store.query_history.len(), MAX_QUERY_HISTORY);
+    assert_eq!(
+        store.query_history.last().map(String::as_str),
+        Some("extra_2")
+    );
+
+    // Act / Assert: atomic save_to_path -> load_from_path roundtrip
+    store
+        .save_to_path(&store_path)
+        .expect("atomic QueryStore save should succeed");
+    assert!(store_path.exists());
+
+    let loaded = QueryStore::load_from_path(&store_path);
+    assert_eq!(loaded, store);
+    assert!(loaded.saved_queries.contains(&custom_query));
+}
+
+#[test]
+fn bottom_panel_push_terminal_lines_handles_multiline_empty_and_cap() {
+    // Arrange
+    let mut panel = BottomPanelState::default();
+    let initial_len = panel.terminal_history.len();
+
+    // Act / Assert: empty output is a no-op
+    panel.push_terminal_lines("");
+    assert_eq!(panel.terminal_history.len(), initial_len);
+
+    // Act / Assert: multi-line output pushes each line in order
+    panel.push_terminal_lines("admin\nshop_db\nanalytics_db");
+    assert_eq!(panel.terminal_history.len(), initial_len + 3);
+    assert_eq!(
+        &panel.terminal_history[initial_len..],
+        &["admin", "shop_db", "analytics_db"]
+    );
+
+    // Act / Assert: pushing beyond 500 lines caps terminal_history at 500 and keeps newest lines
+    let bulk_lines = (0..600)
+        .map(|i| format!("shell line {i}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    panel.push_terminal_lines(&bulk_lines);
+
+    assert_eq!(panel.terminal_history.len(), 500);
+    assert_eq!(
+        panel.terminal_history.first().map(String::as_str),
+        Some("shell line 100")
+    );
+    assert_eq!(
+        panel.terminal_history.last().map(String::as_str),
+        Some("shell line 599")
+    );
+}
+
+#[test]
+fn app_state_phase5_defaults_events_and_syntax_highlight_smoke_check() {
+    // Arrange / Act
+    let state = AppState::default();
+
+    // Assert: Phase 5 AppState defaults
+    assert_eq!(state.pending_drop_index, None);
+    assert!(!state.show_create_index_modal);
+    assert!(state.create_index_conn_name.is_empty());
+    assert!(state.create_index_db.is_empty());
+    assert!(state.create_index_coll.is_empty());
+    assert!(state.new_index_keys.is_empty());
+    assert!(state.new_index_name.is_empty());
+    assert!(!state.new_index_unique);
+    assert!(!state.new_index_sparse);
+    assert!(!state.new_index_background);
+    assert!(!state.show_save_query_modal);
+    assert!(state.save_query_name.is_empty());
+    assert_eq!(state.save_query_limit, 20);
+    assert_eq!(state.shell_current_db, "admin");
+    assert!(!state.is_transferring);
+    assert!(!state.show_about_modal);
+
+    // Assert: PendingDropIndex & Phase 5 AppEvent variants
+    let pending_idx = PendingDropIndex {
+        connection_name: "LAN Mongo".to_string(),
+        database: "shop_db".to_string(),
+        collection: "orders".to_string(),
+        index_name: "email_1".to_string(),
+    };
+    assert_eq!(pending_idx.clone(), pending_idx);
+
+    let create_idx_event = AppEvent::CreateIndex {
+        connection_name: "LAN Mongo".to_string(),
+        database: "shop_db".to_string(),
+        collection: "orders".to_string(),
+        request: CreateIndexRequest {
+            keys_json: r#"{"email": 1}"#.to_string(),
+            name: Some("email_1".to_string()),
+            unique: true,
+            sparse: false,
+            background: false,
+        },
+    };
+    let export_event = AppEvent::ExportCollectionData {
+        connection_name: "LAN Mongo".to_string(),
+        database: "shop_db".to_string(),
+        collection: "orders".to_string(),
+        filter: "{}".to_string(),
+        format: TransferFormat::JsonLines,
+        path: PathBuf::from("orders.jsonl"),
+    };
+    assert!(matches!(create_idx_event, AppEvent::CreateIndex { .. }));
+    assert!(matches!(
+        export_event,
+        AppEvent::ExportCollectionData {
+            format: TransferFormat::JsonLines,
+            ..
+        }
+    ));
+
+    // Assert: syntax_highlight::highlight_json_job produces non-empty sections in Dark & Light modes
+    let sample_json =
+        r#"{"_id": {"$oid": "654f1a2b3c4d5e6f7a8b9c0d"}, "active": true, "count": 42}"#;
+    let ctx = egui::Context::default();
+
+    for visuals in [egui::Visuals::dark(), egui::Visuals::light()] {
+        ctx.set_visuals(visuals);
+        let mut non_empty_sections = 0_usize;
+        let mut empty_sections = 99_usize;
+        let _ = ctx.run(egui::RawInput::default(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                let job = highlight_json_job(ui, sample_json, egui::FontId::monospace(12.0), 420.0);
+                non_empty_sections = job.sections.len();
+
+                let empty_job = highlight_json_job(ui, "", egui::FontId::monospace(12.0), 420.0);
+                empty_sections = empty_job.sections.len();
+            });
+        });
+        assert!(non_empty_sections > 0);
+        assert_eq!(empty_sections, 0);
+    }
 }

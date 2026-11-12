@@ -1,8 +1,17 @@
+use std::path::PathBuf;
+
 use bson::Bson;
 use uuid::Uuid;
 
-use crate::database::DocumentPageResult;
-use crate::models::{CollectionInfo, DatabaseInfo, DocumentRow, MongoUser, UserRole};
+use crate::database::{
+    AggregationResult, CreateIndexRequest, DocumentPageResult, ExportStats, ImportStats,
+    TransferFormat,
+};
+use crate::models::{
+    CollectionInfo, DatabaseInfo, DocumentRow, IndexInfo, MongoUser, SavedQuery, SchemaField,
+    UserRole,
+};
+use crate::query::AggregationStage;
 use crate::theme::ThemeMode;
 use crate::ui::activity_bar::ActivityView;
 
@@ -264,6 +273,117 @@ pub enum AppEvent {
         connection_name: String,
         message: String,
         result: Result<Vec<MongoUser>, String>,
+    },
+    RunAggregationPipeline {
+        connection_name: String,
+        database: String,
+        collection: String,
+        raw_json: String,
+        stages: Vec<AggregationStage>,
+    },
+    AggregationResultLoaded {
+        connection_name: String,
+        database: String,
+        collection: String,
+        stage_count: usize,
+        result: Result<AggregationResult, String>,
+    },
+    OpenCreateIndexModal {
+        connection_name: String,
+        database: String,
+        collection: String,
+    },
+    CreateIndex {
+        connection_name: String,
+        database: String,
+        collection: String,
+        request: CreateIndexRequest,
+    },
+    RequestDropIndex {
+        connection_name: String,
+        database: String,
+        collection: String,
+        index_name: String,
+    },
+    ConfirmDropIndex {
+        connection_name: String,
+        database: String,
+        collection: String,
+        index_name: String,
+    },
+    IndexesUpdated {
+        connection_name: String,
+        database: String,
+        collection: String,
+        message: String,
+        result: Result<Vec<IndexInfo>, String>,
+    },
+    AnalyzeCollectionSchema {
+        connection_name: String,
+        database: String,
+        collection: String,
+        sample_size: usize,
+    },
+    SchemaAnalyzed {
+        connection_name: String,
+        database: String,
+        collection: String,
+        sample_size: usize,
+        result: Result<Vec<SchemaField>, String>,
+    },
+    OpenSaveQueryModal {
+        connection_name: String,
+        database: String,
+        collection: String,
+        filter: String,
+        projection: String,
+        sort: String,
+        limit: usize,
+    },
+    SaveQuery {
+        query: SavedQuery,
+    },
+    DeleteSavedQuery {
+        id: Uuid,
+    },
+    RunSavedQuery {
+        query: SavedQuery,
+    },
+    RunHistoryQuery {
+        command: String,
+    },
+    ExecuteShellCommand {
+        command: String,
+    },
+    ShellCommandCompleted {
+        command: String,
+        new_current_db: Option<String>,
+        result: Result<String, String>,
+    },
+    ExportCollectionData {
+        connection_name: String,
+        database: String,
+        collection: String,
+        filter: String,
+        format: TransferFormat,
+        path: PathBuf,
+    },
+    ExportCompleted {
+        message: String,
+        result: Result<ExportStats, String>,
+    },
+    ImportCollectionData {
+        connection_name: String,
+        database: String,
+        collection: String,
+        format: TransferFormat,
+        path: PathBuf,
+    },
+    ImportCompleted {
+        connection_name: String,
+        database: String,
+        collection: String,
+        result: Result<ImportStats, String>,
     },
     BackgroundTaskError {
         source: String,

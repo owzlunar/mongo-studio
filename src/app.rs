@@ -3,19 +3,26 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use bson::oid::ObjectId;
-use bson::Bson;
+use bson::{Bson, Document};
 use egui::{Context, FontData, FontDefinitions, FontFamily, Key};
 
 use crate::core::events::AppEvent;
-use crate::core::state::{AppState, PendingDeleteDocument};
+use crate::core::state::{AppState, PendingDeleteDocument, PendingDropIndex};
 use crate::database::{
     connection::ConnectionClient, CollectionService, ConnectionManager, DatabaseService,
-    DocumentQueryParams, DocumentService, UserService,
+    DocumentQueryParams, DocumentService, ExportStats, IndexService, SchemaAnalyzer, ShellService,
+    TransferService, UserService,
 };
-use crate::models::{ConnectionConfig, ConnectionStatus, DatabaseInfo, DocumentRow, UserRole};
+use crate::models::{
+    ConnectionConfig, ConnectionStatus, DatabaseInfo, DocumentRow, IndexInfo, QueryStore, UserRole,
+    MAX_QUERY_HISTORY,
+};
+use crate::query::AggregationStage;
 use crate::theme::{apply_theme, ThemePalette};
 use crate::ui::layout::render_main_layout;
-use crate::workspace::{CollectionTab, LogLevel, WorkspacePersistence};
+use crate::workspace::{
+    BottomPanelTab, CollectionSubTab, CollectionTab, LogLevel, WorkspacePersistence,
+};
 
 const DEFAULT_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -44,6 +51,37 @@ fn is_system_database_name(name: &str) -> bool {
     trimmed.eq_ignore_ascii_case("admin")
         || trimmed.eq_ignore_ascii_case("local")
         || trimmed.eq_ignore_ascii_case("config")
+}
+
+fn parse_history_query(command: &str) -> Option<(Option<String>, String, String)> {
+    let trimmed = command.trim().trim_end_matches(';').trim();
+    let mut rest = trimmed.strip_prefix("db.")?;
+    let mut parsed_db: Option<String> = None;
+
+    if let Some(after_sib) = rest.strip_prefix("getSiblingDB(") {
+        let (db_arg, after_paren) = after_sib.split_once(')')?;
+        let clean_db = db_arg.trim().trim_matches('"').trim_matches('\'').trim();
+        if clean_db.is_empty() {
+            return None;
+        }
+        parsed_db = Some(clean_db.to_string());
+        rest = after_paren.trim_start().strip_prefix('.')?;
+    }
+
+    let (coll_part, args_part) = rest.split_once(".find(")?;
+    let coll = coll_part.trim();
+    if coll.is_empty() {
+        return None;
+    }
+
+    let raw_filter = args_part.trim_end().strip_suffix(')')?.trim();
+    let filter = if raw_filter.is_empty() {
+        "{}".to_string()
+    } else {
+        raw_filter.to_string()
+    };
+
+    Some((parsed_db, coll.to_string(), filter))
 }
 
 async fn resolve_effective_uri(
@@ -133,7 +171,12 @@ impl MongoStudioApp {
         let mut fonts = FontDefinitions::default();
         fonts.font_data.insert(
             "phosphor".to_owned(),
-            FontData::from_owned(egui_phosphor::Variant::Regular.font_data().font.into_owned()),
+            FontData::from_owned(
+                egui_phosphor::Variant::Regular
+                    .font_data()
+                    .font
+                    .into_owned(),
+            ),
         );
         if let Some(family) = fonts.families.get_mut(&FontFamily::Proportional) {
             family.push("phosphor".to_owned());
@@ -160,17 +203,14 @@ impl MongoStudioApp {
     }
 
     fn connection_target_by_index(&self, index: usize) -> Option<ConnectionTarget> {
-        self.state
-            .connections
-            .get(index)
-            .map(|c| ConnectionTarget {
-                id: c.id,
-                name: c.name.clone(),
-                uri: c.uri.clone(),
-                username: c.username.clone(),
-                has_saved_password: c.has_saved_password,
-                is_connected: c.status.is_connected(),
-            })
+        self.state.connections.get(index).map(|c| ConnectionTarget {
+            id: c.id,
+            name: c.name.clone(),
+            uri: c.uri.clone(),
+            username: c.username.clone(),
+            has_saved_password: c.has_saved_password,
+            is_connected: c.status.is_connected(),
+        })
     }
 
     fn connection_target_by_name(&self, connection_name: &str) -> Option<ConnectionTarget> {
@@ -233,6 +273,45 @@ impl MongoStudioApp {
         }
     }
 
+    fn set_tab_agg_running(
+        &mut self,
+        connection_name: &str,
+        database: &str,
+        collection: &str,
+        running: bool,
+    ) {
+        for (_, tab) in self.state.dock_state.iter_all_tabs_mut() {
+            if tab.selected_user.is_none()
+                && tab.connection_name == connection_name
+                && tab.database == database
+                && tab.collection == collection
+            {
+                tab.agg_is_running = running;
+                if running {
+                    tab.agg_error = None;
+                }
+            }
+        }
+    }
+
+    fn set_tab_schema_analyzing(
+        &mut self,
+        connection_name: &str,
+        database: &str,
+        collection: &str,
+        analyzing: bool,
+    ) {
+        for (_, tab) in self.state.dock_state.iter_all_tabs_mut() {
+            if tab.selected_user.is_none()
+                && tab.connection_name == connection_name
+                && tab.database == database
+                && tab.collection == collection
+            {
+                tab.schema_is_analyzing = analyzing;
+            }
+        }
+    }
+
     fn refresh_tab_columns_from_collection(
         &mut self,
         connection_name: &str,
@@ -259,6 +338,18 @@ impl MongoStudioApp {
         }
     }
 
+    fn push_query_history(&mut self, ctx: &Context, query_cmd: String) {
+        if self.state.bottom_panel.query_history.last() == Some(&query_cmd) {
+            return;
+        }
+        self.state.bottom_panel.query_history.push(query_cmd);
+        if self.state.bottom_panel.query_history.len() > MAX_QUERY_HISTORY {
+            let excess = self.state.bottom_panel.query_history.len() - MAX_QUERY_HISTORY;
+            self.state.bottom_panel.query_history.drain(0..excess);
+        }
+        self.spawn_save_query_store_task(ctx);
+    }
+
     fn dispatch_live_query(
         &mut self,
         ctx: &Context,
@@ -272,9 +363,7 @@ impl MongoStudioApp {
             "db.getSiblingDB(\"{database}\").{collection}.find({})",
             params.filter
         );
-        if self.state.bottom_panel.query_history.last() != Some(&query_cmd) {
-            self.state.bottom_panel.query_history.push(query_cmd.clone());
-        }
+        self.push_query_history(ctx, query_cmd.clone());
 
         let target = self.connection_target_by_name(&connection_name);
         if let Some(conn) = target.filter(|c| c.is_connected) {
@@ -324,11 +413,8 @@ impl MongoStudioApp {
             .state
             .find_collection_by_conn(&connection_name, &database, &collection)
             .map(|coll| {
-                let filtered = DocumentService::filter_documents(
-                    &coll.documents,
-                    &params.filter,
-                    usize::MAX,
-                );
+                let filtered =
+                    DocumentService::filter_documents(&coll.documents, &params.filter, usize::MAX);
                 let total_count = filtered.len();
                 let page_docs: Vec<DocumentRow> = filtered
                     .into_iter()
@@ -358,7 +444,9 @@ impl MongoStudioApp {
             self.state.bottom_panel.push_log(
                 LogLevel::Success,
                 "QueryRunner",
-                format!("{query_cmd} -> {returned} doc(s) (in-memory, total matched: {total_count})"),
+                format!(
+                    "{query_cmd} -> {returned} doc(s) (in-memory, total matched: {total_count})"
+                ),
             );
         } else {
             self.set_tab_loading(&connection_name, &database, &collection, false);
@@ -370,7 +458,13 @@ impl MongoStudioApp {
         }
     }
 
-    fn requery_open_collection(&mut self, ctx: &Context, connection_name: &str, database: &str, collection: &str) {
+    fn requery_open_collection(
+        &mut self,
+        ctx: &Context,
+        connection_name: &str,
+        database: &str,
+        collection: &str,
+    ) {
         let (filter, projection, sort, skip, limit) = self
             .tab_query_params(connection_name, database, collection)
             .unwrap_or_else(|| {
@@ -407,6 +501,26 @@ impl MongoStudioApp {
                 let _ = tx.send(AppEvent::BackgroundTaskError {
                     source: "ConnectionManager".to_string(),
                     message: format!("Failed to save connection profiles: {err}"),
+                });
+                ctx_clone.request_repaint();
+            }
+        });
+    }
+
+    fn spawn_save_query_store_task(&self, ctx: &Context) {
+        let mut store = QueryStore {
+            saved_queries: self.state.saved_queries.clone(),
+            query_history: self.state.bottom_panel.query_history.clone(),
+        };
+        store.cap_history();
+        let tx = self.bg_tx.clone();
+        let ctx_clone = ctx.clone();
+        self.runtime.spawn(async move {
+            if let Err(err) = store.save_async().await {
+                // INTENTIONAL: receiver is dropped only on application shutdown.
+                let _ = tx.send(AppEvent::BackgroundTaskError {
+                    source: "QueryStore".to_string(),
+                    message: format!("Failed to persist saved queries: {err}"),
                 });
                 ctx_clone.request_repaint();
             }
@@ -524,13 +638,7 @@ impl MongoStudioApp {
         self.spawn_connect_task(ctx, conn_id, conn_name, conn_uri);
     }
 
-    fn spawn_connect_task(
-        &self,
-        ctx: &Context,
-        conn_id: uuid::Uuid,
-        name: String,
-        uri: String,
-    ) {
+    fn spawn_connect_task(&self, ctx: &Context, conn_id: uuid::Uuid, name: String, uri: String) {
         let tx = self.bg_tx.clone();
         let ctx_clone = ctx.clone();
         self.runtime.spawn(async move {
@@ -668,18 +776,18 @@ impl MongoStudioApp {
                     if needs_load {
                         if let Some(target) = conn_target {
                             if target.is_connected {
-                                self.set_tab_loading(&connection_name, &database, &collection, true);
+                                self.set_tab_loading(
+                                    &connection_name,
+                                    &database,
+                                    &collection,
+                                    true,
+                                );
                                 self.state.bottom_panel.push_log(
                                     LogLevel::Info,
                                     "Explorer",
                                     format!("Lazy-loading collection {database}.{collection}..."),
                                 );
-                                self.spawn_load_collection_task(
-                                    ctx,
-                                    target,
-                                    database,
-                                    collection,
-                                );
+                                self.spawn_load_collection_task(ctx, target, database, collection);
                                 continue;
                             }
                         }
@@ -745,8 +853,7 @@ impl MongoStudioApp {
                             .iter_mut()
                             .find(|c| c.name == connection_name)
                         {
-                            if let Some(db) =
-                                conn.databases.iter_mut().find(|d| d.name == database)
+                            if let Some(db) = conn.databases.iter_mut().find(|d| d.name == database)
                             {
                                 if let Some(slot) =
                                     db.collections.iter_mut().find(|c| c.name == collection)
@@ -765,9 +872,7 @@ impl MongoStudioApp {
                         self.state.bottom_panel.push_log(
                             LogLevel::Success,
                             "Explorer",
-                            format!(
-                                "Loaded {database}.{collection} ({doc_count} total documents)"
-                            ),
+                            format!("Loaded {database}.{collection} ({doc_count} total documents)"),
                         );
 
                         if self
@@ -1038,8 +1143,7 @@ impl MongoStudioApp {
                             .iter_mut()
                             .find(|c| c.name == connection_name)
                         {
-                            if let Some(db) =
-                                conn.databases.iter_mut().find(|d| d.name == db_name)
+                            if let Some(db) = conn.databases.iter_mut().find(|d| d.name == db_name)
                             {
                                 db.expanded = true;
                                 if let Some(slot) =
@@ -1053,11 +1157,8 @@ impl MongoStudioApp {
                             }
                         }
 
-                        self.state.open_or_focus_collection(
-                            &connection_name,
-                            &db_name,
-                            &coll_name,
-                        );
+                        self.state
+                            .open_or_focus_collection(&connection_name, &db_name, &coll_name);
                         self.refresh_tab_columns_from_collection(
                             &connection_name,
                             &db_name,
@@ -1170,8 +1271,7 @@ impl MongoStudioApp {
                             .iter_mut()
                             .find(|c| c.name == connection_name)
                         {
-                            if let Some(db) =
-                                conn.databases.iter_mut().find(|d| d.name == db_name)
+                            if let Some(db) = conn.databases.iter_mut().find(|d| d.name == db_name)
                             {
                                 db.collections.retain(|c| c.name != collection_name);
                             }
@@ -1531,7 +1631,9 @@ impl MongoStudioApp {
                         self.state.bottom_panel.push_log(
                             LogLevel::Error,
                             "DocumentService",
-                            format!("Failed to insert document into {database}.{collection}: {err}"),
+                            format!(
+                                "Failed to insert document into {database}.{collection}: {err}"
+                            ),
                         );
                     }
                 },
@@ -1634,9 +1736,11 @@ impl MongoStudioApp {
                         &database,
                         &collection,
                     ) {
-                        if let Some(slot) = coll.documents.iter_mut().find(|d| {
-                            d.extract_bson_id().ok().as_ref() == Some(&original_id)
-                        }) {
+                        if let Some(slot) = coll
+                            .documents
+                            .iter_mut()
+                            .find(|d| d.extract_bson_id().ok().as_ref() == Some(&original_id))
+                        {
                             *slot = updated_row;
                             matched = true;
                         }
@@ -2088,7 +2192,9 @@ impl MongoStudioApp {
                         self.state.bottom_panel.push_log(
                             LogLevel::Info,
                             "UserManager",
-                            format!("Saving {role_count} database role(s) for user '{username}'..."),
+                            format!(
+                                "Saving {role_count} database role(s) for user '{username}'..."
+                            ),
                         );
                         self.spawn_update_user_roles_task(ctx, task);
                     }
@@ -2178,7 +2284,9 @@ impl MongoStudioApp {
                         self.state.bottom_panel.push_log(
                             LogLevel::Success,
                             "UserManager",
-                            format!("Updated password for user '{username}' on '{connection_name}'"),
+                            format!(
+                                "Updated password for user '{username}' on '{connection_name}'"
+                            ),
                         );
                     }
                     Err(err) => {
@@ -2245,10 +2353,7 @@ impl MongoStudioApp {
                             .await;
 
                             let (message, result) = match res {
-                                Ok(users) => (
-                                    format!("Deleted MongoDB user '{uname}'"),
-                                    Ok(users),
-                                ),
+                                Ok(users) => (format!("Deleted MongoDB user '{uname}'"), Ok(users)),
                                 Err(err) => (
                                     format!("Failed to delete MongoDB user '{uname}'"),
                                     Err(err.to_string()),
@@ -2313,6 +2418,1146 @@ impl MongoStudioApp {
                         );
                     }
                 },
+                AppEvent::RunAggregationPipeline {
+                    connection_name,
+                    database,
+                    collection,
+                    raw_json,
+                    stages,
+                } => {
+                    let parsed_pipeline = if raw_json.trim().is_empty() {
+                        AggregationStage::build_pipeline(&stages)
+                    } else {
+                        AggregationStage::parse_raw_pipeline(&raw_json)
+                    };
+
+                    let pipeline = match parsed_pipeline {
+                        Ok(docs) => docs,
+                        Err(err) => {
+                            let err_msg = err.to_string();
+                            for (_, tab) in self.state.dock_state.iter_all_tabs_mut() {
+                                if tab.selected_user.is_none()
+                                    && tab.connection_name == connection_name
+                                    && tab.database == database
+                                    && tab.collection == collection
+                                {
+                                    tab.agg_is_running = false;
+                                    tab.agg_error = Some(err_msg.clone());
+                                }
+                            }
+                            self.state.bottom_panel.push_log(
+                                LogLevel::Error,
+                                "Aggregation",
+                                format!("Invalid pipeline for {database}.{collection}: {err_msg}"),
+                            );
+                            continue;
+                        }
+                    };
+
+                    let stage_count = pipeline.len();
+                    if let Some(target) = self.connection_target_by_name(&connection_name) {
+                        if target.is_connected {
+                            self.set_tab_agg_running(
+                                &connection_name,
+                                &database,
+                                &collection,
+                                true,
+                            );
+                            self.state.bottom_panel.push_log(
+                                LogLevel::Info,
+                                "Aggregation",
+                                format!(
+                                    "Running aggregation pipeline ({stage_count} stage(s)) on {database}.{collection}..."
+                                ),
+                            );
+
+                            let tx = self.bg_tx.clone();
+                            let ctx_clone = ctx.clone();
+                            self.runtime.spawn(async move {
+                                let result = match resolve_effective_uri(
+                                    target.id,
+                                    target.uri,
+                                    target.username,
+                                    target.has_saved_password,
+                                )
+                                .await
+                                {
+                                    Ok(effective_uri) => DocumentService::run_aggregation(
+                                        &effective_uri,
+                                        &database,
+                                        &collection,
+                                        &pipeline,
+                                        DEFAULT_CONNECT_TIMEOUT,
+                                    )
+                                    .await
+                                    .map_err(|err| err.to_string()),
+                                    Err(err) => Err(err),
+                                };
+
+                                // INTENTIONAL: receiver is dropped only on application shutdown.
+                                let _ = tx.send(AppEvent::AggregationResultLoaded {
+                                    connection_name: target.name,
+                                    database,
+                                    collection,
+                                    stage_count,
+                                    result,
+                                });
+                                ctx_clone.request_repaint();
+                            });
+                            continue;
+                        }
+                    }
+
+                    // Disconnected / mock fallback
+                    let fallback_stages: Vec<AggregationStage> = if raw_json.trim().is_empty() {
+                        stages
+                    } else {
+                        pipeline
+                            .iter()
+                            .filter_map(|doc| {
+                                doc.iter().next().map(|(op, val)| {
+                                    let expr = match val {
+                                        Bson::Document(sub) => serde_json::to_string(
+                                            &Bson::Document(sub.clone()).into_relaxed_extjson(),
+                                        )
+                                        .unwrap_or_else(|_| "{}".to_string()),
+                                        Bson::Int32(n) => n.to_string(),
+                                        Bson::Int64(n) => n.to_string(),
+                                        Bson::String(s) => s.clone(),
+                                        other => other.to_string(),
+                                    };
+                                    AggregationStage::new(op.clone(), expr, true)
+                                })
+                            })
+                            .collect()
+                    };
+
+                    let offline_res = self
+                        .state
+                        .find_collection_by_conn(&connection_name, &database, &collection)
+                        .map(|coll| {
+                            DocumentService::run_aggregation_in_memory(
+                                &coll.documents,
+                                &fallback_stages,
+                            )
+                        });
+
+                    match offline_res {
+                        Some(Ok(docs)) => {
+                            let row_count = docs.len();
+                            let cols = DocumentRow::extract_columns(&docs);
+                            for (_, tab) in self.state.dock_state.iter_all_tabs_mut() {
+                                if tab.selected_user.is_none()
+                                    && tab.connection_name == connection_name
+                                    && tab.database == database
+                                    && tab.collection == collection
+                                {
+                                    tab.agg_is_running = false;
+                                    tab.agg_error = None;
+                                    tab.agg_elapsed_ms = Some(0.1);
+                                    tab.agg_cached_columns = cols.clone();
+                                    tab.agg_results = Some(docs.clone());
+                                }
+                            }
+                            self.state.bottom_panel.push_log(
+                                LogLevel::Success,
+                                "Aggregation",
+                                format!(
+                                    "Aggregation on {database}.{collection} ({stage_count} stage(s)) returned {row_count} doc(s) (in-memory)"
+                                ),
+                            );
+                        }
+                        Some(Err(err)) => {
+                            let err_msg = err.to_string();
+                            for (_, tab) in self.state.dock_state.iter_all_tabs_mut() {
+                                if tab.selected_user.is_none()
+                                    && tab.connection_name == connection_name
+                                    && tab.database == database
+                                    && tab.collection == collection
+                                {
+                                    tab.agg_is_running = false;
+                                    tab.agg_error = Some(err_msg.clone());
+                                }
+                            }
+                            self.state.bottom_panel.push_log(
+                                LogLevel::Error,
+                                "Aggregation",
+                                format!("Aggregation failed on {database}.{collection}: {err_msg}"),
+                            );
+                        }
+                        None => {
+                            self.set_tab_agg_running(
+                                &connection_name,
+                                &database,
+                                &collection,
+                                false,
+                            );
+                            self.state.bottom_panel.push_log(
+                                LogLevel::Error,
+                                "Aggregation",
+                                format!("Collection {database}.{collection} not found."),
+                            );
+                        }
+                    }
+                }
+                AppEvent::AggregationResultLoaded {
+                    connection_name,
+                    database,
+                    collection,
+                    stage_count,
+                    result,
+                } => {
+                    self.set_tab_agg_running(&connection_name, &database, &collection, false);
+                    match result {
+                        Ok(res) => {
+                            let row_count = res.documents.len();
+                            let cols = DocumentRow::extract_columns(&res.documents);
+                            for (_, tab) in self.state.dock_state.iter_all_tabs_mut() {
+                                if tab.selected_user.is_none()
+                                    && tab.connection_name == connection_name
+                                    && tab.database == database
+                                    && tab.collection == collection
+                                {
+                                    tab.agg_error = None;
+                                    tab.agg_elapsed_ms = Some(res.elapsed_ms);
+                                    tab.agg_cached_columns = cols.clone();
+                                    tab.agg_results = Some(res.documents.clone());
+                                }
+                            }
+                            self.state.bottom_panel.push_log(
+                                LogLevel::Success,
+                                "Aggregation",
+                                format!(
+                                    "Aggregation on {database}.{collection} ({stage_count} stage(s)) returned {row_count} doc(s) in {:.1} ms",
+                                    res.elapsed_ms
+                                ),
+                            );
+                        }
+                        Err(err) => {
+                            for (_, tab) in self.state.dock_state.iter_all_tabs_mut() {
+                                if tab.selected_user.is_none()
+                                    && tab.connection_name == connection_name
+                                    && tab.database == database
+                                    && tab.collection == collection
+                                {
+                                    tab.agg_error = Some(err.clone());
+                                }
+                            }
+                            self.state.bottom_panel.push_log(
+                                LogLevel::Error,
+                                "Aggregation",
+                                format!("Aggregation failed on {database}.{collection}: {err}"),
+                            );
+                        }
+                    }
+                }
+                AppEvent::OpenCreateIndexModal {
+                    connection_name,
+                    database,
+                    collection,
+                } => {
+                    self.state.create_index_conn_name = connection_name;
+                    self.state.create_index_db = database;
+                    self.state.create_index_coll = collection;
+                    self.state.new_index_keys = "{\n  \"email\": 1\n}".to_string();
+                    self.state.new_index_name.clear();
+                    self.state.new_index_unique = false;
+                    self.state.new_index_sparse = false;
+                    self.state.new_index_background = false;
+                    self.state.show_create_index_modal = true;
+                }
+                AppEvent::CreateIndex {
+                    connection_name,
+                    database,
+                    collection,
+                    request,
+                } => {
+                    let keys_doc =
+                        match IndexService::validate_create_index(&database, &collection, &request)
+                        {
+                            Ok(doc) => doc,
+                            Err(err) => {
+                                self.state.bottom_panel.push_log(
+                                    LogLevel::Error,
+                                    "IndexService",
+                                    format!("Invalid index request: {err}"),
+                                );
+                                continue;
+                            }
+                        };
+
+                    if let Some(target) = self.connection_target_by_name(&connection_name) {
+                        if target.is_connected {
+                            self.state.bottom_panel.push_log(
+                                LogLevel::Info,
+                                "IndexService",
+                                format!("Creating index on {database}.{collection}..."),
+                            );
+
+                            let tx = self.bg_tx.clone();
+                            let ctx_clone = ctx.clone();
+                            self.runtime.spawn(async move {
+                                let result = match resolve_effective_uri(
+                                    target.id,
+                                    target.uri,
+                                    target.username,
+                                    target.has_saved_password,
+                                )
+                                .await
+                                {
+                                    Ok(effective_uri) => IndexService::create_index(
+                                        &effective_uri,
+                                        &database,
+                                        &collection,
+                                        &request,
+                                        DEFAULT_CONNECT_TIMEOUT,
+                                    )
+                                    .await
+                                    .map_err(|err| err.to_string()),
+                                    Err(err) => Err(err),
+                                };
+
+                                // INTENTIONAL: receiver is dropped only on application shutdown.
+                                let _ = tx.send(AppEvent::IndexesUpdated {
+                                    connection_name: target.name,
+                                    database,
+                                    collection,
+                                    message: "Created index".to_string(),
+                                    result,
+                                });
+                                ctx_clone.request_repaint();
+                            });
+                            continue;
+                        }
+                    }
+
+                    // Disconnected / mock fallback
+                    let idx_name = request
+                        .name
+                        .as_deref()
+                        .map(str::trim)
+                        .filter(|s| !s.is_empty())
+                        .map(str::to_string)
+                        .unwrap_or_else(|| {
+                            keys_doc
+                                .iter()
+                                .map(|(k, v)| format!("{k}_{v}"))
+                                .collect::<Vec<_>>()
+                                .join("_")
+                        });
+                    let index_type = if keys_doc
+                        .values()
+                        .any(|v| matches!(v, Bson::String(s) if s == "text"))
+                    {
+                        "Text".to_string()
+                    } else if keys_doc
+                        .values()
+                        .any(|v| matches!(v, Bson::String(s) if s == "2dsphere" || s == "2d"))
+                    {
+                        "2dsphere".to_string()
+                    } else if keys_doc
+                        .values()
+                        .any(|v| matches!(v, Bson::String(s) if s == "hashed"))
+                    {
+                        "Hashed".to_string()
+                    } else if keys_doc.len() > 1 {
+                        "Compound".to_string()
+                    } else {
+                        "B-Tree".to_string()
+                    };
+
+                    if let Some(coll) = self.state.find_collection_by_conn_mut(
+                        &connection_name,
+                        &database,
+                        &collection,
+                    ) {
+                        coll.indexes.push(IndexInfo {
+                            name: idx_name.clone(),
+                            keys: format!("{}", Bson::Document(keys_doc)),
+                            index_type,
+                            unique: request.unique,
+                            size_kb: 8.0,
+                        });
+                        coll.stats.index_count = coll.indexes.len();
+                    }
+                    self.state.bottom_panel.push_log(
+                        LogLevel::Success,
+                        "IndexService",
+                        format!(
+                            "Created index '{idx_name}' on {database}.{collection} (in-memory)"
+                        ),
+                    );
+                }
+                AppEvent::RequestDropIndex {
+                    connection_name,
+                    database,
+                    collection,
+                    index_name,
+                } => {
+                    if collection.trim().starts_with("system.") {
+                        self.state.bottom_panel.push_log(
+                            LogLevel::Error,
+                            "IndexService",
+                            format!("Cannot drop indexes on protected system collection '{collection}'."),
+                        );
+                        continue;
+                    }
+                    if let Err(err) = IndexService::validate_drop_index(&index_name) {
+                        self.state.bottom_panel.push_log(
+                            LogLevel::Error,
+                            "IndexService",
+                            err.to_string(),
+                        );
+                        continue;
+                    }
+                    self.state.pending_drop_index = Some(PendingDropIndex {
+                        connection_name,
+                        database,
+                        collection,
+                        index_name,
+                    });
+                }
+                AppEvent::ConfirmDropIndex {
+                    connection_name,
+                    database,
+                    collection,
+                    index_name,
+                } => {
+                    if collection.trim().starts_with("system.") {
+                        self.state.bottom_panel.push_log(
+                            LogLevel::Error,
+                            "IndexService",
+                            format!("Cannot drop indexes on protected system collection '{collection}'."),
+                        );
+                        continue;
+                    }
+                    if let Err(err) = IndexService::validate_drop_index(&index_name) {
+                        self.state.bottom_panel.push_log(
+                            LogLevel::Error,
+                            "IndexService",
+                            err.to_string(),
+                        );
+                        continue;
+                    }
+
+                    if let Some(target) = self.connection_target_by_name(&connection_name) {
+                        if target.is_connected {
+                            self.state.bottom_panel.push_log(
+                                LogLevel::Info,
+                                "IndexService",
+                                format!(
+                                    "Dropping index '{index_name}' on {database}.{collection}..."
+                                ),
+                            );
+
+                            let tx = self.bg_tx.clone();
+                            let ctx_clone = ctx.clone();
+                            let idx_clone = index_name.clone();
+                            self.runtime.spawn(async move {
+                                let result = match resolve_effective_uri(
+                                    target.id,
+                                    target.uri,
+                                    target.username,
+                                    target.has_saved_password,
+                                )
+                                .await
+                                {
+                                    Ok(effective_uri) => IndexService::drop_index(
+                                        &effective_uri,
+                                        &database,
+                                        &collection,
+                                        &idx_clone,
+                                        DEFAULT_CONNECT_TIMEOUT,
+                                    )
+                                    .await
+                                    .map_err(|err| err.to_string()),
+                                    Err(err) => Err(err),
+                                };
+
+                                // INTENTIONAL: receiver is dropped only on application shutdown.
+                                let _ = tx.send(AppEvent::IndexesUpdated {
+                                    connection_name: target.name,
+                                    database,
+                                    collection,
+                                    message: format!("Dropped index '{idx_clone}'"),
+                                    result,
+                                });
+                                ctx_clone.request_repaint();
+                            });
+                            continue;
+                        }
+                    }
+
+                    // Disconnected / mock fallback
+                    if let Some(coll) = self.state.find_collection_by_conn_mut(
+                        &connection_name,
+                        &database,
+                        &collection,
+                    ) {
+                        coll.indexes.retain(|idx| idx.name != index_name);
+                        coll.stats.index_count = coll.indexes.len();
+                    }
+                    self.state.bottom_panel.push_log(
+                        LogLevel::Success,
+                        "IndexService",
+                        format!(
+                            "Dropped index '{index_name}' from {database}.{collection} (in-memory)"
+                        ),
+                    );
+                }
+                AppEvent::IndexesUpdated {
+                    connection_name,
+                    database,
+                    collection,
+                    message,
+                    result,
+                } => {
+                    match result {
+                        Ok(indexes) => {
+                            let count = indexes.len();
+                            if let Some(coll) = self.state.find_collection_by_conn_mut(
+                                &connection_name,
+                                &database,
+                                &collection,
+                            ) {
+                                coll.indexes = indexes;
+                                coll.stats.index_count = count;
+                            }
+                            self.spawn_save_profiles_task(ctx);
+                            self.state.bottom_panel.push_log(
+                            LogLevel::Success,
+                            "IndexService",
+                            format!("{message} on {database}.{collection} ({count} index(es) total)"),
+                        );
+                        }
+                        Err(err) => {
+                            self.state.bottom_panel.push_log(
+                                LogLevel::Error,
+                                "IndexService",
+                                format!("{message} on {database}.{collection} failed: {err}"),
+                            );
+                        }
+                    }
+                }
+                AppEvent::AnalyzeCollectionSchema {
+                    connection_name,
+                    database,
+                    collection,
+                    sample_size,
+                } => {
+                    self.set_tab_schema_analyzing(&connection_name, &database, &collection, true);
+
+                    if let Some(target) = self.connection_target_by_name(&connection_name) {
+                        if target.is_connected {
+                            self.state.bottom_panel.push_log(
+                                LogLevel::Info,
+                                "SchemaAnalyzer",
+                                format!(
+                                    "Analyzing schema for {database}.{collection} (sample size: {sample_size})..."
+                                ),
+                            );
+
+                            let tx = self.bg_tx.clone();
+                            let ctx_clone = ctx.clone();
+                            self.runtime.spawn(async move {
+                                let result = match resolve_effective_uri(
+                                    target.id,
+                                    target.uri,
+                                    target.username,
+                                    target.has_saved_password,
+                                )
+                                .await
+                                {
+                                    Ok(effective_uri) => SchemaAnalyzer::analyze_collection(
+                                        &effective_uri,
+                                        &database,
+                                        &collection,
+                                        sample_size,
+                                        DEFAULT_CONNECT_TIMEOUT,
+                                    )
+                                    .await
+                                    .map_err(|err| err.to_string()),
+                                    Err(err) => Err(err),
+                                };
+
+                                // INTENTIONAL: receiver is dropped only on application shutdown.
+                                let _ = tx.send(AppEvent::SchemaAnalyzed {
+                                    connection_name: target.name,
+                                    database,
+                                    collection,
+                                    sample_size,
+                                    result,
+                                });
+                                ctx_clone.request_repaint();
+                            });
+                            continue;
+                        }
+                    }
+
+                    // Disconnected / mock fallback
+                    let fields_opt = self
+                        .state
+                        .find_collection_by_conn(&connection_name, &database, &collection)
+                        .map(|coll| {
+                            let bson_docs: Vec<Document> = coll
+                                .documents
+                                .iter()
+                                .take(sample_size.clamp(10, 2000))
+                                .filter_map(|row| {
+                                    DocumentRow::parse_json_to_bson_doc(&row.to_pretty_json()).ok()
+                                })
+                                .collect();
+                            SchemaAnalyzer::analyze_bson_docs(&bson_docs)
+                        });
+
+                    self.set_tab_schema_analyzing(&connection_name, &database, &collection, false);
+                    if let Some(fields) = fields_opt {
+                        let field_count = fields.len();
+                        if let Some(coll) = self.state.find_collection_by_conn_mut(
+                            &connection_name,
+                            &database,
+                            &collection,
+                        ) {
+                            coll.schema_fields = fields;
+                        }
+                        self.state.bottom_panel.push_log(
+                            LogLevel::Success,
+                            "SchemaAnalyzer",
+                            format!(
+                                "Analyzed schema for {database}.{collection} ({field_count} field(s), in-memory)"
+                            ),
+                        );
+                    } else {
+                        self.state.bottom_panel.push_log(
+                            LogLevel::Error,
+                            "SchemaAnalyzer",
+                            format!("Collection {database}.{collection} not found."),
+                        );
+                    }
+                }
+                AppEvent::SchemaAnalyzed {
+                    connection_name,
+                    database,
+                    collection,
+                    sample_size,
+                    result,
+                } => {
+                    self.set_tab_schema_analyzing(&connection_name, &database, &collection, false);
+                    match result {
+                        Ok(fields) => {
+                            let field_count = fields.len();
+                            if let Some(coll) = self.state.find_collection_by_conn_mut(
+                                &connection_name,
+                                &database,
+                                &collection,
+                            ) {
+                                coll.schema_fields = fields;
+                            }
+                            self.state.bottom_panel.push_log(
+                                LogLevel::Success,
+                                "SchemaAnalyzer",
+                                format!(
+                                    "Analyzed schema for {database}.{collection} ({field_count} field(s) from sample size {sample_size})"
+                                ),
+                            );
+                        }
+                        Err(err) => {
+                            self.state.bottom_panel.push_log(
+                                LogLevel::Error,
+                                "SchemaAnalyzer",
+                                format!(
+                                    "Schema analysis failed for {database}.{collection}: {err}"
+                                ),
+                            );
+                        }
+                    }
+                }
+                AppEvent::OpenSaveQueryModal {
+                    connection_name,
+                    database,
+                    collection,
+                    filter,
+                    projection,
+                    sort,
+                    limit,
+                } => {
+                    self.state.save_query_name = format!("{collection}_query");
+                    self.state.save_query_conn = connection_name;
+                    self.state.save_query_db = database;
+                    self.state.save_query_coll = collection;
+                    self.state.save_query_filter = filter;
+                    self.state.save_query_projection = projection;
+                    self.state.save_query_sort = sort;
+                    self.state.save_query_limit = limit.clamp(1, 500);
+                    self.state.show_save_query_modal = true;
+                }
+                AppEvent::SaveQuery { query } => {
+                    if query.name.trim().is_empty() {
+                        self.state.bottom_panel.push_log(
+                            LogLevel::Error,
+                            "QueryStore",
+                            "Saved query name must not be empty.",
+                        );
+                        continue;
+                    }
+                    let qname = query.name.clone();
+                    self.state.saved_queries.push(query);
+                    self.spawn_save_query_store_task(ctx);
+                    self.state.bottom_panel.push_log(
+                        LogLevel::Success,
+                        "QueryStore",
+                        format!("Saved query '{qname}'"),
+                    );
+                }
+                AppEvent::DeleteSavedQuery { id } => {
+                    let before = self.state.saved_queries.len();
+                    self.state.saved_queries.retain(|q| q.id != id);
+                    if self.state.saved_queries.len() < before {
+                        self.spawn_save_query_store_task(ctx);
+                        self.state.bottom_panel.push_log(
+                            LogLevel::Info,
+                            "QueryStore",
+                            "Deleted saved query",
+                        );
+                    }
+                }
+                AppEvent::RunSavedQuery { query } => {
+                    self.state.open_or_focus_collection(
+                        &query.connection_name,
+                        &query.database,
+                        &query.collection,
+                    );
+                    let limit = query.limit.clamp(1, 500);
+                    for (_, tab) in self.state.dock_state.iter_all_tabs_mut() {
+                        if tab.selected_user.is_none()
+                            && tab.connection_name == query.connection_name
+                            && tab.database == query.database
+                            && tab.collection == query.collection
+                        {
+                            tab.filter_query.clone_from(&query.filter);
+                            tab.projection_query.clone_from(&query.projection);
+                            tab.sort_query.clone_from(&query.sort);
+                            tab.skip = 0;
+                            tab.limit = limit;
+                            tab.active_subtab = CollectionSubTab::Documents;
+                        }
+                    }
+
+                    self.dispatch_live_query(
+                        ctx,
+                        query.connection_name,
+                        query.database,
+                        query.collection,
+                        DocumentQueryParams {
+                            filter: query.filter,
+                            projection: query.projection,
+                            sort: query.sort,
+                            skip: 0,
+                            limit,
+                        },
+                    );
+                }
+                AppEvent::RunHistoryQuery { command } => {
+                    if let Some((parsed_db, coll, filter)) = parse_history_query(&command) {
+                        let fallback_tab_target = self
+                            .state
+                            .dock_state
+                            .iter_all_nodes()
+                            .filter_map(|(_, node)| node.tabs())
+                            .flatten()
+                            .find(|t| t.selected_user.is_none())
+                            .map(|t| (t.connection_name.clone(), t.database.clone()));
+
+                        let db = parsed_db
+                            .or_else(|| fallback_tab_target.as_ref().map(|(_, d)| d.clone()))
+                            .unwrap_or_else(|| self.state.shell_current_db.clone());
+
+                        let conn_name = fallback_tab_target
+                            .and_then(|(c, _)| {
+                                self.state
+                                    .find_collection_by_conn(&c, &db, &coll)
+                                    .map(|_| c)
+                            })
+                            .or_else(|| {
+                                self.state
+                                    .connections
+                                    .get(self.state.active_connection_idx)
+                                    .map(|c| c.name.clone())
+                            })
+                            .unwrap_or_else(|| "MongoDB Local".to_string());
+
+                        self.state.open_or_focus_collection(&conn_name, &db, &coll);
+
+                        for (_, tab) in self.state.dock_state.iter_all_tabs_mut() {
+                            if tab.selected_user.is_none()
+                                && tab.connection_name == conn_name
+                                && tab.database == db
+                                && tab.collection == coll
+                            {
+                                tab.filter_query.clone_from(&filter);
+                                tab.skip = 0;
+                                tab.active_subtab = CollectionSubTab::Documents;
+                            }
+                        }
+
+                        self.requery_open_collection(ctx, &conn_name, &db, &coll);
+                    } else {
+                        self.state.bottom_panel.terminal_input = command;
+                        self.state.bottom_panel.active_tab = BottomPanelTab::Terminal;
+                        self.state.bottom_panel.push_log(
+                            LogLevel::Info,
+                            "QueryHistory",
+                            "Loaded history command into Terminal input.",
+                        );
+                    }
+                }
+                AppEvent::ExecuteShellCommand { command } => {
+                    let trimmed = command.trim().to_string();
+                    if trimmed.is_empty() {
+                        continue;
+                    }
+                    self.state.bottom_panel.terminal_history.push(format!(
+                        "mongosh [{}]> {trimmed}",
+                        self.state.shell_current_db
+                    ));
+
+                    let new_current_db = ShellService::extract_use_db(&trimmed);
+                    let active_target = self
+                        .connection_target_by_index(self.state.active_connection_idx)
+                        .filter(|t| t.is_connected);
+
+                    if let Some(target) = active_target {
+                        let current_db = self.state.shell_current_db.clone();
+                        let tx = self.bg_tx.clone();
+                        let ctx_clone = ctx.clone();
+                        self.runtime.spawn(async move {
+                            let result = match resolve_effective_uri(
+                                target.id,
+                                target.uri,
+                                target.username,
+                                target.has_saved_password,
+                            )
+                            .await
+                            {
+                                Ok(effective_uri) => ShellService::execute_command(
+                                    &effective_uri,
+                                    &current_db,
+                                    &trimmed,
+                                    DEFAULT_CONNECT_TIMEOUT,
+                                )
+                                .await
+                                .map_err(|err| err.to_string()),
+                                Err(err) => Err(err),
+                            };
+
+                            // INTENTIONAL: receiver is dropped only on application shutdown.
+                            let _ = tx.send(AppEvent::ShellCommandCompleted {
+                                command: trimmed,
+                                new_current_db,
+                                result,
+                            });
+                            ctx_clone.request_repaint();
+                        });
+                        continue;
+                    }
+
+                    // Disconnected / mock fallback
+                    let databases = self
+                        .state
+                        .connections
+                        .get(self.state.active_connection_idx)
+                        .map(|c| c.databases.as_slice())
+                        .unwrap_or(&[]);
+
+                    match ShellService::execute_mock_command(
+                        &self.state.shell_current_db,
+                        databases,
+                        &trimmed,
+                    ) {
+                        Ok(output) => {
+                            if let Some(db) = new_current_db {
+                                self.state.shell_current_db = db;
+                            }
+                            self.state.bottom_panel.push_terminal_lines(&output);
+                        }
+                        Err(err) => {
+                            self.state
+                                .bottom_panel
+                                .push_terminal_lines(&format!("Error: {err}"));
+                        }
+                    }
+                }
+                AppEvent::ShellCommandCompleted {
+                    command: _,
+                    new_current_db,
+                    result,
+                } => match result {
+                    Ok(output) => {
+                        if let Some(db) = new_current_db {
+                            self.state.shell_current_db = db;
+                        }
+                        self.state.bottom_panel.push_terminal_lines(&output);
+                    }
+                    Err(err) => {
+                        self.state
+                            .bottom_panel
+                            .push_terminal_lines(&format!("Error: {err}"));
+                    }
+                },
+                AppEvent::ExportCollectionData {
+                    connection_name,
+                    database,
+                    collection,
+                    filter,
+                    format,
+                    path,
+                } => {
+                    if let Some(target) = self.connection_target_by_name(&connection_name) {
+                        if target.is_connected {
+                            self.state.is_transferring = true;
+                            self.state.bottom_panel.push_log(
+                                LogLevel::Info,
+                                "TransferService",
+                                format!(
+                                    "Exporting {database}.{collection} as {} to '{}'...",
+                                    format.label(),
+                                    path.display()
+                                ),
+                            );
+
+                            let tx = self.bg_tx.clone();
+                            let ctx_clone = ctx.clone();
+                            self.runtime.spawn(async move {
+                                let result = match resolve_effective_uri(
+                                    target.id,
+                                    target.uri,
+                                    target.username,
+                                    target.has_saved_password,
+                                )
+                                .await
+                                {
+                                    Ok(effective_uri) => TransferService::export_collection(
+                                        &effective_uri,
+                                        &database,
+                                        &collection,
+                                        &filter,
+                                        format,
+                                        path,
+                                        DEFAULT_CONNECT_TIMEOUT,
+                                    )
+                                    .await
+                                    .map_err(|err| err.to_string()),
+                                    Err(err) => Err(err),
+                                };
+
+                                // INTENTIONAL: receiver is dropped only on application shutdown.
+                                let _ = tx.send(AppEvent::ExportCompleted {
+                                    message: format!("Export {database}.{collection}"),
+                                    result,
+                                });
+                                ctx_clone.request_repaint();
+                            });
+                            continue;
+                        }
+                    }
+
+                    // Disconnected / mock fallback (run file I/O on Tokio blocking pool)
+                    let Some(coll) = self.state.find_collection_by_conn(
+                        &connection_name,
+                        &database,
+                        &collection,
+                    ) else {
+                        self.state.bottom_panel.push_log(
+                            LogLevel::Error,
+                            "TransferService",
+                            format!("Collection {database}.{collection} not found."),
+                        );
+                        continue;
+                    };
+
+                    let filtered =
+                        DocumentService::filter_documents(&coll.documents, &filter, usize::MAX);
+                    self.state.is_transferring = true;
+                    let tx = self.bg_tx.clone();
+                    let ctx_clone = ctx.clone();
+                    self.runtime.spawn(async move {
+                        let start = Instant::now();
+                        let path_clone = path.clone();
+                        let res = tokio::task::spawn_blocking(move || {
+                            TransferService::export_documents_to_path(
+                                &filtered,
+                                format,
+                                &path_clone,
+                            )
+                        })
+                        .await
+                        .map_err(|err| err.to_string())
+                        .and_then(|inner| inner.map_err(|err| err.to_string()));
+
+                        let result = res.map(|count| ExportStats {
+                            count,
+                            path,
+                            elapsed_ms: start.elapsed().as_secs_f64() * 1000.0,
+                        });
+
+                        // INTENTIONAL: receiver is dropped only on application shutdown.
+                        let _ = tx.send(AppEvent::ExportCompleted {
+                            message: format!("Export {database}.{collection} (in-memory)"),
+                            result,
+                        });
+                        ctx_clone.request_repaint();
+                    });
+                }
+                AppEvent::ExportCompleted { message, result } => {
+                    self.state.is_transferring = false;
+                    match result {
+                        Ok(stats) => {
+                            self.state.bottom_panel.push_log(
+                                LogLevel::Success,
+                                "TransferService",
+                                format!(
+                                    "{message} completed: {} document(s) written to '{}' in {:.1} ms",
+                                    stats.count,
+                                    stats.path.display(),
+                                    stats.elapsed_ms
+                                ),
+                            );
+                        }
+                        Err(err) => {
+                            self.state.bottom_panel.push_log(
+                                LogLevel::Error,
+                                "TransferService",
+                                format!("{message} failed: {err}"),
+                            );
+                        }
+                    }
+                }
+                AppEvent::ImportCollectionData {
+                    connection_name,
+                    database,
+                    collection,
+                    format,
+                    path,
+                } => {
+                    if collection.trim().starts_with("system.") {
+                        self.state.bottom_panel.push_log(
+                            LogLevel::Error,
+                            "TransferService",
+                            format!(
+                                "Cannot import into protected system collection '{collection}'."
+                            ),
+                        );
+                        continue;
+                    }
+
+                    let Some(target) = self
+                        .connection_target_by_name(&connection_name)
+                        .filter(|t| t.is_connected)
+                    else {
+                        self.state.bottom_panel.push_log(
+                            LogLevel::Error,
+                            "TransferService",
+                            "Import requires an active MongoDB connection.",
+                        );
+                        continue;
+                    };
+
+                    self.state.is_transferring = true;
+                    self.state.bottom_panel.push_log(
+                        LogLevel::Info,
+                        "TransferService",
+                        format!(
+                            "Importing {} into {database}.{collection} from '{}'...",
+                            format.label(),
+                            path.display()
+                        ),
+                    );
+
+                    let tx = self.bg_tx.clone();
+                    let ctx_clone = ctx.clone();
+                    self.runtime.spawn(async move {
+                        let result = match resolve_effective_uri(
+                            target.id,
+                            target.uri,
+                            target.username,
+                            target.has_saved_password,
+                        )
+                        .await
+                        {
+                            Ok(effective_uri) => TransferService::import_collection(
+                                &effective_uri,
+                                &database,
+                                &collection,
+                                format,
+                                path,
+                                DEFAULT_CONNECT_TIMEOUT,
+                            )
+                            .await
+                            .map_err(|err| err.to_string()),
+                            Err(err) => Err(err),
+                        };
+
+                        // INTENTIONAL: receiver is dropped only on application shutdown.
+                        let _ = tx.send(AppEvent::ImportCompleted {
+                            connection_name: target.name,
+                            database,
+                            collection,
+                            result,
+                        });
+                        ctx_clone.request_repaint();
+                    });
+                }
+                AppEvent::ImportCompleted {
+                    connection_name,
+                    database,
+                    collection,
+                    result,
+                } => {
+                    self.state.is_transferring = false;
+                    match result {
+                        Ok(stats) => {
+                            if let Some(coll) = self.state.find_collection_by_conn_mut(
+                                &connection_name,
+                                &database,
+                                &collection,
+                            ) {
+                                coll.stats.document_count = coll
+                                    .stats
+                                    .document_count
+                                    .saturating_add(stats.inserted_count);
+                            }
+                            self.state.bottom_panel.push_log(
+                                LogLevel::Success,
+                                "TransferService",
+                                format!(
+                                    "Imported {} document(s) into {database}.{collection} from '{}' in {:.1} ms",
+                                    stats.inserted_count,
+                                    stats.path.display(),
+                                    stats.elapsed_ms
+                                ),
+                            );
+                            if self
+                                .tab_query_params(&connection_name, &database, &collection)
+                                .is_some()
+                            {
+                                self.requery_open_collection(
+                                    ctx,
+                                    &connection_name,
+                                    &database,
+                                    &collection,
+                                );
+                            }
+                            self.spawn_save_profiles_task(ctx);
+                        }
+                        Err(err) => {
+                            self.state.bottom_panel.push_log(
+                                LogLevel::Error,
+                                "TransferService",
+                                format!("Import into {database}.{collection} failed: {err}"),
+                            );
+                        }
+                    }
+                }
                 AppEvent::BackgroundTaskError { source, message } => {
                     self.state
                         .bottom_panel
@@ -2395,7 +3640,9 @@ impl MongoStudioApp {
                                 self.state.bottom_panel.push_log(
                                     LogLevel::Error,
                                     "Keyring",
-                                    format!("Failed to load saved password from OS Keychain: {err}"),
+                                    format!(
+                                        "Failed to load saved password from OS Keychain: {err}"
+                                    ),
                                 );
                             }
                         }
@@ -2433,7 +3680,9 @@ impl MongoStudioApp {
                                 self.state.bottom_panel.push_log(
                                     LogLevel::Error,
                                     "Keyring",
-                                    format!("Failed to load saved password from OS Keychain: {err}"),
+                                    format!(
+                                        "Failed to load saved password from OS Keychain: {err}"
+                                    ),
                                 );
                                 let needs_prompt =
                                     self.state.connections.get_mut(index).is_some_and(|conn| {
@@ -2744,10 +3993,12 @@ impl MongoStudioApp {
                     } else {
                         let query_cmd =
                             format!("db.getSiblingDB(\"{database}\").{collection}.find({filter})");
-                        self.state.bottom_panel.query_history.push(query_cmd.clone());
-                        self.state
-                            .bottom_panel
-                            .push_log(LogLevel::Success, "QueryRunner", query_cmd);
+                        self.push_query_history(ctx, query_cmd.clone());
+                        self.state.bottom_panel.push_log(
+                            LogLevel::Success,
+                            "QueryRunner",
+                            query_cmd,
+                        );
                     }
                 }
                 AppEvent::InsertMockDocument {
@@ -2813,6 +4064,14 @@ impl eframe::App for MongoStudioApp {
         }
         if let Err(err) = ConnectionManager::save_profiles(&self.state.connections) {
             tracing::warn!(error = %err, "failed to save connection profiles on shutdown");
+        }
+        let mut store = QueryStore {
+            saved_queries: self.state.saved_queries.clone(),
+            query_history: self.state.bottom_panel.query_history.clone(),
+        };
+        store.cap_history();
+        if let Err(err) = store.save() {
+            tracing::warn!(error = %err, "failed to save query store on shutdown");
         }
     }
 }

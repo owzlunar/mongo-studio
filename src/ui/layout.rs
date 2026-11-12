@@ -7,11 +7,13 @@ use egui_phosphor::regular;
 
 use crate::core::events::AppEvent;
 use crate::core::state::AppState;
-use crate::models::{ConnectionConfig, DocumentRow, UserRole};
+use crate::database::{CreateIndexRequest, IndexService};
+use crate::models::{ConnectionConfig, DocumentRow, SavedQuery, UserRole};
 use crate::theme::{ThemeMode, ThemePalette};
 use crate::ui::activity_bar::render_activity_bar;
 use crate::ui::command_palette::render_command_palette;
 use crate::ui::components::buttons::{primary_button, secondary_button};
+use crate::ui::components::syntax_highlight::json_layouter;
 use crate::ui::sidebar::render_sidebar;
 use crate::ui::status_bar::render_status_bar;
 use crate::ui::tab_bar::CollectionTabViewer;
@@ -97,10 +99,7 @@ fn render_top_menu_bar(
                 let edit_resp = ui.menu_button("Edit", |ui| {
                     if menu_item(
                         ui,
-                        &format!(
-                            "{} Command Palette... (Ctrl+P)",
-                            regular::TERMINAL_WINDOW
-                        ),
+                        &format!("{} Command Palette... (Ctrl+P)", regular::TERMINAL_WINDOW),
                     ) {
                         events.push(AppEvent::ToggleCommandPalette);
                         ui.close_menu();
@@ -265,7 +264,7 @@ fn render_bottom_panel(
                 }
                 BottomPanelTab::Terminal => {
                     ScrollArea::vertical()
-                        .max_height(ui.available_height() - 30.0)
+                        .max_height((ui.available_height() - 30.0).max(40.0))
                         .stick_to_bottom(true)
                         .show(ui, |ui| {
                             for line in &state.bottom_panel.terminal_history {
@@ -275,7 +274,7 @@ fn render_bottom_panel(
 
                     ui.horizontal(|ui| {
                         ui.label(
-                            RichText::new("mongosh>")
+                            RichText::new(format!("mongosh [{}]>", state.shell_current_db))
                                 .monospace()
                                 .strong()
                                 .color(palette.success_color),
@@ -283,22 +282,15 @@ fn render_bottom_panel(
                         let resp = ui.add(
                             TextEdit::singleline(&mut state.bottom_panel.terminal_input)
                                 .font(egui::FontId::monospace(12.0))
-                                .hint_text("Enter shell command...")
+                                .hint_text("Enter shell command (type 'help')...")
                                 .margin(Margin::symmetric(6.0, 4.0))
                                 .min_size(Vec2::new(200.0, 24.0))
                                 .desired_width(f32::INFINITY),
                         );
                         if resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-                            let cmd = state.bottom_panel.terminal_input.trim();
+                            let cmd = state.bottom_panel.terminal_input.trim().to_string();
                             if !cmd.is_empty() {
-                                state
-                                    .bottom_panel
-                                    .terminal_history
-                                    .push(format!("mongosh> {cmd}"));
-                                state.bottom_panel.terminal_history.push(
-                                    "{ \"ok\": 1, \"note\": \"Executed in Mongo Studio shell\" }"
-                                        .to_string(),
-                                );
+                                events.push(AppEvent::ExecuteShellCommand { command: cmd });
                                 state.bottom_panel.terminal_input.clear();
                             }
                             resp.request_focus();
@@ -309,12 +301,27 @@ fn render_bottom_panel(
                     ScrollArea::vertical()
                         .auto_shrink([false, false])
                         .show(ui, |ui| {
-                            for (i, q) in state.bottom_panel.query_history.iter().enumerate() {
+                            if state.bottom_panel.query_history.is_empty() {
                                 ui.label(
-                                    RichText::new(format!("{}. {q}", i + 1))
-                                        .monospace()
-                                        .size(12.0),
+                                    RichText::new("No queries executed yet.")
+                                        .size(12.0)
+                                        .color(palette.muted_text),
                                 );
+                            }
+                            for (i, q) in state.bottom_panel.query_history.iter().enumerate() {
+                                if ui
+                                    .selectable_label(
+                                        false,
+                                        RichText::new(format!("{}. {q}", i + 1))
+                                            .monospace()
+                                            .size(12.0),
+                                    )
+                                    .on_hover_cursor(CursorIcon::PointingHand)
+                                    .on_hover_text("Click to run in active collection or open tab")
+                                    .clicked()
+                                {
+                                    events.push(AppEvent::RunHistoryQuery { command: q.clone() });
+                                }
                             }
                         });
                 }
@@ -414,7 +421,8 @@ fn render_modals(
                         .desired_width(f32::INFINITY),
                 );
                 if state.new_conn_name.chars().count() > ConnectionConfig::MAX_PROFILE_NAME_LEN {
-                    state.new_conn_name = ConnectionConfig::clamp_profile_name(&state.new_conn_name);
+                    state.new_conn_name =
+                        ConnectionConfig::clamp_profile_name(&state.new_conn_name);
                 }
                 ui.add_space(6.0);
 
@@ -463,13 +471,10 @@ fn render_modals(
                 ui.add_space(6.0);
                 if state.is_testing_connection {
                     ui.label(
-                        RichText::new(format!(
-                            "{} Testing connection...",
-                            regular::CIRCLE_HALF
-                        ))
-                        .color(palette.warning_color)
-                        .monospace()
-                        .size(11.5),
+                        RichText::new(format!("{} Testing connection...", regular::CIRCLE_HALF))
+                            .color(palette.warning_color)
+                            .monospace()
+                            .size(11.5),
                     );
                 } else if let Some(status) = &state.test_conn_status {
                     match status {
@@ -835,9 +840,11 @@ fn render_modals(
                     .id_source("doc_editor_json_scroll")
                     .max_height(300.0)
                     .show(ui, |ui| {
+                        let mut layouter = json_layouter(12.0);
                         ui.add(
                             TextEdit::multiline(&mut state.doc_editor_json)
                                 .font(egui::FontId::monospace(12.0))
+                                .layouter(&mut layouter)
                                 .desired_width(f32::INFINITY)
                                 .desired_rows(16)
                                 .margin(Margin::same(8.0)),
@@ -858,12 +865,9 @@ fn render_modals(
                 let can_save = match (&parsed_res, id_mismatch_err) {
                     (Ok(_), None) => {
                         ui.label(
-                            RichText::new(format!(
-                                "{} Valid Extended JSON",
-                                regular::CHECK_CIRCLE
-                            ))
-                            .color(palette.success_color)
-                            .size(11.5),
+                            RichText::new(format!("{} Valid Extended JSON", regular::CHECK_CIRCLE))
+                                .color(palette.success_color)
+                                .size(11.5),
                         );
                         true
                     }
@@ -977,6 +981,275 @@ fn render_modals(
 
                     if secondary_button(ui, "Cancel", palette.border_color).clicked() {
                         state.pending_delete_doc = None;
+                    }
+                });
+            });
+    }
+
+    if state.show_create_index_modal {
+        let modal_frame = Frame::window(&ctx.style())
+            .fill(palette.popup_bg)
+            .stroke(Stroke::new(1.5_f32, palette.popup_border))
+            .inner_margin(Margin::same(14.0));
+
+        Window::new("Create MongoDB Index")
+            .collapsible(false)
+            .resizable(false)
+            .frame(modal_frame)
+            .fixed_size([470.0, 340.0])
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .show(ctx, |ui| {
+                ui.label(
+                    RichText::new(format!(
+                        "{} Target: {} / {}.{}",
+                        regular::KEY,
+                        state.create_index_conn_name,
+                        state.create_index_db,
+                        state.create_index_coll
+                    ))
+                    .monospace()
+                    .strong()
+                    .color(palette.accent_color),
+                );
+                ui.add_space(6.0);
+
+                ui.label(RichText::new("Index Key Specification (JSON)").strong());
+                let mut layouter = json_layouter(12.0);
+                ui.add(
+                    TextEdit::multiline(&mut state.new_index_keys)
+                        .font(egui::FontId::monospace(12.0))
+                        .layouter(&mut layouter)
+                        .hint_text("{\"email\": 1}")
+                        .desired_width(f32::INFINITY)
+                        .desired_rows(4)
+                        .margin(Margin::same(8.0)),
+                );
+                ui.add_space(6.0);
+
+                ui.label(RichText::new("Index Name (Optional)").strong());
+                ui.add(
+                    TextEdit::singleline(&mut state.new_index_name)
+                        .hint_text("Auto-generated if empty")
+                        .margin(Margin::symmetric(6.0, 4.0))
+                        .desired_width(f32::INFINITY),
+                );
+                ui.add_space(6.0);
+
+                ui.horizontal(|ui| {
+                    ui.checkbox(&mut state.new_index_unique, "Unique");
+                    ui.checkbox(&mut state.new_index_sparse, "Sparse");
+                    ui.checkbox(&mut state.new_index_background, "Background");
+                });
+                ui.add_space(6.0);
+
+                let request = CreateIndexRequest {
+                    keys_json: state.new_index_keys.clone(),
+                    name: (!state.new_index_name.trim().is_empty())
+                        .then(|| state.new_index_name.trim().to_string()),
+                    unique: state.new_index_unique,
+                    sparse: state.new_index_sparse,
+                    background: state.new_index_background,
+                };
+
+                let validation = IndexService::validate_create_index(
+                    &state.create_index_db,
+                    &state.create_index_coll,
+                    &request,
+                );
+
+                let can_create = match &validation {
+                    Ok(_) => {
+                        ui.label(
+                            RichText::new(format!(
+                                "{} Valid index key specification (1, -1, \"text\", \"2d\", \"2dsphere\", \"hashed\")",
+                                regular::CHECK_CIRCLE
+                            ))
+                            .size(11.5)
+                            .color(palette.success_color),
+                        );
+                        true
+                    }
+                    Err(err) => {
+                        ui.label(
+                            RichText::new(format!("{} {err}", regular::WARNING_CIRCLE))
+                                .size(11.5)
+                                .color(palette.error_color),
+                        );
+                        false
+                    }
+                };
+
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    ui.add_enabled_ui(can_create, |ui| {
+                        if primary_button(
+                            ui,
+                            &format!("{} Create Index", regular::PLUS),
+                            palette.accent_color,
+                        )
+                        .clicked()
+                        {
+                            events.push(AppEvent::CreateIndex {
+                                connection_name: state.create_index_conn_name.clone(),
+                                database: state.create_index_db.clone(),
+                                collection: state.create_index_coll.clone(),
+                                request,
+                            });
+                            state.show_create_index_modal = false;
+                        }
+                    });
+
+                    if secondary_button(ui, "Cancel", palette.border_color).clicked() {
+                        state.show_create_index_modal = false;
+                    }
+                });
+            });
+    }
+
+    if let Some(pending) = state.pending_drop_index.clone() {
+        let modal_frame = Frame::window(&ctx.style())
+            .fill(palette.popup_bg)
+            .stroke(Stroke::new(1.5_f32, palette.error_color))
+            .inner_margin(Margin::same(14.0));
+
+        Window::new("Confirm Drop Index")
+            .collapsible(false)
+            .resizable(false)
+            .frame(modal_frame)
+            .fixed_size([420.0, 165.0])
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .show(ctx, |ui| {
+                ui.label(
+                    RichText::new(format!(
+                        "{} Drop index '{}' from '{}.{}'?",
+                        regular::WARNING,
+                        pending.index_name,
+                        pending.database,
+                        pending.collection
+                    ))
+                    .color(palette.error_color)
+                    .strong()
+                    .size(13.5),
+                );
+                ui.add_space(6.0);
+                ui.label("Dropping an index may affect query performance on this collection.");
+                ui.add_space(12.0);
+
+                ui.horizontal(|ui| {
+                    if primary_button(
+                        ui,
+                        &format!("{} Drop Index", regular::TRASH),
+                        palette.error_color,
+                    )
+                    .clicked()
+                    {
+                        events.push(AppEvent::ConfirmDropIndex {
+                            connection_name: pending.connection_name,
+                            database: pending.database,
+                            collection: pending.collection,
+                            index_name: pending.index_name,
+                        });
+                        state.pending_drop_index = None;
+                    }
+
+                    if secondary_button(ui, "Cancel", palette.border_color).clicked() {
+                        state.pending_drop_index = None;
+                    }
+                });
+            });
+    }
+
+    if state.show_save_query_modal {
+        let modal_frame = Frame::window(&ctx.style())
+            .fill(palette.popup_bg)
+            .stroke(Stroke::new(1.5_f32, palette.popup_border))
+            .inner_margin(Margin::same(14.0));
+
+        Window::new("Save Query")
+            .collapsible(false)
+            .resizable(false)
+            .frame(modal_frame)
+            .fixed_size([450.0, 290.0])
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .show(ctx, |ui| {
+                ui.label(
+                    RichText::new(format!(
+                        "{} Target: {} / {}.{}",
+                        regular::DATABASE,
+                        state.save_query_conn,
+                        state.save_query_db,
+                        state.save_query_coll
+                    ))
+                    .monospace()
+                    .strong()
+                    .color(palette.accent_color),
+                );
+                ui.add_space(6.0);
+
+                ui.label(RichText::new("Query Name").strong());
+                ui.add(
+                    TextEdit::singleline(&mut state.save_query_name)
+                        .hint_text("e.g. Active Orders Last Week")
+                        .margin(Margin::symmetric(6.0, 4.0))
+                        .desired_width(f32::INFINITY),
+                );
+                ui.add_space(8.0);
+
+                Frame::none()
+                    .fill(palette.panel_bg)
+                    .inner_margin(Margin::same(8.0))
+                    .stroke(Stroke::new(1.0_f32, palette.border_color))
+                    .show(ui, |ui| {
+                        ui.label(
+                            RichText::new(format!("Filter:     {}", state.save_query_filter))
+                                .monospace()
+                                .size(11.5),
+                        );
+                        ui.label(
+                            RichText::new(format!("Projection: {}", state.save_query_projection))
+                                .monospace()
+                                .size(11.5),
+                        );
+                        ui.label(
+                            RichText::new(format!("Sort:       {}", state.save_query_sort))
+                                .monospace()
+                                .size(11.5),
+                        );
+                        ui.label(
+                            RichText::new(format!("Limit:      {}", state.save_query_limit))
+                                .monospace()
+                                .size(11.5),
+                        );
+                    });
+
+                ui.add_space(10.0);
+                ui.horizontal(|ui| {
+                    let trimmed_name = state.save_query_name.trim();
+                    ui.add_enabled_ui(!trimmed_name.is_empty(), |ui| {
+                        if primary_button(
+                            ui,
+                            &format!("{} Save", regular::FLOPPY_DISK),
+                            palette.accent_color,
+                        )
+                        .clicked()
+                        {
+                            let query = SavedQuery::new(
+                                trimmed_name,
+                                state.save_query_conn.clone(),
+                                state.save_query_db.clone(),
+                                state.save_query_coll.clone(),
+                                state.save_query_filter.clone(),
+                                state.save_query_projection.clone(),
+                                state.save_query_sort.clone(),
+                                state.save_query_limit,
+                            );
+                            events.push(AppEvent::SaveQuery { query });
+                            state.show_save_query_modal = false;
+                        }
+                    });
+
+                    if secondary_button(ui, "Cancel", palette.border_color).clicked() {
+                        state.show_save_query_modal = false;
                     }
                 });
             });

@@ -110,8 +110,7 @@ impl DatabaseService {
     ) -> AppResult<CollectionInfo> {
         let (trimmed_db, trimmed_coll) = Self::validate_names(db_name, initial_collection)?;
         Self::create_database(uri, trimmed_db, trimmed_coll, timeout).await?;
-        ConnectionClient::introspect_single_collection(uri, trimmed_db, trimmed_coll, timeout)
-            .await
+        ConnectionClient::introspect_single_collection(uri, trimmed_db, trimmed_coll, timeout).await
     }
 
     /// Synchronously creates a new database and initial collection on a live MongoDB server.

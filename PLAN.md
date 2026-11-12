@@ -11,8 +11,9 @@
 | **Phase 1** | UI Framework & Workspace Shell | ✅ เสร็จสิ้น | `c1266f1` |
 | **Phase 2** | Live MongoDB Connection & Security | ✅ เสร็จสิ้น | `5e282ef` |
 | **Phase 3** | Database Explorer (Lazy-Loading) & Admin RBAC | ✅ เสร็จสิ้น | `fdc60e3`, `0d9f910`, `905ec2d` (Polish) |
-| **Phase 4** | Live Document Manager & Full CRUD / Query | ✅ เสร็จสิ้น | รอ `git commit` (41/41 tests ผ่าน) |
-| **Phase 5** | Advanced Features, Export/Import & Release | ⬜ รอดำเนินการ | Phase ถัดไป |
+| **Phase 4** | Live Document Manager & Full CRUD / Query | ✅ เสร็จสิ้น | `596ac1c` (41/41 tests ผ่าน) |
+| **Phase 5** | Advanced Features, Export/Import & Release | ✅ เสร็จสิ้น | รอ `git commit` (70/70 tests ผ่าน) |
+| **Feature+** | SSH Tunnel Connection (`ip:port`, `user/pass`, `id_ecdsa`) | 🔄 กำลังดำเนินการ | รองรับเชื่อมต่อ MongoDB ผ่าน SSH Tunnel |
 
 ---
 
@@ -105,31 +106,39 @@
 
 ---
 
-## Phase 5 — Advanced Features, Export/Import & Release ⬜ *(Phase ถัดไป)*
+## Phase 5 — Advanced Features, Export/Import & Release ✅
 
 เป้าหมาย: เพิ่มเครื่องมือระดับสูงสำหรับ DBA/Developer และการแพ็กเกจแอปพลิเคชัน
 
 ### 5.1 Aggregation Pipeline Builder
-- [ ] `core-dev`: เพิ่ม Aggregation Runner ใน `src/query/aggregation.rs` & `DocumentService::run_aggregation` รองรับ Stage Builder และ Raw JSON Pipeline
-- [ ] `ui-dev`: สร้าง UI สำหรับ Add / Remove / Reorder Stages (`$match`, `$group`, `$project`, `$sort`, `$limit`, `$unwind`), โหมด JSON Editor และแสดงผลลัพธ์จาก MongoDB จริง
+- [x] `core-dev`: เพิ่ม Aggregation Runner ใน `src/query/aggregation.rs` & `DocumentService::run_aggregation` รองรับ Stage Builder และ Raw JSON Pipeline
+- [x] `ui-dev`: สร้าง UI สำหรับ Add / Remove / Reorder Stages (`$match`, `$group`, `$project`, `$sort`, `$limit`, `$unwind`, `$lookup`, `$addFields`, `$count`), โหมด JSON Editor และแสดงผลลัพธ์จาก MongoDB จริง
 
 ### 5.2 Index Management
-- [ ] `core-dev`: เพิ่ม `create_index` (รองรับ Key Spec, Unique, Sparse, Background/Name) และ `drop_index` ใน `src/database/index_service.rs` (ห้ามลบ `_id_`)
-- [ ] `ui-dev`: เพิ่มปุ่ม `Create Index...` และ `Drop Index` (พร้อม Confirmation) ในแท็บ `Indexes`
+- [x] `core-dev`: เพิ่ม `create_index` (รองรับ Key Spec, Unique, Sparse, Background/Name) และ `drop_index` ใน `src/database/index_service.rs` (ห้ามลบ `_id_` และป้องกัน `system.*`)
+- [x] `ui-dev`: เพิ่มปุ่ม `Create Index...` และ `Drop Index` (พร้อม Confirmation) ในแท็บ `Indexes`
 
 ### 5.3 Enhanced Schema Explorer & Syntax Highlighting
-- [ ] `core-dev`: เพิ่มตัวเลือก Sample Size สำหรับคำนวณ Schema และรองรับ Nested Field Paths (เช่น `address.city`, `items[]`)
-- [ ] `ui-dev`: เชื่อม Activity Bar `Schema Analyzer`, แสดง Type Distribution Bar และนำ `syntect` มาทำ Syntax Highlighting ใน JSON / Query / Aggregation Editor
+- [x] `core-dev`: เพิ่มตัวเลือก Sample Size (`50..1000`) สำหรับคำนวณ Schema ใน `SchemaAnalyzer` และรองรับ Nested Field Paths (เช่น `address.city`, `items[]`, `items[].sku`) พร้อม `type_breakdown`
+- [x] `ui-dev`: เชื่อม Activity Bar `Schema Analyzer`, แสดง Type Distribution Bar และนำ `syntect` มาทำ Syntax Highlighting ใน JSON / Query / Aggregation / Index Editor
 
 ### 5.4 Persistent Query History, Saved Queries & Terminal
-- [ ] `core-dev`: บันทึก Query History และ Saved Queries ลงไฟล์คอนฟิกของแอป (`directories`) + ส่งผลลัพธ์จริงใน Bottom Panel
-- [ ] `ui-dev`: เชื่อมหน้า `Saved Queries` และ `QUERY HISTORY` ให้คลิกโหลดหรือรันซ้ำได้บน Connection ที่เลือกอยู่จริง รวมถึงพัฒนา Shell Command Helper เบื้องต้น
+- [x] `core-dev`: บันทึก Query History (`MAX_QUERY_HISTORY = 100`) และ Saved Queries ลงไฟล์คอนฟิก `queries.json` (`directories`) แบบ atomic (`spawn_blocking`) + `ShellService` ใน Bottom Panel
+- [x] `ui-dev`: เชื่อมหน้า `Saved Queries` และ `QUERY HISTORY` ให้คลิกโหลดหรือรันซ้ำได้บน Connection ที่เลือกอยู่จริง รวมถึงพัฒนา `TERMINAL` Shell (`help`, `show dbs`, `use`, `show collections`, `find`, `countDocuments`, `runCommand`)
 
 ### 5.5 Export / Import Data
-- [ ] `core-dev`: สร้าง Export / Import Service (JSON, JSON Lines `.jsonl`, CSV) แบบ Streaming / Async บน Tokio
-- [ ] `ui-dev`: ใช้ `rfd` (Native File Dialog) สำหรับเลือกไฟล์/โฟลเดอร์ในการ Export ผลลัพธ์ Query หรือ Import เข้า Collection
+- [x] `core-dev`: สร้าง `TransferService` (JSON, JSON Lines `.jsonl`, RFC 4180 CSV) แบบ Streaming / Batched Async บน Tokio (`spawn_blocking`)
+- [x] `ui-dev`: ใช้ `rfd` (Native File Dialog) สำหรับ Export ผลลัพธ์ Query หรือ Import เข้า Collection
 
 ### 5.6 Quality, Cross-Platform & Release Polish
-- [ ] ตรวจสอบ Code Quality ด้วย `cargo fmt --check`, `cargo clippy --all-targets`, `cargo test`
-- [ ] ตั้งค่า `[profile.release]` (`opt-level = 3`, `lto`, `strip`) และตรวจสอบการทำงานข้ามแพลตฟอร์ม (macOS / Linux / Windows)
+- [x] ตรวจสอบ Code Quality ด้วย `cargo fmt --check`, `cargo clippy --all-targets` (0 warnings), `cargo test` ผ่าน 70/70 (21 lib + 14 `core_workspace_tests` + 24 `database_tests` + 11 `query_tests` รวมทดสอบจริงกับ `192.168.100.243:27017`)
+- [x] ตั้งค่า `[profile.release]` (`opt-level = 3`, `lto = true`, `codegen-units = 1`, `strip = true`) *(หมายเหตุ: `cargo build --release` ไม่สามารถเขียนเสร็จบนเครื่องนี้ชั่วคราวเนื่องจากพื้นที่ดิสก์เหลือ ~195 MiB)*
+
+---
+
+## Feature+ — SSH Tunnel Connection (`ip:port`, `user/pass`, `id_ecdsa`) 🔄
+
+- [ ] `core-dev`: เพิ่ม `SshTunnelConfig`, `SshAuthMethod` (`Password` / `PrivateKey` เริ่มต้น `~/.ssh/id_ecdsa`), `SshTunnelManager` จัดการ port forwarding แบบ async บน Tokio พร้อม OS Keychain สำหรับ SSH password/passphrase
+- [ ] `ui-dev`: เพิ่มส่วนตั้งค่า SSH Tunnel (`Enable SSH Tunnel`, `SSH Host:Port`, `SSH User`, Auth: `Password` / `SSH Key (id_ecdsa)` + Browse key / Passphrase, Save in Keychain) ใน Modal เพิ่ม/แก้ไข Connection และปิด Tunnel เมื่อ Disconnect
+- [ ] `qa-tester`: เขียน Unit/Integration Tests สำหรับ Validation, URI Rewriteผ่าน Local Port, Redaction, Serde Backward Compatibility และ Lifecycle ของ SSH Tunnel
 

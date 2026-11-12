@@ -1,8 +1,7 @@
-use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use bson::{doc, Bson, Document};
+use bson::{doc, Document};
 use mongodb::options::{ClientOptions, FindOptions};
 use mongodb::Client;
 use tokio::sync::Semaphore;
@@ -11,10 +10,11 @@ use uuid::Uuid;
 
 use crate::core::{AppError, AppResult};
 use crate::database::index_service::IndexService;
+use crate::database::schema_analyzer::SchemaAnalyzer;
 use crate::database::user_service::UserService;
 use crate::models::{
     CollectionInfo, CollectionStats, ConnectionConfig, ConnectionStatus, DatabaseInfo, DocumentRow,
-    IndexInfo, MongoUser, SchemaField,
+    MongoUser, SchemaField,
 };
 
 #[derive(Debug, Clone)]
@@ -41,10 +41,7 @@ impl ConnectionClient {
         let mut options = tokio::time::timeout(timeout, ClientOptions::parse(&normalized))
             .await
             .map_err(|_| {
-                AppError::Connection(format!(
-                    "connection timed out after {}s",
-                    timeout.as_secs()
-                ))
+                AppError::Connection(format!("connection timed out after {}s", timeout.as_secs()))
             })?
             .map_err(|err| AppError::Connection(format!("invalid MongoDB URI: {err}")))?;
 
@@ -110,15 +107,12 @@ impl ConnectionClient {
         let start = Instant::now();
         tokio::time::timeout(
             timeout,
-            client.database("admin").run_command(doc! { "ping": 1 }, None),
+            client
+                .database("admin")
+                .run_command(doc! { "ping": 1 }, None),
         )
         .await
-        .map_err(|_| {
-            AppError::Connection(format!(
-                "ping timed out after {}s",
-                timeout.as_secs()
-            ))
-        })?
+        .map_err(|_| AppError::Connection(format!("ping timed out after {}s", timeout.as_secs())))?
         .map_err(|err| AppError::Connection(format!("ping failed: {err}")))?;
 
         Ok(start.elapsed().as_secs_f64() * 1000.0)
@@ -158,7 +152,9 @@ impl ConnectionClient {
         let ping_db = default_db_from_uri.as_deref().unwrap_or("admin");
         tokio::time::timeout(
             timeout,
-            client.database(ping_db).run_command(doc! { "ping": 1 }, None),
+            client
+                .database(ping_db)
+                .run_command(doc! { "ping": 1 }, None),
         )
         .await
         .map_err(|_| {
@@ -192,12 +188,11 @@ impl ConnectionClient {
             join_set.spawn(async move {
                 let _permit = sem_clone.acquire_owned().await.ok();
                 let db = client_clone.database(&db_name);
-                let mut coll_names =
-                    tokio::time::timeout(timeout, db.list_collection_names(None))
-                        .await
-                        .ok()
-                        .and_then(Result::ok)
-                        .unwrap_or_default();
+                let mut coll_names = tokio::time::timeout(timeout, db.list_collection_names(None))
+                    .await
+                    .ok()
+                    .and_then(Result::ok)
+                    .unwrap_or_default();
                 coll_names.sort();
 
                 let collections: Vec<CollectionInfo> = coll_names
@@ -264,8 +259,7 @@ impl ConnectionClient {
         let mut documents = Vec::new();
 
         let find_opts = FindOptions::builder().limit(50).build();
-        if let Ok(Ok(mut cursor)) =
-            tokio::time::timeout(timeout, coll.find(None, find_opts)).await
+        if let Ok(Ok(mut cursor)) = tokio::time::timeout(timeout, coll.find(None, find_opts)).await
         {
             while let Ok(Ok(true)) = tokio::time::timeout(timeout, cursor.advance()).await {
                 if let Ok(doc) = cursor.deserialize_current() {
@@ -283,38 +277,14 @@ impl ConnectionClient {
                 usize::try_from(c).unwrap_or(documents.len())
             });
 
-        let mut indexes = Vec::new();
-        if let Ok(Ok(mut idx_cursor)) =
-            tokio::time::timeout(timeout, coll.list_indexes(None)).await
-        {
-            while let Ok(Ok(true)) = tokio::time::timeout(timeout, idx_cursor.advance()).await {
-                if let Ok(idx_model) = idx_cursor.deserialize_current() {
-                    let name = idx_model
-                        .options
-                        .as_ref()
-                        .and_then(|o| o.name.clone())
-                        .unwrap_or_else(|| "index".to_string());
-                    let unique = idx_model
-                        .options
-                        .as_ref()
-                        .and_then(|o| o.unique)
-                        .unwrap_or(name == "_id_");
-                    let key_count = idx_model.keys.len();
-                    let index_type = if key_count > 1 {
-                        "Compound".to_string()
-                    } else {
-                        "B-Tree".to_string()
-                    };
-                    indexes.push(IndexInfo {
-                        name,
-                        keys: format!("{}", Bson::Document(idx_model.keys)),
-                        index_type,
-                        unique,
-                        size_kb: 16.0,
-                    });
-                }
+        let mut indexes = match IndexService::list_indexes_on_collection(&coll, timeout).await {
+            Ok(list) if !list.is_empty() => list,
+            Ok(_) => IndexService::default_indexes(),
+            Err(err) => {
+                tracing::debug!(error = %err, "failed to list indexes during introspection");
+                IndexService::default_indexes()
             }
-        }
+        };
         if indexes.is_empty() {
             indexes = IndexService::default_indexes();
         }
@@ -340,49 +310,6 @@ impl ConnectionClient {
     }
 
     fn infer_schema_fields(docs: &[Document]) -> Vec<SchemaField> {
-        if docs.is_empty() {
-            return Vec::new();
-        }
-
-        let total = docs.len() as f32;
-        let mut stats: BTreeMap<String, (&'static str, usize, String)> = BTreeMap::new();
-
-        for doc in docs {
-            for (key, val) in doc {
-                let bson_type = Self::bson_type_name(val);
-                let entry = stats.entry(key.clone()).or_insert_with(|| {
-                    (bson_type, 0, DocumentRow::bson_to_display(val))
-                });
-                entry.1 += 1;
-            }
-        }
-
-        stats
-            .into_iter()
-            .map(|(field_name, (bson_type, count, sample_value))| SchemaField {
-                field_name,
-                bson_type: bson_type.to_string(),
-                frequency_pct: ((count as f32 / total) * 100.0).min(100.0),
-                sample_value,
-            })
-            .collect()
-    }
-
-    const fn bson_type_name(val: &Bson) -> &'static str {
-        match val {
-            Bson::ObjectId(_) => "ObjectId",
-            Bson::String(_) => "String",
-            Bson::Int32(_) => "Int32",
-            Bson::Int64(_) => "Int64",
-            Bson::Double(_) => "Double",
-            Bson::Boolean(_) => "Boolean",
-            Bson::DateTime(_) => "DateTime",
-            Bson::Array(_) => "Array",
-            Bson::Document(_) => "Document",
-            Bson::Null => "Null",
-            Bson::Binary(_) => "Binary",
-            Bson::Decimal128(_) => "Decimal128",
-            _ => "BSON",
-        }
+        SchemaAnalyzer::analyze_bson_docs(docs)
     }
 }

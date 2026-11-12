@@ -4,7 +4,9 @@ use bson::{doc, oid::ObjectId};
 use mongo_studio::core::AppError;
 use mongo_studio::database::DocumentService;
 use mongo_studio::models::DocumentRow;
-use mongo_studio::query::{AggregationStage, QueryFilter, QueryProjection, SortDirection, SortSpec};
+use mongo_studio::query::{
+    AggregationStage, QueryFilter, QueryProjection, SortDirection, SortSpec,
+};
 
 #[test]
 fn query_filter_from_str_and_from_slice_parse_valid_json() {
@@ -59,9 +61,15 @@ fn query_filter_handles_empty_object_multi_key_and_unknown_fields() {
     // Act
     let all_matched: Vec<_> = docs.iter().filter(|d| empty_obj.matches(d)).collect();
     let admin_active: Vec<_> = docs.iter().filter(|d| multi_key.matches(d)).collect();
-    let mismatched: Vec<_> = docs.iter().filter(|d| mismatched_multi.matches(d)).collect();
+    let mismatched: Vec<_> = docs
+        .iter()
+        .filter(|d| mismatched_multi.matches(d))
+        .collect();
     let unknown_matched: Vec<_> = docs.iter().filter(|d| unknown_field.matches(d)).collect();
-    let non_string_matched: Vec<_> = docs.iter().filter(|d| non_string_value.matches(d)).collect();
+    let non_string_matched: Vec<_> = docs
+        .iter()
+        .filter(|d| non_string_value.matches(d))
+        .collect();
 
     // Assert
     assert_eq!(all_matched.len(), docs.len());
@@ -142,15 +150,13 @@ fn query_filter_matches_cached_json_primitives_oid_booleans_numbers_arrays_and_o
         "meta": { "zone": "B", "floor": 1_i32 }
     });
     // Simulate a deserialized DocumentRow where cached_json is None and only raw_json is present
-    let doc_deserialized: DocumentRow = serde_json::from_str(
-        &serde_json::to_string(&doc_a).expect("DocumentRow should serialize"),
-    )
-    .expect("DocumentRow should deserialize");
+    let doc_deserialized: DocumentRow =
+        serde_json::from_str(&serde_json::to_string(&doc_a).expect("DocumentRow should serialize"))
+            .expect("DocumentRow should deserialize");
     assert_eq!(doc_deserialized.cached_json, None);
 
     // Act
-    let oid_extjson_filter =
-        QueryFilter::parse(r#"{"_id": {"$oid": "654f1a2b3c4d5e6f7a8b9c01"}}"#);
+    let oid_extjson_filter = QueryFilter::parse(r#"{"_id": {"$oid": "654f1a2b3c4d5e6f7a8b9c01"}}"#);
     let oid_hex_filter = QueryFilter::parse(r#"{"_id": "654f1a2b3c4d5e6f7a8b9c01"}"#);
     let primitive_filter = QueryFilter::parse(r#"{"sensor": "TEMP-02"}"#);
     let bool_true_filter = QueryFilter::parse(r#"{"enabled": true}"#);
@@ -265,4 +271,207 @@ fn document_service_filter_documents_respects_cached_json_and_pagination_limits(
     assert_eq!(clamped_zero_limit.len(), 1);
     assert_eq!(array_matched.len(), 1);
     assert_eq!(array_matched[0].id, "2");
+}
+
+#[test]
+fn aggregation_stage_supports_all_operators_and_rejects_invalid_inputs() {
+    // Arrange / Act / Assert: every SUPPORTED_OPERATORS default expression parses cleanly
+    assert_eq!(AggregationStage::SUPPORTED_OPERATORS.len(), 10);
+    for &op in AggregationStage::SUPPORTED_OPERATORS {
+        let stage = AggregationStage::new(op, AggregationStage::default_expression(op), true);
+        let pipeline_doc = stage
+            .to_pipeline_doc()
+            .unwrap_or_else(|err| panic!("default expression for {op} failed: {err}"));
+        assert!(
+            pipeline_doc.contains_key(op),
+            "stage doc for {op} must contain operator key"
+        );
+    }
+    assert_eq!(AggregationStage::default_expression("$unknown"), "{}");
+
+    // Wrapped and shorthand forms
+    assert_eq!(
+        AggregationStage::new("$match", r#"{"$match": {"status": "active"}}"#, true)
+            .to_pipeline_doc()
+            .expect("wrapped $match"),
+        doc! { "$match": { "status": "active" } }
+    );
+    assert_eq!(
+        AggregationStage::new("$limit", r#"{"$limit": 15}"#, true)
+            .to_pipeline_doc()
+            .expect("wrapped $limit"),
+        doc! { "$limit": 15_i64 }
+    );
+    assert_eq!(
+        AggregationStage::new("$skip", r#"{"$skip": 5}"#, true)
+            .to_pipeline_doc()
+            .expect("wrapped $skip"),
+        doc! { "$skip": 5_i64 }
+    );
+    assert_eq!(
+        AggregationStage::new(
+            "$unwind",
+            r#"{"path": "$items", "preserveNullAndEmptyArrays": true}"#,
+            true
+        )
+        .to_pipeline_doc()
+        .expect("object $unwind"),
+        doc! { "$unwind": { "path": "$items", "preserveNullAndEmptyArrays": true } }
+    );
+    assert_eq!(
+        AggregationStage::new("$count", "total_docs", true)
+            .to_pipeline_doc()
+            .expect("unquoted $count"),
+        doc! { "$count": "total_docs" }
+    );
+
+    // Invalid operator / empty expression / malformed JSON / scalar constraints
+    for bad_stage in [
+        AggregationStage::new("", "{}", true),
+        AggregationStage::new("match", "{}", true),
+        AggregationStage::new("$match", "   ", true),
+        AggregationStage::new("$match", "{bad_json", true),
+        AggregationStage::new("$match", "[1, 2]", true),
+        AggregationStage::new("$limit", "0", true),
+        AggregationStage::new("$limit", "-3", true),
+        AggregationStage::new("$limit", "abc", true),
+        AggregationStage::new("$limit", r#"{"count": 5}"#, true),
+        AggregationStage::new("$limit", r#"{"$limit": 0}"#, true),
+        AggregationStage::new("$skip", "-1", true),
+        AggregationStage::new("$skip", "xyz", true),
+        AggregationStage::new("$skip", r#"{"offset": 1}"#, true),
+        AggregationStage::new("$skip", r#"{"$skip": -2}"#, true),
+        AggregationStage::new("$unwind", "items", true),
+        AggregationStage::new("$unwind", r#""""#, true),
+        AggregationStage::new("$unwind", "[\"$items\"]", true),
+        AggregationStage::new("$count", "{}", true),
+        AggregationStage::new("$count", "[\"total\"]", true),
+        AggregationStage::new("$count", r#""   ""#, true),
+    ] {
+        assert!(
+            matches!(
+                bad_stage.to_pipeline_doc(),
+                Err(AppError::InvalidQueryJson(_))
+            ),
+            "expected InvalidQueryJson for stage ({}, {})",
+            bad_stage.operator,
+            bad_stage.expression
+        );
+    }
+}
+
+#[test]
+fn aggregation_pipeline_build_enabled_filtering_and_raw_json_roundtrips() {
+    // Arrange: disabled stages (even with invalid expressions) are ignored
+    let stages = vec![
+        AggregationStage::new("$match", r#"{"status": "active"}"#, true),
+        AggregationStage::new("$group", "{invalid_disabled_stage", false),
+        AggregationStage::new("$group", r#"{"_id": "$role", "count": {"$sum": 1}}"#, true),
+        AggregationStage::new("$sort", r#"{"count": -1}"#, true),
+        AggregationStage::new("$skip", "1", true),
+        AggregationStage::new("$limit", "10", true),
+    ];
+
+    // Act
+    let built = AggregationStage::build_pipeline(&stages).expect("pipeline should build");
+    let pretty =
+        AggregationStage::stages_to_pretty_json(&stages).expect("pretty JSON should serialize");
+    let reparsed =
+        AggregationStage::parse_raw_pipeline(&pretty).expect("pretty JSON should reparse");
+
+    // Assert
+    assert_eq!(built.len(), 5);
+    assert_eq!(reparsed, built);
+
+    // Empty or all-disabled stages fail cleanly
+    let all_disabled = vec![AggregationStage::new("$match", "{}", false)];
+    assert!(matches!(
+        AggregationStage::build_pipeline(&[]),
+        Err(AppError::InvalidQueryJson(_))
+    ));
+    assert!(matches!(
+        AggregationStage::build_pipeline(&all_disabled),
+        Err(AppError::InvalidQueryJson(_))
+    ));
+    assert!(matches!(
+        AggregationStage::stages_to_pretty_json(&all_disabled),
+        Err(AppError::InvalidQueryJson(_))
+    ));
+
+    // Invalid raw pipeline inputs
+    for invalid_raw in [
+        "",
+        "   ",
+        "[]",
+        "{}",
+        r#"{"$match": {}}"#,
+        r#"[{"$match": {}}, 42]"#,
+        r#"[{}]"#,
+        "[{bad}]",
+    ] {
+        assert!(
+            matches!(
+                AggregationStage::parse_raw_pipeline(invalid_raw),
+                Err(AppError::InvalidQueryJson(_))
+            ),
+            "expected InvalidQueryJson for raw pipeline `{invalid_raw}`"
+        );
+    }
+}
+
+#[test]
+fn document_service_run_aggregation_in_memory_handles_multistage_and_graceful_stages() {
+    // Arrange
+    let docs = DocumentRow::mock_for_collection("users");
+
+    // Act: $match -> $sort -> $skip -> $limit (active users: Alice, Bob, Diana)
+    let pipeline = vec![
+        AggregationStage::new("$match", r#"{"status": "active"}"#, true),
+        AggregationStage::new("$sort", r#"{"name": 1}"#, true),
+        AggregationStage::new("$skip", "1", true),
+        AggregationStage::new("$limit", "1", true),
+    ];
+    let paged = DocumentService::run_aggregation_in_memory(&docs, &pipeline)
+        .expect("in-memory pipeline should succeed");
+
+    // Assert
+    assert_eq!(paged.len(), 1);
+    assert_eq!(paged[0].name, "Bob");
+
+    // Act: skip beyond matched rows clears gracefully
+    let skip_all = vec![
+        AggregationStage::new("$match", r#"{"status": "active"}"#, true),
+        AggregationStage::new("$skip", "99", true),
+    ];
+    assert!(DocumentService::run_aggregation_in_memory(&docs, &skip_all)
+        .expect("skip past end should succeed")
+        .is_empty());
+
+    // Act: $project, $group, $unwind, $addFields, $count, $lookup pass through gracefully without panicking
+    let passthrough_stages = vec![
+        AggregationStage::new("$project", r#"{"name": 1, "status": 1}"#, true),
+        AggregationStage::new(
+            "$group",
+            r#"{"_id": "$status", "count": {"$sum": 1}}"#,
+            true,
+        ),
+        AggregationStage::new("$unwind", "\"$tags\"", true),
+        AggregationStage::new("$addFields", r#"{"tag": "v1"}"#, true),
+        AggregationStage::new("$count", "\"total\"", true),
+        AggregationStage::new(
+            "$lookup",
+            r#"{"from": "orders", "localField": "_id", "foreignField": "user_id", "as": "orders"}"#,
+            true,
+        ),
+    ];
+    let graceful = DocumentService::run_aggregation_in_memory(&docs, &passthrough_stages)
+        .expect("all supported stage types should be handled gracefully in memory");
+    assert_eq!(graceful.len(), docs.len());
+
+    // Error when no stages are enabled
+    let disabled = vec![AggregationStage::new("$match", "{}", false)];
+    assert!(matches!(
+        DocumentService::run_aggregation_in_memory(&docs, &disabled),
+        Err(AppError::InvalidQueryJson(_))
+    ));
 }

@@ -395,10 +395,7 @@ impl DocumentRow {
                     }
                     if let Some(Value::Object(regex)) = map.get("$regularExpression") {
                         if let Some(Value::String(pattern)) = regex.get("pattern") {
-                            let opts = regex
-                                .get("options")
-                                .and_then(Value::as_str)
-                                .unwrap_or("");
+                            let opts = regex.get("options").and_then(Value::as_str).unwrap_or("");
                             return format!("/{pattern}/{opts}");
                         }
                     }
