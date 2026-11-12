@@ -61,6 +61,12 @@ pub struct CollectionTab {
     pub role_name_input: String,
     #[serde(skip)]
     pub draft_roles: Option<Vec<UserRole>>,
+    #[serde(skip)]
+    pub cached_db_options: Vec<String>,
+    #[serde(skip)]
+    pub cached_db_conn: String,
+    #[serde(skip)]
+    pub cached_db_count: usize,
 }
 
 impl PartialEq for CollectionTab {
@@ -97,6 +103,9 @@ impl CollectionTab {
             role_db_filter: String::new(),
             role_name_input: "readWrite".to_string(),
             draft_roles: None,
+            cached_db_options: Vec::new(),
+            cached_db_conn: String::new(),
+            cached_db_count: 0,
         }
     }
 
@@ -118,6 +127,9 @@ impl CollectionTab {
             role_db_filter: String::new(),
             role_name_input: "readWrite".to_string(),
             draft_roles: None,
+            cached_db_options: Vec::new(),
+            cached_db_conn: String::new(),
+            cached_db_count: 0,
         }
     }
 

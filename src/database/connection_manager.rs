@@ -15,6 +15,13 @@ const KEYRING_SERVICE: &str = "com.mongostudio.MongoStudio";
 pub struct ConnectionManager;
 
 impl ConnectionManager {
+    fn build_current_thread_runtime() -> AppResult<tokio::runtime::Runtime> {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|err| AppError::Connection(format!("failed to build async runtime: {err}")))
+    }
+
     /// Creates a new mock-populated [`ConnectionConfig`] from a connection profile name and URI.
     ///
     /// # Errors
@@ -31,12 +38,7 @@ impl ConnectionManager {
     ///
     /// Returns [`AppError::Connection`] if the runtime cannot be created or the ping fails.
     pub fn ping_uri_blocking(uri: &str, timeout: Duration) -> AppResult<f64> {
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .map_err(|err| {
-                AppError::Connection(format!("failed to build async runtime: {err}"))
-            })?;
+        let runtime = Self::build_current_thread_runtime()?;
         runtime.block_on(ConnectionClient::ping_uri(uri, timeout))
     }
 
@@ -50,12 +52,7 @@ impl ConnectionManager {
         uri: &str,
         timeout: Duration,
     ) -> AppResult<ConnectionConfig> {
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .map_err(|err| {
-                AppError::Connection(format!("failed to build async runtime: {err}"))
-            })?;
+        let runtime = Self::build_current_thread_runtime()?;
         runtime.block_on(ConnectionClient::connect_and_introspect(name, uri, timeout))
     }
 
@@ -70,15 +67,31 @@ impl ConnectionManager {
         coll_name: &str,
         timeout: Duration,
     ) -> AppResult<CollectionInfo> {
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .map_err(|err| {
-                AppError::Connection(format!("failed to build async runtime: {err}"))
-            })?;
+        let runtime = Self::build_current_thread_runtime()?;
         runtime.block_on(ConnectionClient::introspect_single_collection(
             uri, db_name, coll_name, timeout,
         ))
+    }
+
+    fn load_password_from_keyring_inner(conn_id: Uuid) -> AppResult<Option<String>> {
+        let entry = keyring::Entry::new(KEYRING_SERVICE, &conn_id.to_string())
+            .map_err(|err| AppError::Persistence(format!("keyring init failed: {err}")))?;
+        match entry.get_password() {
+            Ok(password) => Ok(Some(password)),
+            Err(keyring::Error::NoEntry) => Ok(None),
+            Err(err) => Err(AppError::Persistence(format!("keyring load failed: {err}"))),
+        }
+    }
+
+    fn delete_password_from_keyring_inner(conn_id: Uuid) -> AppResult<()> {
+        let entry = keyring::Entry::new(KEYRING_SERVICE, &conn_id.to_string())
+            .map_err(|err| AppError::Persistence(format!("keyring init failed: {err}")))?;
+        match entry.delete_password() {
+            Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
+            Err(err) => Err(AppError::Persistence(format!(
+                "keyring delete failed: {err}"
+            ))),
+        }
     }
 
     /// Saves a connection password in the OS credential keyring.
@@ -94,18 +107,63 @@ impl ConnectionManager {
             .map_err(|err| AppError::Persistence(format!("keyring save failed: {err}")))
     }
 
+    /// Asynchronously saves a connection password in the OS credential keyring
+    /// on Tokio's blocking thread pool.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AppError::Persistence`] if the keyring write or blocking task fails.
+    pub async fn save_password_to_keyring_async(conn_id: Uuid, password: String) -> AppResult<()> {
+        tokio::task::spawn_blocking(move || Self::save_password_to_keyring(conn_id, &password))
+            .await
+            .map_err(|err| AppError::Persistence(format!("keyring save task failed: {err}")))?
+    }
+
     /// Loads a saved connection password from the OS credential keyring, if available.
     #[must_use]
     pub fn load_password_from_keyring(conn_id: Uuid) -> Option<String> {
-        let entry = keyring::Entry::new(KEYRING_SERVICE, &conn_id.to_string()).ok()?;
-        entry.get_password().ok()
+        match Self::load_password_from_keyring_inner(conn_id) {
+            Ok(password) => password,
+            Err(err) => {
+                tracing::warn!(conn_id = %conn_id, error = %err, "failed to load password from keyring");
+                None
+            }
+        }
+    }
+
+    /// Asynchronously loads a saved connection password from the OS credential keyring
+    /// on Tokio's blocking thread pool.
+    ///
+    /// Returns `Ok(None)` when no entry exists for `conn_id`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AppError::Persistence`] if the keyring backend or blocking task fails.
+    pub async fn load_password_from_keyring_async(conn_id: Uuid) -> AppResult<Option<String>> {
+        tokio::task::spawn_blocking(move || Self::load_password_from_keyring_inner(conn_id))
+            .await
+            .map_err(|err| AppError::Persistence(format!("keyring load task failed: {err}")))?
     }
 
     /// Deletes a saved connection password from the OS credential keyring.
     pub fn delete_password_from_keyring(conn_id: Uuid) {
-        if let Ok(entry) = keyring::Entry::new(KEYRING_SERVICE, &conn_id.to_string()) {
-            let _ = entry.delete_password();
+        if let Err(err) = Self::delete_password_from_keyring_inner(conn_id) {
+            tracing::warn!(conn_id = %conn_id, error = %err, "failed to delete password from keyring");
         }
+    }
+
+    /// Asynchronously deletes a saved connection password from the OS credential keyring
+    /// on Tokio's blocking thread pool.
+    ///
+    /// Missing entries (`keyring::Error::NoEntry`) are treated as `Ok(())`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AppError::Persistence`] if the keyring backend or blocking task fails.
+    pub async fn delete_password_from_keyring_async(conn_id: Uuid) -> AppResult<()> {
+        tokio::task::spawn_blocking(move || Self::delete_password_from_keyring_inner(conn_id))
+            .await
+            .map_err(|err| AppError::Persistence(format!("keyring delete task failed: {err}")))?
     }
 
     /// Returns the path to `connections.json` inside the platform config directory.
@@ -144,12 +202,45 @@ impl ConnectionManager {
             .map_err(|err| AppError::Persistence(format!("failed to write connections: {err}")))
     }
 
+    /// Asynchronously persists connection profiles to disk (`connections.json`)
+    /// on Tokio's blocking thread pool.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AppError::Persistence`] if serialization, file writing, or the blocking task fails.
+    pub async fn save_profiles_async(connections: Vec<ConnectionConfig>) -> AppResult<()> {
+        tokio::task::spawn_blocking(move || Self::save_profiles(&connections))
+            .await
+            .map_err(|err| AppError::Persistence(format!("save profiles task failed: {err}")))?
+    }
+
     /// Loads saved connection profiles from disk (`connections.json`), if present.
     #[must_use]
     pub fn load_profiles() -> Option<Vec<ConnectionConfig>> {
         let path = Self::profiles_file_path()?;
-        let raw = fs::read_to_string(path).ok()?;
-        let profiles: Vec<ConnectionConfig> = serde_json::from_str(&raw).ok()?;
+        let raw = match fs::read_to_string(&path) {
+            Ok(raw) => raw,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return None,
+            Err(err) => {
+                tracing::warn!(
+                    path = %path.display(),
+                    error = %err,
+                    "failed to read saved connections"
+                );
+                return None;
+            }
+        };
+        let profiles: Vec<ConnectionConfig> = match serde_json::from_str(&raw) {
+            Ok(profiles) => profiles,
+            Err(err) => {
+                tracing::warn!(
+                    path = %path.display(),
+                    error = %err,
+                    "failed to parse saved connections"
+                );
+                return None;
+            }
+        };
         if profiles.is_empty() {
             None
         } else {

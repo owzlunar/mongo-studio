@@ -12,6 +12,14 @@ use mongo_studio::models::{
     CollectionInfo, ConnectionConfig, ConnectionStatus, DocumentRow, UserRole,
 };
 use mongo_studio::query::QueryFilter;
+use uuid::Uuid;
+
+fn build_test_runtime() -> tokio::runtime::Runtime {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("current-thread Tokio runtime should build")
+}
 
 #[test]
 fn connection_client_from_uri_extracts_standard_and_srv_hosts() {
@@ -315,6 +323,72 @@ fn connection_manager_and_database_services_provide_mock_hierarchy() {
 }
 
 #[test]
+fn database_service_create_database_and_introspect_validates_names_and_errors_on_unreachable_server()
+{
+    // Arrange
+    let runtime = build_test_runtime();
+    let unreachable_uri = "mongodb://127.0.0.1:1";
+    let timeout = Duration::from_millis(200);
+
+    // Act
+    let empty_db_res = runtime.block_on(DatabaseService::create_database_and_introspect(
+        unreachable_uri,
+        "   ",
+        "items",
+        timeout,
+    ));
+    let empty_coll_res = runtime.block_on(DatabaseService::create_database_and_introspect(
+        unreachable_uri,
+        "inventory_db",
+        " \t\n ",
+        timeout,
+    ));
+    let unreachable_res = runtime.block_on(DatabaseService::create_database_and_introspect(
+        unreachable_uri,
+        "inventory_db",
+        "items",
+        timeout,
+    ));
+
+    // Assert
+    assert_eq!(
+        empty_db_res,
+        Err(AppError::Connection(
+            "database name must not be empty".to_string()
+        ))
+    );
+    assert_eq!(
+        empty_coll_res,
+        Err(AppError::Connection(
+            "initial collection name must not be empty".to_string()
+        ))
+    );
+    assert!(matches!(unreachable_res, Err(AppError::Connection(_))));
+}
+
+#[test]
+fn connection_manager_keyring_async_handles_nonexistent_entry_without_panicking() {
+    // Arrange
+    let runtime = build_test_runtime();
+    let random_conn_id = Uuid::new_v4();
+
+    // Act
+    let load_res = runtime.block_on(ConnectionManager::load_password_from_keyring_async(
+        random_conn_id,
+    ));
+    let delete_res = runtime.block_on(ConnectionManager::delete_password_from_keyring_async(
+        random_conn_id,
+    ));
+
+    // Assert
+    assert!(
+        matches!(load_res, Ok(None) | Err(_)),
+        "expected Ok(None) or Err for missing keyring entry, got {load_res:?}"
+    );
+    assert_eq!(delete_res, Ok(()));
+}
+
+#[test]
 fn document_service_filtering_respects_filter_and_limit_bounds() {
     // Arrange
     let docs = DocumentRow::mock_for_collection("users");
@@ -395,7 +469,140 @@ fn user_service_protects_admin_account_and_validates_inputs() {
 }
 
 #[test]
+fn user_service_async_and_list_methods_reject_admin_invalid_inputs_and_unreachable_server() {
+    // Arrange
+    let runtime = build_test_runtime();
+    let unreachable_uri = "mongodb://127.0.0.1:1";
+    let timeout = Duration::from_millis(200);
+    let sample_roles = vec![
+        UserRole::new("readWrite", "shop_db"),
+        UserRole::new("read", "admin"),
+    ];
+
+    // Act / Assert: protected "admin" is rejected before network I/O
+    let create_admin_res = runtime.block_on(UserService::create_user_and_list(
+        unreachable_uri,
+        "admin",
+        "secret",
+        &sample_roles,
+        timeout,
+    ));
+    let update_admin_res = runtime.block_on(UserService::update_user_roles_and_list(
+        unreachable_uri,
+        "admin",
+        " ADMIN ",
+        &sample_roles,
+        timeout,
+    ));
+    let drop_admin_res = runtime.block_on(UserService::drop_user_and_list(
+        unreachable_uri,
+        "admin",
+        "Admin",
+        timeout,
+    ));
+
+    assert!(create_admin_res
+        .unwrap_err()
+        .to_string()
+        .contains("protected"));
+    assert!(update_admin_res
+        .unwrap_err()
+        .to_string()
+        .contains("protected"));
+    assert!(drop_admin_res
+        .unwrap_err()
+        .to_string()
+        .contains("protected"));
+
+    // Act / Assert: invalid inputs are rejected cleanly
+    let empty_user_res = runtime.block_on(UserService::create_user_and_list(
+        unreachable_uri,
+        "   ",
+        "secret",
+        &sample_roles,
+        timeout,
+    ));
+    let empty_pwd_res = runtime.block_on(UserService::create_user_and_list(
+        unreachable_uri,
+        "qa_user",
+        "",
+        &sample_roles,
+        timeout,
+    ));
+
+    assert_eq!(
+        empty_user_res,
+        Err(AppError::Connection(
+            "username must not be empty".to_string()
+        ))
+    );
+    assert_eq!(
+        empty_pwd_res,
+        Err(AppError::Connection(
+            "password must not be empty".to_string()
+        ))
+    );
+
+    // Act / Assert: unreachable server returns Err cleanly (never silently succeeds)
+    let create_unreachable_res = runtime.block_on(UserService::create_user_and_list(
+        unreachable_uri,
+        "qa_unreachable",
+        "secret",
+        &sample_roles,
+        timeout,
+    ));
+    let update_unreachable_res = runtime.block_on(UserService::update_user_roles_and_list(
+        unreachable_uri,
+        "admin",
+        "qa_unreachable",
+        &sample_roles,
+        timeout,
+    ));
+    let drop_unreachable_res = runtime.block_on(UserService::drop_user_and_list(
+        unreachable_uri,
+        "admin",
+        "qa_unreachable",
+        timeout,
+    ));
+
+    assert!(matches!(create_unreachable_res, Err(AppError::Connection(_))));
+    assert!(matches!(update_unreachable_res, Err(AppError::Connection(_))));
+    assert!(matches!(drop_unreachable_res, Err(AppError::Connection(_))));
+}
+
+#[test]
 fn live_mongodb_connection_lazy_loading_and_user_lifecycle_on_192_168_100_243_27017() {
+    struct TempUserGuard<'a> {
+        uri: &'a str,
+        username: &'a str,
+        timeout: Duration,
+        cleaned_up: bool,
+    }
+
+    impl<'a> TempUserGuard<'a> {
+        fn new(uri: &'a str, username: &'a str, timeout: Duration) -> Self {
+            Self {
+                uri,
+                username,
+                timeout,
+                cleaned_up: false,
+            }
+        }
+
+        fn mark_cleaned_up(&mut self) {
+            self.cleaned_up = true;
+        }
+    }
+
+    impl Drop for TempUserGuard<'_> {
+        fn drop(&mut self) {
+            if !self.cleaned_up {
+                let _ =
+                    UserService::drop_user_blocking(self.uri, "admin", self.username, self.timeout);
+            }
+        }
+    }
+
     // Arrange
     let target_host = "192.168.100.243:27017";
     let timeout = Duration::from_secs(5);
@@ -493,9 +700,11 @@ fn live_mongodb_connection_lazy_loading_and_user_lifecycle_on_192_168_100_243_27
     assert_eq!(loaded_coll.name, target_coll.1);
     assert!(!loaded_coll.indexes.is_empty());
 
-    // Act 3: Live User Lifecycle (create -> update roles -> change password -> drop)
+    // Act 3: Live User Lifecycle (create -> update roles -> duplicate with multiple roles -> change password -> drop)
     let temp_username = "qa_temp_user";
+    let dup_username = "qa_temp_user_copy";
     let _ = UserService::drop_user_blocking(target_host, "admin", temp_username, timeout);
+    let _ = UserService::drop_user_blocking(target_host, "admin", dup_username, timeout);
 
     let initial_roles = vec![UserRole::new("read", "admin")];
     match UserService::create_user_blocking(
@@ -506,6 +715,7 @@ fn live_mongodb_connection_lazy_loading_and_user_lifecycle_on_192_168_100_243_27
         timeout,
     ) {
         Ok(users_after_create) => {
+            let mut temp_guard = TempUserGuard::new(target_host, temp_username, timeout);
             assert!(users_after_create
                 .iter()
                 .any(|u| u.username == temp_username));
@@ -529,6 +739,47 @@ fn live_mongodb_connection_lazy_loading_and_user_lifecycle_on_192_168_100_243_27
                 .expect("qa_temp_user should be present after role update");
             assert_eq!(updated_user.roles.len(), 2);
 
+            // Duplicate user with multiple cloned roles, update roles, and clean up
+            let cloned_roles = updated_user.roles.clone();
+            let users_after_dup = UserService::create_user_blocking(
+                target_host,
+                dup_username,
+                "dup_pw_789",
+                &cloned_roles,
+                timeout,
+            )
+            .expect("should create duplicated user with multiple roles");
+            let mut dup_guard = TempUserGuard::new(target_host, dup_username, timeout);
+
+            let dup_user = users_after_dup
+                .iter()
+                .find(|u| u.username == dup_username)
+                .expect("qa_temp_user_copy should be present after creation");
+            assert_eq!(dup_user.roles.len(), 2);
+
+            let dup_reduced_roles = vec![UserRole::new("read", "admin")];
+            let users_after_dup_update = UserService::update_user_roles_blocking(
+                target_host,
+                "admin",
+                dup_username,
+                &dup_reduced_roles,
+                timeout,
+            )
+            .expect("should update duplicated user roles");
+            let dup_updated = users_after_dup_update
+                .iter()
+                .find(|u| u.username == dup_username)
+                .expect("qa_temp_user_copy should be present after role update");
+            assert_eq!(dup_updated.roles.len(), 1);
+
+            let users_after_dup_drop =
+                UserService::drop_user_blocking(target_host, "admin", dup_username, timeout)
+                    .expect("should drop qa_temp_user_copy");
+            dup_guard.mark_cleaned_up();
+            assert!(!users_after_dup_drop
+                .iter()
+                .any(|u| u.username == dup_username));
+
             UserService::change_user_password_blocking(
                 target_host,
                 "admin",
@@ -541,8 +792,11 @@ fn live_mongodb_connection_lazy_loading_and_user_lifecycle_on_192_168_100_243_27
             let users_after_drop =
                 UserService::drop_user_blocking(target_host, "admin", temp_username, timeout)
                     .expect("should drop qa_temp_user");
+            temp_guard.mark_cleaned_up();
             assert!(!users_after_drop.iter().any(|u| u.username == temp_username));
-            println!("Live user lifecycle test (`{temp_username}`) succeeded end-to-end.");
+            println!(
+                "Live user lifecycle & duplicate-user test (`{temp_username}`, `{dup_username}`) succeeded end-to-end."
+            );
         }
         Err(err) => {
             println!(

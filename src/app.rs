@@ -9,15 +9,22 @@ use crate::core::state::AppState;
 use crate::database::{
     connection::ConnectionClient, ConnectionManager, DatabaseService, UserService,
 };
-use crate::models::{
-    CollectionInfo, ConnectionConfig, ConnectionStatus, DatabaseInfo, DocumentRow, MongoUser,
-    UserRole,
-};
+use crate::models::{ConnectionConfig, ConnectionStatus, DatabaseInfo, DocumentRow, UserRole};
 use crate::theme::{apply_theme, ThemePalette};
 use crate::ui::layout::render_main_layout;
 use crate::workspace::{LogLevel, WorkspacePersistence};
 
 const DEFAULT_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
+
+struct RoleUpdateTask {
+    connection_name: String,
+    uri: String,
+    user_db: String,
+    username: String,
+    roles: Vec<UserRole>,
+    success_message: String,
+    failure_prefix: String,
+}
 
 pub struct MongoStudioApp {
     pub state: AppState,
@@ -26,6 +33,7 @@ pub struct MongoStudioApp {
     runtime: Arc<tokio::runtime::Runtime>,
     bg_tx: Sender<AppEvent>,
     bg_rx: Receiver<AppEvent>,
+    pending_open_user: Option<(String, String)>,
 }
 
 impl MongoStudioApp {
@@ -70,6 +78,7 @@ impl MongoStudioApp {
             runtime,
             bg_tx,
             bg_rx,
+            pending_open_user: None,
         }
     }
 
@@ -103,6 +112,133 @@ impl MongoStudioApp {
         });
     }
 
+    fn spawn_save_profiles_task(&self, ctx: &Context) {
+        let connections = self.state.connections.clone();
+        let tx = self.bg_tx.clone();
+        let ctx_clone = ctx.clone();
+        self.runtime.spawn(async move {
+            if let Err(err) = ConnectionManager::save_profiles_async(connections).await {
+                // INTENTIONAL: receiver is dropped only on application shutdown.
+                let _ = tx.send(AppEvent::BackgroundTaskError {
+                    source: "ConnectionManager".to_string(),
+                    message: format!("Failed to save connection profiles: {err}"),
+                });
+                ctx_clone.request_repaint();
+            }
+        });
+    }
+
+    fn spawn_keyring_save_task(&self, ctx: &Context, conn_id: uuid::Uuid, password: String) {
+        let tx = self.bg_tx.clone();
+        let ctx_clone = ctx.clone();
+        self.runtime.spawn(async move {
+            if let Err(err) =
+                ConnectionManager::save_password_to_keyring_async(conn_id, password).await
+            {
+                // INTENTIONAL: receiver is dropped only on application shutdown.
+                let _ = tx.send(AppEvent::BackgroundTaskError {
+                    source: "Keyring".to_string(),
+                    message: format!("Failed to save password to OS Keychain: {err}"),
+                });
+                ctx_clone.request_repaint();
+            }
+        });
+    }
+
+    fn spawn_keyring_load_task(&self, ctx: &Context, index: usize, open_edit_modal: bool) {
+        let Some(conn) = self.state.connections.get(index) else {
+            return;
+        };
+        let conn_id = conn.id;
+        let tx = self.bg_tx.clone();
+        let ctx_clone = ctx.clone();
+        self.runtime.spawn(async move {
+            let result = ConnectionManager::load_password_from_keyring_async(conn_id)
+                .await
+                .map_err(|err| err.to_string());
+            // INTENTIONAL: receiver is dropped only on application shutdown.
+            let _ = tx.send(AppEvent::KeyringPasswordLoaded {
+                index,
+                open_edit_modal,
+                result,
+            });
+            ctx_clone.request_repaint();
+        });
+    }
+
+    fn spawn_keyring_delete_task(&self, ctx: &Context, conn_id: uuid::Uuid) {
+        let tx = self.bg_tx.clone();
+        let ctx_clone = ctx.clone();
+        self.runtime.spawn(async move {
+            if let Err(err) = ConnectionManager::delete_password_from_keyring_async(conn_id).await {
+                // INTENTIONAL: receiver is dropped only on application shutdown.
+                let _ = tx.send(AppEvent::BackgroundTaskError {
+                    source: "Keyring".to_string(),
+                    message: format!("Failed to delete password from OS Keychain: {err}"),
+                });
+                ctx_clone.request_repaint();
+            }
+        });
+    }
+
+    fn open_auth_prompt_for_profile(&mut self, index: usize) {
+        let Some(conn) = self.state.connections.get_mut(index) else {
+            return;
+        };
+        conn.status = ConnectionStatus::Disconnected;
+        let (base_uri, uri_user, _) = ConnectionConfig::split_uri_credentials(&conn.uri);
+        let effective_user = if conn.username.is_empty() {
+            uri_user
+        } else {
+            conn.username.clone()
+        };
+        let conn_name = conn.name.clone();
+        self.state.editing_connection_idx = Some(index);
+        self.state.new_conn_name = conn_name.clone();
+        self.state.new_conn_uri = base_uri;
+        self.state.new_conn_username = effective_user;
+        self.state.new_conn_password.clear();
+        self.state.new_conn_save_password = conn.has_saved_password;
+        self.state.test_conn_status = None;
+        self.state.is_testing_connection = false;
+        self.state.show_new_connection_modal = true;
+
+        self.state.bottom_panel.push_log(
+            LogLevel::Info,
+            "ConnectionManager",
+            format!(
+                "Authentication required for '{conn_name}' — please enter username and password."
+            ),
+        );
+    }
+
+    fn connect_profile_now(&mut self, ctx: &Context, index: usize) {
+        let Some(conn) = self.state.connections.get_mut(index) else {
+            return;
+        };
+
+        if conn.needs_auth_prompt() {
+            self.open_auth_prompt_for_profile(index);
+            return;
+        }
+
+        conn.status = ConnectionStatus::Connecting;
+        conn.expanded = false;
+        conn.last_error = None;
+        let conn_id = conn.id;
+        let conn_name = conn.name.clone();
+        let conn_uri = conn.uri.clone();
+        let redacted = ConnectionConfig::redact_uri(&conn_uri);
+        self.state.active_connection_idx = index;
+
+        self.state.bottom_panel.push_log(
+            LogLevel::Info,
+            "ConnectionManager",
+            format!("Connecting profile '{conn_name}' ({redacted})..."),
+        );
+        self.spawn_connect_task(ctx, conn_id, conn_name, conn_uri);
+    }
+
     fn spawn_connect_task(
         &self,
         ctx: &Context,
@@ -134,6 +270,7 @@ impl MongoStudioApp {
                     latency_ms: None,
                 },
             };
+            // INTENTIONAL: receiver is dropped only on application shutdown.
             let _ = tx.send(event);
             ctx_clone.request_repaint();
         });
@@ -146,6 +283,7 @@ impl MongoStudioApp {
             let result = ConnectionClient::ping_uri(&uri, DEFAULT_CONNECT_TIMEOUT)
                 .await
                 .map_err(|e| e.to_string());
+            // INTENTIONAL: receiver is dropped only on application shutdown.
             let _ = tx.send(AppEvent::TestConnectionResult { uri, result });
             ctx_clone.request_repaint();
         });
@@ -170,10 +308,38 @@ impl MongoStudioApp {
             )
             .await
             .map_err(|e| e.to_string());
+            // INTENTIONAL: receiver is dropped only on application shutdown.
             let _ = tx.send(AppEvent::CollectionLoaded {
                 connection_name,
                 database,
                 collection,
+                result,
+            });
+            ctx_clone.request_repaint();
+        });
+    }
+
+    fn spawn_update_user_roles_task(&self, ctx: &Context, task: RoleUpdateTask) {
+        let tx = self.bg_tx.clone();
+        let ctx_clone = ctx.clone();
+        self.runtime.spawn(async move {
+            let outcome = UserService::update_user_roles_and_list(
+                &task.uri,
+                &task.user_db,
+                &task.username,
+                &task.roles,
+                DEFAULT_CONNECT_TIMEOUT,
+            )
+            .await;
+
+            let (message, result) = match outcome {
+                Ok(users) => (task.success_message, Ok(users)),
+                Err(err) => (task.failure_prefix, Err(err.to_string())),
+            };
+            // INTENTIONAL: receiver is dropped only on application shutdown.
+            let _ = tx.send(AppEvent::UserOperationResult {
+                connection_name: task.connection_name,
+                message,
                 result,
             });
             ctx_clone.request_repaint();
@@ -318,81 +484,111 @@ impl MongoStudioApp {
                     let trimmed_db = db_name.trim().to_string();
                     let trimmed_coll = collection_name.trim().to_string();
                     if trimmed_db.is_empty() || trimmed_coll.is_empty() {
+                        self.state.bottom_panel.push_log(
+                            LogLevel::Error,
+                            "DatabaseService",
+                            "Database name and initial collection name must not be empty.",
+                        );
                         continue;
                     }
 
-                    if let Some(conn) = self.state.connections.get_mut(connection_index) {
-                        if let Some(existing_db) =
-                            conn.databases.iter_mut().find(|d| d.name == trimmed_db)
-                        {
-                            existing_db.expanded = true;
-                            if !existing_db
-                                .collections
-                                .iter()
-                                .any(|c| c.name == trimmed_coll)
-                            {
-                                existing_db
-                                    .collections
-                                    .push(CollectionInfo::new_lazy_stub(&trimmed_db, &trimmed_coll));
-                            }
-                        } else {
-                            let mut new_db = DatabaseInfo::new(&trimmed_db, true, [&trimmed_coll]);
-                            if let Some(first_coll) = new_db.collections.first_mut() {
-                                first_coll.documents.clear();
-                                first_coll.stats.document_count = 0;
-                                first_coll.loaded = true;
-                            }
-                            conn.databases.push(new_db);
-                            conn.databases.sort_by(|a, b| a.name.cmp(&b.name));
-                        }
-
+                    if let Some(conn) = self.state.connections.get(connection_index) {
                         let conn_name = conn.name.clone();
                         let uri = conn.uri.clone();
-                        let _ = ConnectionManager::save_profiles(&self.state.connections);
-
-                        self.state
-                            .open_or_focus_collection(&conn_name, &trimmed_db, &trimmed_coll);
 
                         self.state.bottom_panel.push_log(
-                            LogLevel::Success,
+                            LogLevel::Info,
                             "DatabaseService",
                             format!(
-                                "Created database '{trimmed_db}' with initial collection '{trimmed_coll}'"
+                                "Creating database '{trimmed_db}' with initial collection '{trimmed_coll}'..."
                             ),
                         );
 
                         let tx = self.bg_tx.clone();
                         let ctx_clone = ctx.clone();
                         self.runtime.spawn(async move {
-                            if DatabaseService::create_database(
+                            let result = DatabaseService::create_database_and_introspect(
                                 &uri,
                                 &trimmed_db,
                                 &trimmed_coll,
                                 DEFAULT_CONNECT_TIMEOUT,
                             )
                             .await
-                            .is_ok()
-                            {
-                                if let Ok(loaded) = ConnectionClient::introspect_single_collection(
-                                    &uri,
-                                    &trimmed_db,
-                                    &trimmed_coll,
-                                    DEFAULT_CONNECT_TIMEOUT,
-                                )
-                                .await
-                                {
-                                    let _ = tx.send(AppEvent::CollectionLoaded {
-                                        connection_name: conn_name,
-                                        database: trimmed_db,
-                                        collection: trimmed_coll,
-                                        result: Ok(loaded),
-                                    });
-                                    ctx_clone.request_repaint();
-                                }
-                            }
+                            .map_err(|err| err.to_string());
+
+                            // INTENTIONAL: receiver is dropped only on application shutdown.
+                            let _ = tx.send(AppEvent::DatabaseCreated {
+                                connection_name: conn_name,
+                                db_name: trimmed_db,
+                                collection_name: trimmed_coll,
+                                result,
+                            });
+                            ctx_clone.request_repaint();
                         });
                     }
                 }
+                AppEvent::DatabaseCreated {
+                    connection_name,
+                    db_name,
+                    collection_name,
+                    result,
+                } => match result {
+                    Ok(coll) => {
+                        if let Some(conn) = self
+                            .state
+                            .connections
+                            .iter_mut()
+                            .find(|c| c.name == connection_name)
+                        {
+                            if let Some(existing_db) =
+                                conn.databases.iter_mut().find(|d| d.name == db_name)
+                            {
+                                existing_db.expanded = true;
+                                if let Some(slot) = existing_db
+                                    .collections
+                                    .iter_mut()
+                                    .find(|c| c.name == collection_name)
+                                {
+                                    *slot = coll;
+                                } else {
+                                    existing_db.collections.push(coll);
+                                }
+                            } else {
+                                let mut new_db =
+                                    DatabaseInfo::new(&db_name, true, [&collection_name]);
+                                if let Some(first_coll) = new_db.collections.first_mut() {
+                                    *first_coll = coll;
+                                }
+                                conn.databases.push(new_db);
+                                conn.databases.sort_by(|a, b| a.name.cmp(&b.name));
+                            }
+                        }
+
+                        self.state.open_or_focus_collection(
+                            &connection_name,
+                            &db_name,
+                            &collection_name,
+                        );
+                        self.spawn_save_profiles_task(ctx);
+
+                        self.state.bottom_panel.push_log(
+                            LogLevel::Success,
+                            "DatabaseService",
+                            format!(
+                                "Created database '{db_name}' with initial collection '{collection_name}'"
+                            ),
+                        );
+                    }
+                    Err(err) => {
+                        self.state.bottom_panel.push_log(
+                            LogLevel::Error,
+                            "DatabaseService",
+                            format!(
+                                "Failed to create database '{db_name}' ({collection_name}): {err}"
+                            ),
+                        );
+                    }
+                },
                 AppEvent::OpenCreateUserModal { connection_index } => {
                     self.state.create_user_conn_idx = connection_index;
                     self.state.duplicate_source_user = None;
@@ -435,6 +631,14 @@ impl MongoStudioApp {
                     roles,
                 } => {
                     let trimmed = username.trim().to_string();
+                    if trimmed.is_empty() {
+                        self.state.bottom_panel.push_log(
+                            LogLevel::Error,
+                            "UserManager",
+                            "Username must not be empty.",
+                        );
+                        continue;
+                    }
                     if trimmed.eq_ignore_ascii_case("admin") {
                         self.state.bottom_panel.push_log(
                             LogLevel::Error,
@@ -443,39 +647,29 @@ impl MongoStudioApp {
                         );
                         continue;
                     }
-                    if let Some(conn) = self.state.connections.get_mut(connection_index) {
+                    if let Some(conn) = self.state.connections.get(connection_index) {
                         let effective_roles = if roles.is_empty() {
                             vec![UserRole::new("read", "admin")]
                         } else {
                             roles
                         };
                         let role_count = effective_roles.len();
-                        let new_user = MongoUser {
-                            id: format!("admin.{trimmed}"),
-                            username: trimmed.clone(),
-                            db: "admin".to_string(),
-                            roles: effective_roles.clone(),
-                        };
-                        conn.users.retain(|u| u.username != trimmed);
-                        conn.users.push(new_user);
-                        conn.users_expanded = true;
-
                         let conn_name = conn.name.clone();
                         let uri = conn.uri.clone();
-                        self.state.open_or_focus_user(&conn_name, &trimmed);
 
+                        self.pending_open_user = Some((conn_name.clone(), trimmed.clone()));
                         self.state.bottom_panel.push_log(
-                            LogLevel::Success,
+                            LogLevel::Info,
                             "UserManager",
                             format!(
-                                "Created user '{trimmed}' with {role_count} assigned database role(s)"
+                                "Creating MongoDB user '{trimmed}' with {role_count} assigned database role(s)..."
                             ),
                         );
 
                         let tx = self.bg_tx.clone();
                         let ctx_clone = ctx.clone();
                         self.runtime.spawn(async move {
-                            let res = UserService::create_user(
+                            let res = UserService::create_user_and_list(
                                 &uri,
                                 &trimmed,
                                 &password,
@@ -483,20 +677,26 @@ impl MongoStudioApp {
                                 DEFAULT_CONNECT_TIMEOUT,
                             )
                             .await;
-                            if res.is_ok() {
-                                if let Ok(users) =
-                                    UserService::list_users_uri(&uri, DEFAULT_CONNECT_TIMEOUT).await
-                                {
-                                    let _ = tx.send(AppEvent::UserOperationResult {
-                                        connection_name: conn_name,
-                                        message: format!(
-                                            "Created MongoDB user '{trimmed}' on server"
-                                        ),
-                                        result: Ok(users),
-                                    });
-                                    ctx_clone.request_repaint();
-                                }
-                            }
+
+                            let (message, result) = match res {
+                                Ok(users) => (
+                                    format!(
+                                        "Created MongoDB user '{trimmed}' with {role_count} assigned database role(s)"
+                                    ),
+                                    Ok(users),
+                                ),
+                                Err(err) => (
+                                    format!("Failed to create MongoDB user '{trimmed}'"),
+                                    Err(err.to_string()),
+                                ),
+                            };
+                            // INTENTIONAL: receiver is dropped only on application shutdown.
+                            let _ = tx.send(AppEvent::UserOperationResult {
+                                connection_name: conn_name,
+                                message,
+                                result,
+                            });
+                            ctx_clone.request_repaint();
                         });
                     }
                 }
@@ -514,58 +714,43 @@ impl MongoStudioApp {
                         );
                         continue;
                     }
-                    if let Some(conn) = self
+                    let task = self
                         .state
                         .connections
-                        .iter_mut()
+                        .iter()
                         .find(|c| c.name == connection_name)
-                    {
-                        if let Some(user) = conn.users.iter_mut().find(|u| u.username == username) {
-                            let new_role = UserRole::new(&role, &db);
-                            if !user.roles.contains(&new_role) {
-                                user.roles.push(new_role);
-                            }
-                            let updated_roles = user.roles.clone();
-                            let user_db = user.db.clone();
-                            let uri = conn.uri.clone();
-                            let conn_name = conn.name.clone();
-                            let uname = username.clone();
-
-                            self.state.bottom_panel.push_log(
-                                LogLevel::Success,
-                                "UserManager",
-                                format!("Granted role '{role}' on '{db}' to user '{username}'"),
-                            );
-
-                            let tx = self.bg_tx.clone();
-                            let ctx_clone = ctx.clone();
-                            self.runtime.spawn(async move {
-                                if UserService::update_user_roles(
-                                    &uri,
-                                    &user_db,
-                                    &uname,
-                                    &updated_roles,
-                                    DEFAULT_CONNECT_TIMEOUT,
-                                )
-                                .await
-                                .is_ok()
-                                {
-                                    if let Ok(users) =
-                                        UserService::list_users_uri(&uri, DEFAULT_CONNECT_TIMEOUT)
-                                            .await
-                                    {
-                                        let _ = tx.send(AppEvent::UserOperationResult {
-                                            connection_name: conn_name,
-                                            message: format!(
-                                                "Granted role '{role}' on '{db}' to '{uname}'"
-                                            ),
-                                            result: Ok(users),
-                                        });
-                                        ctx_clone.request_repaint();
+                        .and_then(|conn| {
+                            conn.users
+                                .iter()
+                                .find(|u| u.username == username)
+                                .map(|user| {
+                                    let mut updated_roles = user.roles.clone();
+                                    let new_role = UserRole::new(&role, &db);
+                                    if !updated_roles.contains(&new_role) {
+                                        updated_roles.push(new_role);
                                     }
-                                }
-                            });
-                        }
+                                    RoleUpdateTask {
+                                        connection_name: conn.name.clone(),
+                                        uri: conn.uri.clone(),
+                                        user_db: user.db.clone(),
+                                        username: username.clone(),
+                                        roles: updated_roles,
+                                        success_message: format!(
+                                            "Granted role '{role}' on '{db}' to '{username}'"
+                                        ),
+                                        failure_prefix: format!(
+                                            "Failed to grant role '{role}' on '{db}' to '{username}'"
+                                        ),
+                                    }
+                                })
+                        });
+                    if let Some(task) = task {
+                        self.state.bottom_panel.push_log(
+                            LogLevel::Info,
+                            "UserManager",
+                            format!("Granting role '{role}' on '{db}' to user '{username}'..."),
+                        );
+                        self.spawn_update_user_roles_task(ctx, task);
                     }
                 }
                 AppEvent::RevokeUserRole {
@@ -582,55 +767,40 @@ impl MongoStudioApp {
                         );
                         continue;
                     }
-                    if let Some(conn) = self
+                    let task = self
                         .state
                         .connections
-                        .iter_mut()
+                        .iter()
                         .find(|c| c.name == connection_name)
-                    {
-                        if let Some(user) = conn.users.iter_mut().find(|u| u.username == username) {
-                            user.roles.retain(|r| !(r.db == db && r.role == role));
-                            let updated_roles = user.roles.clone();
-                            let user_db = user.db.clone();
-                            let uri = conn.uri.clone();
-                            let conn_name = conn.name.clone();
-                            let uname = username.clone();
-
-                            self.state.bottom_panel.push_log(
-                                LogLevel::Info,
-                                "UserManager",
-                                format!("Revoked role '{role}' on '{db}' from user '{username}'"),
-                            );
-
-                            let tx = self.bg_tx.clone();
-                            let ctx_clone = ctx.clone();
-                            self.runtime.spawn(async move {
-                                if UserService::update_user_roles(
-                                    &uri,
-                                    &user_db,
-                                    &uname,
-                                    &updated_roles,
-                                    DEFAULT_CONNECT_TIMEOUT,
-                                )
-                                .await
-                                .is_ok()
-                                {
-                                    if let Ok(users) =
-                                        UserService::list_users_uri(&uri, DEFAULT_CONNECT_TIMEOUT)
-                                            .await
-                                    {
-                                        let _ = tx.send(AppEvent::UserOperationResult {
-                                            connection_name: conn_name,
-                                            message: format!(
-                                                "Revoked role '{role}' on '{db}' from '{uname}'"
-                                            ),
-                                            result: Ok(users),
-                                        });
-                                        ctx_clone.request_repaint();
+                        .and_then(|conn| {
+                            conn.users
+                                .iter()
+                                .find(|u| u.username == username)
+                                .map(|user| {
+                                    let mut updated_roles = user.roles.clone();
+                                    updated_roles.retain(|r| !(r.db == db && r.role == role));
+                                    RoleUpdateTask {
+                                        connection_name: conn.name.clone(),
+                                        uri: conn.uri.clone(),
+                                        user_db: user.db.clone(),
+                                        username: username.clone(),
+                                        roles: updated_roles,
+                                        success_message: format!(
+                                            "Revoked role '{role}' on '{db}' from '{username}'"
+                                        ),
+                                        failure_prefix: format!(
+                                            "Failed to revoke role '{role}' on '{db}' from '{username}'"
+                                        ),
                                     }
-                                }
-                            });
-                        }
+                                })
+                        });
+                    if let Some(task) = task {
+                        self.state.bottom_panel.push_log(
+                            LogLevel::Info,
+                            "UserManager",
+                            format!("Revoking role '{role}' on '{db}' from user '{username}'..."),
+                        );
+                        self.spawn_update_user_roles_task(ctx, task);
                     }
                 }
                 AppEvent::SaveUserRoles {
@@ -646,57 +816,37 @@ impl MongoStudioApp {
                         );
                         continue;
                     }
-                    if let Some(conn) = self
+                    let role_count = roles.len();
+                    let task = self
                         .state
                         .connections
-                        .iter_mut()
+                        .iter()
                         .find(|c| c.name == connection_name)
-                    {
-                        if let Some(user) = conn.users.iter_mut().find(|u| u.username == username) {
-                            user.roles = roles.clone();
-                            let user_db = user.db.clone();
-                            let uri = conn.uri.clone();
-                            let conn_name = conn.name.clone();
-                            let uname = username.clone();
-                            let role_count = roles.len();
-
-                            self.state.bottom_panel.push_log(
-                                LogLevel::Success,
-                                "UserManager",
-                                format!(
-                                    "Applied {role_count} database role(s) for user '{username}'"
-                                ),
-                            );
-
-                            let tx = self.bg_tx.clone();
-                            let ctx_clone = ctx.clone();
-                            self.runtime.spawn(async move {
-                                if UserService::update_user_roles(
-                                    &uri,
-                                    &user_db,
-                                    &uname,
-                                    &roles,
-                                    DEFAULT_CONNECT_TIMEOUT,
-                                )
-                                .await
-                                .is_ok()
-                                {
-                                    if let Ok(users) =
-                                        UserService::list_users_uri(&uri, DEFAULT_CONNECT_TIMEOUT)
-                                            .await
-                                    {
-                                        let _ = tx.send(AppEvent::UserOperationResult {
-                                            connection_name: conn_name,
-                                            message: format!(
-                                                "Saved {role_count} role(s) for '{uname}' on server"
-                                            ),
-                                            result: Ok(users),
-                                        });
-                                        ctx_clone.request_repaint();
-                                    }
-                                }
-                            });
-                        }
+                        .and_then(|conn| {
+                            conn.users
+                                .iter()
+                                .find(|u| u.username == username)
+                                .map(|user| RoleUpdateTask {
+                                    connection_name: conn.name.clone(),
+                                    uri: conn.uri.clone(),
+                                    user_db: user.db.clone(),
+                                    username: username.clone(),
+                                    roles,
+                                    success_message: format!(
+                                        "Saved {role_count} role(s) for '{username}' on server"
+                                    ),
+                                    failure_prefix: format!(
+                                        "Failed to save roles for '{username}'"
+                                    ),
+                                })
+                        });
+                    if let Some(task) = task {
+                        self.state.bottom_panel.push_log(
+                            LogLevel::Info,
+                            "UserManager",
+                            format!("Saving {role_count} database role(s) for user '{username}'..."),
+                        );
+                        self.spawn_update_user_roles_task(ctx, task);
                     }
                 }
                 AppEvent::OpenChangePasswordModal {
@@ -737,6 +887,7 @@ impl MongoStudioApp {
                         .iter()
                         .find(|c| c.name == connection_name)
                     {
+                        let conn_name = conn.name.clone();
                         let uri = conn.uri.clone();
                         let user_db = conn
                             .users
@@ -744,23 +895,58 @@ impl MongoStudioApp {
                             .find(|u| u.username == username)
                             .map_or_else(|| "admin".to_string(), |u| u.db.clone());
                         let uname = username.clone();
+
+                        self.state.bottom_panel.push_log(
+                            LogLevel::Info,
+                            "UserManager",
+                            format!("Updating password for user '{username}'..."),
+                        );
+
+                        let tx = self.bg_tx.clone();
+                        let ctx_clone = ctx.clone();
                         self.runtime.spawn(async move {
-                            let _ = UserService::change_user_password(
+                            let result = UserService::change_user_password(
                                 &uri,
                                 &user_db,
                                 &uname,
                                 &new_password,
                                 DEFAULT_CONNECT_TIMEOUT,
                             )
-                            .await;
+                            .await
+                            .map_err(|err| err.to_string());
+
+                            // INTENTIONAL: receiver is dropped only on application shutdown.
+                            let _ = tx.send(AppEvent::UserPasswordChanged {
+                                connection_name: conn_name,
+                                username: uname,
+                                result,
+                            });
+                            ctx_clone.request_repaint();
                         });
+                    }
+                }
+                AppEvent::UserPasswordChanged {
+                    connection_name,
+                    username,
+                    result,
+                } => match result {
+                    Ok(()) => {
                         self.state.bottom_panel.push_log(
                             LogLevel::Success,
                             "UserManager",
-                            format!("Updated password for user '{username}'"),
+                            format!("Updated password for user '{username}' on '{connection_name}'"),
                         );
                     }
-                }
+                    Err(err) => {
+                        self.state.bottom_panel.push_log(
+                            LogLevel::Error,
+                            "UserManager",
+                            format!(
+                                "Failed to update password for user '{username}' on '{connection_name}': {err}"
+                            ),
+                        );
+                    }
+                },
                 AppEvent::RequestDeleteUser {
                     connection_index,
                     username,
@@ -787,31 +973,51 @@ impl MongoStudioApp {
                         );
                         continue;
                     }
-                    if let Some(conn) = self.state.connections.get_mut(connection_index) {
+                    if let Some(conn) = self.state.connections.get(connection_index) {
                         let user_db = conn
                             .users
                             .iter()
                             .find(|u| u.username == username)
                             .map_or_else(|| "admin".to_string(), |u| u.db.clone());
-                        conn.users.retain(|u| u.username != username);
-
+                        let conn_name = conn.name.clone();
                         let uri = conn.uri.clone();
                         let uname = username.clone();
+
+                        self.state.bottom_panel.push_log(
+                            LogLevel::Info,
+                            "UserManager",
+                            format!("Deleting MongoDB user '{username}'..."),
+                        );
+
+                        let tx = self.bg_tx.clone();
+                        let ctx_clone = ctx.clone();
                         self.runtime.spawn(async move {
-                            let _ = UserService::drop_user(
+                            let res = UserService::drop_user_and_list(
                                 &uri,
                                 &user_db,
                                 &uname,
                                 DEFAULT_CONNECT_TIMEOUT,
                             )
                             .await;
-                        });
 
-                        self.state.bottom_panel.push_log(
-                            LogLevel::Info,
-                            "UserManager",
-                            format!("Deleted MongoDB user '{username}'"),
-                        );
+                            let (message, result) = match res {
+                                Ok(users) => (
+                                    format!("Deleted MongoDB user '{uname}'"),
+                                    Ok(users),
+                                ),
+                                Err(err) => (
+                                    format!("Failed to delete MongoDB user '{uname}'"),
+                                    Err(err.to_string()),
+                                ),
+                            };
+                            // INTENTIONAL: receiver is dropped only on application shutdown.
+                            let _ = tx.send(AppEvent::UserOperationResult {
+                                connection_name: conn_name,
+                                message,
+                                result,
+                            });
+                            ctx_clone.request_repaint();
+                        });
                     }
                 }
                 AppEvent::UserOperationResult {
@@ -827,12 +1033,35 @@ impl MongoStudioApp {
                             .find(|c| c.name == connection_name)
                         {
                             conn.users = users;
+                            conn.users_expanded = true;
+                        }
+                        if self.pending_open_user.as_ref().is_some_and(|(c, u)| {
+                            *c == connection_name
+                                && self
+                                    .state
+                                    .connections
+                                    .iter()
+                                    .find(|conn| conn.name == connection_name)
+                                    .is_some_and(|conn| {
+                                        conn.users.iter().any(|usr| usr.username == *u)
+                                    })
+                        }) {
+                            if let Some((c, u)) = self.pending_open_user.take() {
+                                self.state.open_or_focus_user(&c, &u);
+                            }
                         }
                         self.state
                             .bottom_panel
                             .push_log(LogLevel::Success, "UserManager", message);
                     }
                     Err(err) => {
+                        if self
+                            .pending_open_user
+                            .as_ref()
+                            .is_some_and(|(c, _)| *c == connection_name)
+                        {
+                            self.pending_open_user = None;
+                        }
                         self.state.bottom_panel.push_log(
                             LogLevel::Error,
                             "UserManager",
@@ -840,6 +1069,11 @@ impl MongoStudioApp {
                         );
                     }
                 },
+                AppEvent::BackgroundTaskError { source, message } => {
+                    self.state
+                        .bottom_panel
+                        .push_log(LogLevel::Error, &source, message);
+                }
                 AppEvent::SelectActivity(view) => {
                     if self.state.active_activity == view {
                         self.state.sidebar_visible = !self.state.sidebar_visible;
@@ -884,21 +1118,97 @@ impl MongoStudioApp {
                         } else {
                             conn.username.clone()
                         };
-                        let effective_pass = if conn.has_saved_password {
-                            ConnectionManager::load_password_from_keyring(conn.id)
-                                .unwrap_or(uri_pass)
-                        } else {
-                            uri_pass
-                        };
+                        let needs_keyring_load = conn.has_saved_password && uri_pass.is_empty();
                         self.state.editing_connection_idx = Some(index);
                         self.state.new_conn_name = conn.name.clone();
                         self.state.new_conn_uri = base_uri;
                         self.state.new_conn_username = effective_user;
-                        self.state.new_conn_password = effective_pass;
+                        self.state.new_conn_password = uri_pass;
                         self.state.new_conn_save_password = conn.has_saved_password;
                         self.state.test_conn_status = None;
                         self.state.is_testing_connection = false;
                         self.state.show_new_connection_modal = true;
+
+                        if needs_keyring_load {
+                            self.spawn_keyring_load_task(ctx, index, true);
+                        }
+                    }
+                }
+                AppEvent::KeyringPasswordLoaded {
+                    index,
+                    open_edit_modal,
+                    result,
+                } => {
+                    if open_edit_modal {
+                        match result {
+                            Ok(Some(pw)) => {
+                                if self.state.editing_connection_idx == Some(index) {
+                                    self.state.new_conn_password = pw;
+                                }
+                            }
+                            Ok(None) => {}
+                            Err(err) => {
+                                self.state.bottom_panel.push_log(
+                                    LogLevel::Error,
+                                    "Keyring",
+                                    format!("Failed to load saved password from OS Keychain: {err}"),
+                                );
+                            }
+                        }
+                    } else {
+                        match result {
+                            Ok(Some(pw)) => {
+                                if let Some(conn) = self.state.connections.get_mut(index) {
+                                    let (base_uri, uri_user, _) =
+                                        ConnectionConfig::split_uri_credentials(&conn.uri);
+                                    let user = if conn.username.is_empty() {
+                                        uri_user
+                                    } else {
+                                        conn.username.clone()
+                                    };
+                                    conn.uri =
+                                        ConnectionConfig::normalize_uri(&base_uri, &user, &pw);
+                                }
+                                self.connect_profile_now(ctx, index);
+                            }
+                            Ok(None) => {
+                                let mut auth_missing = false;
+                                if let Some(conn) = self.state.connections.get_mut(index) {
+                                    if conn.requires_auth {
+                                        conn.has_saved_password = false;
+                                        conn.status = ConnectionStatus::Disconnected;
+                                        auth_missing = true;
+                                    }
+                                }
+                                if auth_missing {
+                                    self.spawn_save_profiles_task(ctx);
+                                }
+                                self.connect_profile_now(ctx, index);
+                            }
+                            Err(err) => {
+                                self.state.bottom_panel.push_log(
+                                    LogLevel::Error,
+                                    "Keyring",
+                                    format!("Failed to load saved password from OS Keychain: {err}"),
+                                );
+                                let needs_prompt =
+                                    self.state.connections.get_mut(index).is_some_and(|conn| {
+                                        let uri_pass =
+                                            ConnectionConfig::split_uri_credentials(&conn.uri).2;
+                                        if conn.requires_auth && uri_pass.is_empty() {
+                                            conn.status = ConnectionStatus::Disconnected;
+                                            true
+                                        } else {
+                                            false
+                                        }
+                                    });
+                                if needs_prompt {
+                                    self.open_auth_prompt_for_profile(index);
+                                } else {
+                                    self.connect_profile_now(ctx, index);
+                                }
+                            }
+                        }
                     }
                 }
                 AppEvent::TestConnection { name: _, uri } => {
@@ -938,15 +1248,14 @@ impl MongoStudioApp {
                 AppEvent::AddConnection { name, uri } => {
                     match ConnectionConfig::new_profile(&name, &uri) {
                         Ok(mut conn) => {
-                            if self.state.new_conn_save_password
+                            let password_to_save = if self.state.new_conn_save_password
                                 && !self.state.new_conn_password.is_empty()
                             {
-                                let _ = ConnectionManager::save_password_to_keyring(
-                                    conn.id,
-                                    &self.state.new_conn_password,
-                                );
                                 conn.has_saved_password = true;
-                            }
+                                Some(self.state.new_conn_password.clone())
+                            } else {
+                                None
+                            };
 
                             let conn_id = conn.id;
                             let conn_name = conn.name.clone();
@@ -955,7 +1264,11 @@ impl MongoStudioApp {
 
                             self.state.connections.push(conn);
                             self.state.active_connection_idx = self.state.connections.len() - 1;
-                            let _ = ConnectionManager::save_profiles(&self.state.connections);
+
+                            if let Some(password) = password_to_save {
+                                self.spawn_keyring_save_task(ctx, conn_id, password);
+                            }
+                            self.spawn_save_profiles_task(ctx);
 
                             self.state.bottom_panel.push_log(
                                 LogLevel::Info,
@@ -986,7 +1299,7 @@ impl MongoStudioApp {
                         continue;
                     }
 
-                    if let Some(conn) = self.state.connections.get_mut(index) {
+                    let update_outcome = self.state.connections.get_mut(index).map(|conn| {
                         let (_base_uri, uri_user, uri_pass) =
                             ConnectionConfig::split_uri_credentials(trimmed_uri);
                         conn.name = clamped_name;
@@ -998,26 +1311,35 @@ impl MongoStudioApp {
                         conn.expanded = false;
                         conn.last_error = None;
 
-                        if self.state.new_conn_save_password
+                        let keyring_op = if self.state.new_conn_save_password
                             && !self.state.new_conn_password.is_empty()
                         {
-                            let _ = ConnectionManager::save_password_to_keyring(
-                                conn.id,
-                                &self.state.new_conn_password,
-                            );
                             conn.has_saved_password = true;
+                            Some(Some(self.state.new_conn_password.clone()))
                         } else if !self.state.new_conn_save_password && conn.has_saved_password {
-                            ConnectionManager::delete_password_from_keyring(conn.id);
                             conn.has_saved_password = false;
-                        }
+                            Some(None)
+                        } else {
+                            None
+                        };
 
-                        let conn_id = conn.id;
-                        let conn_name = conn.name.clone();
-                        let conn_uri = conn.uri.clone();
+                        (conn.id, conn.name.clone(), conn.uri.clone(), keyring_op)
+                    });
+
+                    if let Some((conn_id, conn_name, conn_uri, keyring_op)) = update_outcome {
                         let redacted = ConnectionConfig::redact_uri(&conn_uri);
                         self.state.active_connection_idx = index;
 
-                        let _ = ConnectionManager::save_profiles(&self.state.connections);
+                        match keyring_op {
+                            Some(Some(password)) => {
+                                self.spawn_keyring_save_task(ctx, conn_id, password);
+                            }
+                            Some(None) => {
+                                self.spawn_keyring_delete_task(ctx, conn_id);
+                            }
+                            None => {}
+                        }
+                        self.spawn_save_profiles_task(ctx);
 
                         self.state.bottom_panel.push_log(
                             LogLevel::Info,
@@ -1029,83 +1351,36 @@ impl MongoStudioApp {
                     }
                 }
                 AppEvent::ConnectProfile { index } => {
-                    if let Some(conn) = self.state.connections.get_mut(index) {
-                        if conn.has_saved_password
+                    let needs_keyring = self.state.connections.get(index).is_some_and(|conn| {
+                        conn.has_saved_password
                             && ConnectionConfig::split_uri_credentials(&conn.uri)
                                 .2
                                 .is_empty()
-                        {
-                            if let Some(saved_pw) =
-                                ConnectionManager::load_password_from_keyring(conn.id)
-                            {
-                                let (base_uri, uri_user, _) =
-                                    ConnectionConfig::split_uri_credentials(&conn.uri);
-                                let user = if conn.username.is_empty() {
-                                    uri_user
-                                } else {
-                                    conn.username.clone()
-                                };
-                                conn.uri =
-                                    ConnectionConfig::normalize_uri(&base_uri, &user, &saved_pw);
-                            }
+                    });
+
+                    if needs_keyring {
+                        if let Some(conn) = self.state.connections.get_mut(index) {
+                            conn.status = ConnectionStatus::Connecting;
+                            conn.expanded = false;
+                            conn.last_error = None;
                         }
-
-                        if conn.needs_auth_prompt() {
-                            let (base_uri, uri_user, _) =
-                                ConnectionConfig::split_uri_credentials(&conn.uri);
-                            let effective_user = if conn.username.is_empty() {
-                                uri_user
-                            } else {
-                                conn.username.clone()
-                            };
-                            let conn_name = conn.name.clone();
-                            self.state.editing_connection_idx = Some(index);
-                            self.state.new_conn_name = conn_name.clone();
-                            self.state.new_conn_uri = base_uri;
-                            self.state.new_conn_username = effective_user;
-                            self.state.new_conn_password.clear();
-                            self.state.new_conn_save_password = false;
-                            self.state.test_conn_status = None;
-                            self.state.is_testing_connection = false;
-                            self.state.show_new_connection_modal = true;
-
-                            self.state.bottom_panel.push_log(
-                                LogLevel::Info,
-                                "ConnectionManager",
-                                format!(
-                                    "Authentication required for '{conn_name}' — please enter username and password."
-                                ),
-                            );
-                            continue;
-                        }
-
-                        conn.status = ConnectionStatus::Connecting;
-                        conn.expanded = false;
-                        conn.last_error = None;
-                        let conn_id = conn.id;
-                        let conn_name = conn.name.clone();
-                        let conn_uri = conn.uri.clone();
-                        let redacted = ConnectionConfig::redact_uri(&conn_uri);
-                        self.state.active_connection_idx = index;
-
-                        self.state.bottom_panel.push_log(
-                            LogLevel::Info,
-                            "ConnectionManager",
-                            format!("Connecting profile '{conn_name}' ({redacted})..."),
-                        );
-                        self.spawn_connect_task(ctx, conn_id, conn_name, conn_uri);
+                        self.spawn_keyring_load_task(ctx, index, false);
+                    } else {
+                        self.connect_profile_now(ctx, index);
                     }
                 }
                 AppEvent::DisconnectProfile { index } => {
-                    if let Some(conn) = self.state.connections.get_mut(index) {
+                    let disconnected_name = self.state.connections.get_mut(index).map(|conn| {
                         conn.status = ConnectionStatus::Disconnected;
                         conn.expanded = false;
                         conn.last_error = None;
                         if !conn.has_saved_password {
                             conn.clear_session_password();
                         }
-                        let name = conn.name.clone();
-                        let _ = ConnectionManager::save_profiles(&self.state.connections);
+                        conn.name.clone()
+                    });
+                    if let Some(name) = disconnected_name {
+                        self.spawn_save_profiles_task(ctx);
                         self.state.bottom_panel.push_log(
                             LogLevel::Info,
                             "ConnectionManager",
@@ -1116,13 +1391,13 @@ impl MongoStudioApp {
                 AppEvent::RemoveConnection { index } => {
                     if index < self.state.connections.len() {
                         let removed = self.state.connections.remove(index);
-                        ConnectionManager::delete_password_from_keyring(removed.id);
                         if self.state.active_connection_idx >= self.state.connections.len()
                             && !self.state.connections.is_empty()
                         {
                             self.state.active_connection_idx = self.state.connections.len() - 1;
                         }
-                        let _ = ConnectionManager::save_profiles(&self.state.connections);
+                        self.spawn_keyring_delete_task(ctx, removed.id);
+                        self.spawn_save_profiles_task(ctx);
                         self.state.bottom_panel.push_log(
                             LogLevel::Info,
                             "ConnectionManager",
@@ -1138,12 +1413,13 @@ impl MongoStudioApp {
                     latency_ms,
                 } => {
                     let redacted = ConnectionConfig::redact_uri(&uri);
-                    if let Some(conn) = self
+                    let matched = self
                         .state
                         .connections
                         .iter_mut()
-                        .find(|c| c.id == conn_id || (c.name == name && c.uri == uri))
-                    {
+                        .find(|c| c.id == conn_id || (c.name == name && c.uri == uri));
+
+                    if let Some(conn) = matched {
                         match result {
                             Ok((dbs, users, is_admin)) => {
                                 let db_count = dbs.len();
@@ -1155,7 +1431,6 @@ impl MongoStudioApp {
                                 conn.expanded = true;
                                 conn.last_error = None;
 
-                                let _ = ConnectionManager::save_profiles(&self.state.connections);
                                 let latency_note = latency_ms
                                     .map(|ms| format!(" in {ms:.1} ms"))
                                     .unwrap_or_default();
@@ -1164,6 +1439,7 @@ impl MongoStudioApp {
                                 } else {
                                     String::new()
                                 };
+                                self.spawn_save_profiles_task(ctx);
                                 self.state.bottom_panel.push_log(
                                     LogLevel::Success,
                                     "ConnectionManager",
@@ -1176,7 +1452,7 @@ impl MongoStudioApp {
                                 conn.status = ConnectionStatus::Error;
                                 conn.expanded = false;
                                 conn.last_error = Some(err.clone());
-                                let _ = ConnectionManager::save_profiles(&self.state.connections);
+                                self.spawn_save_profiles_task(ctx);
                                 self.state.bottom_panel.push_log(
                                     LogLevel::Error,
                                     "ConnectionManager",
@@ -1243,6 +1519,7 @@ impl MongoStudioApp {
                 AppEvent::ResetWorkspaceLayout => {
                     self.state = AppState::default();
                     self.palette = apply_theme(ctx, self.state.theme_mode);
+                    self.pending_open_user = None;
                 }
             }
         }
@@ -1270,7 +1547,11 @@ impl eframe::App for MongoStudioApp {
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
         let persisted = self.state.to_persistence();
         eframe::set_value(storage, eframe::APP_KEY, &persisted);
-        let _ = persisted.save_to_disk();
-        let _ = ConnectionManager::save_profiles(&self.state.connections);
+        if let Err(err) = persisted.save_to_disk() {
+            tracing::warn!(error = %err, "failed to save workspace state on shutdown");
+        }
+        if let Err(err) = ConnectionManager::save_profiles(&self.state.connections) {
+            tracing::warn!(error = %err, "failed to save connection profiles on shutdown");
+        }
     }
 }

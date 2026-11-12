@@ -1,0 +1,135 @@
+# Mongo Studio — Development Plan (`PLAN.md`)
+
+เอกสารแผนการทำงานสำหรับพัฒนา **Mongo Studio** (MongoDB Desktop Admin Tool ด้วยภาษา Rust + `egui` / `eframe` / `egui_dock`) โดยถอดโครงสร้างฟีเจอร์จาก [README.md](./README.md) และจัดลำดับการทำงานตามข้อกำหนดใน [AGENTS.md](./AGENTS.md) และ `.agents/`
+
+---
+
+## สถานะภาพรวมของโปรเจกต์
+
+| Phase | หัวข้อ | สถานะ | Git Commit / หมายเหตุ |
+| :--- | :--- | :--- | :--- |
+| **Phase 1** | UI Framework & Workspace Shell | ✅ เสร็จสิ้น | `c1266f1` |
+| **Phase 2** | Live MongoDB Connection & Security | ✅ เสร็จสิ้น | `5e282ef` |
+| **Phase 3** | Database Explorer (Lazy-Loading) & Admin RBAC | ✅ เสร็จสิ้น *(กำลังขัดเกลาโค้ดตาม `.agents/`)* | `fdc60e3`, `0d9f910` + Polish รอบก่อนขึ้น Phase 4 |
+| **Phase 4** | Live Document Manager & Full CRUD / Query | ⬜ รอดำเนินการ | Phase ถัดไป |
+| **Phase 5** | Advanced Features, Export/Import & Release | ⬜ รอดำเนินการ | ตามแผน |
+
+---
+
+## กติกาการทำงานและ Team Ownership
+
+ยึดตาม [AGENTS.md](./AGENTS.md) และ `.agents/agents/`:
+
+1. **Git Workflow**: ต้อง `git commit` ก่อนขึ้น Phase ใหม่ทุกครั้ง (และแยก commit ตาม feature ย่อยได้)
+2. **Sequential Agent Execution**: ห้ามให้หลาย Agent แก้ไฟล์พร้อมกันเด็ดขาด
+3. **Code Standards**: เปิดและปฏิบัติตาม [`.agents/skills/rust-skills/SKILL.md`](./.agents/skills/rust-skills/SKILL.md) ก่อนเริ่มทุก Phase
+4. **Module Ownership**:
+   - `core-dev`: `src/core/`, `src/database/`, `src/models/`, `src/query/`
+   - `ui-dev`: `src/ui/`, `src/theme/`, `src/workspace/`, `src/app.rs` (ห้าม block UI thread ด้วย Synchronous I/O และเลี่ยงการ allocate ใน hot path)
+   - `qa-tester`: `tests/` (ตรวจสอบ `cargo clippy --all-targets` และ `cargo test` รวมถึงทดสอบกับเซิร์ฟเวอร์จริงเมื่อมี)
+
+---
+
+## Phase 1 — UI Framework & Workspace Shell ✅
+
+- [x] Desktop Application Shell ด้วย `eframe` / `egui` และ Title / Menu Bar (`File`, `Edit`, `View`, `Help`)
+- [x] VS Code-inspired Theme System: Dark Theme (ค่าเริ่มต้น) และ Light Theme (`src/theme/`)
+- [x] Activity Bar (Connections, Saved Queries, Aggregation, Schema Analyzer, Settings) พร้อม `egui-phosphor` Font Icons และ Logo SVG (`assets/logo.svg`)
+- [x] Collapsible Sidebar & Connection Tree View (`src/ui/sidebar.rs`, `src/ui/components/tree_view.rs`)
+- [x] Multi-Tab Docking Workspace ด้วย `egui_dock` (`src/ui/tab_bar.rs`, `src/workspace/tabs.rs`)
+- [x] Bottom Panel 4 แท็บ: `TERMINAL`, `OUTPUT`, `QUERY HISTORY`, `PROBLEMS` (`src/workspace/panels.rs`)
+- [x] Status Bar & Command Palette (`Ctrl+P` / `Cmd+P`) พร้อม Keyboard Shortcuts (`Ctrl+B`, `Ctrl+J`)
+- [x] Workspace Layout Persistence (`src/workspace/persistence.rs`)
+
+---
+
+## Phase 2 — Live MongoDB Connection & Security ✅
+
+- [x] เชื่อมต่อ MongoDB จริงด้วย `mongodb` + `bson` และ Multi-threaded `tokio` Runtime
+- [x] `ConnectionManager` & `ConnectionClient` (`ping_uri`, `connect_and_introspect`, `normalize_uri`, `redact_uri`)
+- [x] Modal เพิ่ม/ทดสอบการเชื่อมต่อ (`Add Connection`, `Test Connection`) พร้อมบันทึก/โหลดโปรไฟล์ใน `connections.json` (`directories`)
+- [x] จัดเก็บรหัสผ่านอย่างปลอดภัยด้วย OS Keychain (`keyring`) และซ่อนรหัสผ่านใน Log/Tooltip
+- [x] ระบบ Authentication แบบปลอดภัย: ไม่เขียนรหัสผ่านแบบ Plaintext ลงดิสก์, ล้างรหัสผ่านชั่วคราวเมื่อ `Disconnect` (หากไม่ได้ติ๊ก Save in Keychain) และเด้งถามรหัสผ่านใหม่อัตโนมัติเมื่อกด Expand
+- [x] รองรับ Connection Profiles ใน Sidebar: Auto-Connect เมื่อกด Expand, `Edit Connection...`, `Disconnect`, `Remove Profile`, จำกัดชื่อโปรไฟล์สูงสุด 30 ตัวอักษร
+
+---
+
+## Phase 3 — Database Explorer & Admin User Management ✅ *(กำลังเก็บงาน Polish)*
+
+### สิ่งที่ทำเสร็จแล้ว (`fdc60e3`, `0d9f910`)
+- [x] **Fast Concurrent Lazy-Loading**: ค้นหา Databases & Collections แบบขนาน (`JoinSet` + `Semaphore(16)`) สร้างเป็น Lightweight Stub (`loaded: false`) ทำให้เชื่อมต่อ 95+ ฐานข้อมูลเสร็จภายใน ~112 ms
+- [x] **On-Demand Collection Introspection**: โหลดเอกสาร (ตัวอย่าง 50 รายการ), Indexes, Document Count และวิเคราะห์ Schema เฉพาะเมื่อคลิกเปิดหรือกด Refresh Collection
+- [x] **Add Database**: เมนูคลิกขวา `Add Database...` บน Profile พร้อม Popup สร้างฐานข้อมูลและ Collection เริ่มต้น
+- [x] **UI/Theme Fixes**: Scrollbar แบบไม่ลอยทับเนื้อหาและกลมกลืนกับพื้นหลัง, สีข้อความใน Light Mode ชัดเจน, ปุ่ม `Add Connection` ด้านบน Sidebar
+- [x] **Admin User & Role Management (RBAC)** (`src/models/user.rs`, `src/database/user_service.rs`):
+  - [x] แสดงโหนด `Users (N)` ใน Sidebar เมื่อเชื่อมต่อด้วยสิทธิ์ Admin (`usersInfo`)
+  - [x] หน้า User Permissions Inspector แสดงตาราง Database Roles แบบ Dynamic Table เต็มพื้นที่พร้อม Scroll
+  - [x] แถวแรกเป็นตัวเพิ่มสิทธิ์ (`Database` พร้อมช่องค้นหา + `Role` + `+ Add`), แถวเดิมแก้ไข Role inline ได้ และมีปุ่ม `Cancel` / `Apply` มุมล่างขวา
+  - [x] ปุ่ม `Change Password...` (Popup พร้อม Confirm Password & Show Passwords)
+  - [x] เมนูคลิกขวา & Popup `Create User...`, `Duplicate User...` (คัดลอก Role ทั้งหมด) และ `Delete User...` (มี Modal ยืนยัน)
+  - [x] ป้องกันบัญชีระบบ `admin` อย่างเคร่งครัดทั้งใน UI และ Backend (`ensure_not_protected_admin`)
+
+### งาน Polish ก่อนขึ้น Phase 4 *(เสร็จสิ้นตาม `.agents/` และ `rust-skills`)*
+- [x] (`core-dev`) เพิ่ม Async Keychain / Async `save_profiles_async` (`spawn_blocking`), Single-Client User Ops (`*_and_list`), และ `AppEvent` สำหรับรายงาน Error จริงไม่กลืน Error
+- [x] (`ui-dev`) เชื่อมต่อ Async Keychain/Persistence และ Error Events ใน `src/app.rs` + ลดการ Allocate รายเฟรมใน `src/ui/tab_bar.rs` และ `src/workspace/tabs.rs`
+- [x] (`qa-tester`) ตรวจสอบ `.unwrap()` ใน `src/` (0 จุด) + เพิ่ม Tests สำหรับกรณี Command Failure, Async Keychain และ `Duplicate User` + รัน `cargo clippy --all-targets` และ `cargo test` ผ่าน 24/24 (รวมทดสอบจริงกับ `192.168.100.243:27017`)
+- [x] (`git`) Commit งาน Polish และ `PLAN.md` ให้เรียบร้อยก่อนเริ่ม Phase 4
+
+---
+
+## Phase 4 — Document Manager & Live Query / CRUD ⬜ *(Phase ถัดไป)*
+
+เป้าหมาย: เปลี่ยนหน้า Collection จากโหมดอ่านตัวอย่าง (50 docs / mock filter) ให้เป็นเครื่องมือจัดการเอกสารและ Query บน MongoDB จริงแบบครบวงจร
+
+### 4.1 Database & Collection Explorer Operations (ส่วนที่เหลือจาก `README.md`)
+- [ ] `core-dev`: เพิ่ม `create_collection`, `drop_collection`, และ `drop_database` ใน `DatabaseService` / `CollectionService`
+- [ ] `ui-dev`: เพิ่ม Context Menu คลิกขวาที่ Database (`Create Collection...`, `Drop Database...`) และที่ Collection (`Drop Collection...`) พร้อม Confirmation Modal ป้องกันการลบพลาด
+
+### 4.2 Live Document Query, Sort, Projection & Pagination
+- [ ] `core-dev`: เพิ่ม `DocumentService::query_documents` (async MongoDB `find` รองรับ `filter`, `projection`, `sort`, `skip`, `limit`, `count_documents`) และจัดการ Timeout / Parse BSON Error อย่างชัดเจน
+- [ ] `ui-dev`: เชื่อม Filter Bar, Sort Bar, Projection Input, Limit Selector และตัวควบคุม **Pagination** (`Previous` / `Next` / เลขหน้า / ช่วงเอกสารที่แสดง) ใน `src/ui/tab_bar.rs`
+
+### 4.3 Real Document CRUD (Insert / Edit / Delete)
+- [ ] `core-dev`: เพิ่ม `insert_document`, `update_document` (แก้เอกสารทั้งก้อนด้วย `replace_one`), และ `delete_document` (`delete_one` ตาม `_id` จริง) ใน `DocumentService`
+- [ ] `ui-dev`:
+  - แทนที่ `InsertMockDocument` ด้วย **Insert / Edit Document JSON Editor Modal** (ตรวจสอบ JSON/BSON syntax ก่อนส่ง)
+  - เพิ่มปุ่ม View / Edit / Delete บนแต่ละแถวใน Table View และ JSON Tree View พร้อม Confirmation Dialog ก่อนลบเอกสาร
+
+### 4.4 Dynamic Table Columns & Enhanced JSON Tree View
+- [ ] `core-dev`: ปรับโมเดล `DocumentRow` ให้รองรับการดึง Key/Column แบบ Dynamic จากเอกสาร BSON จริงใน Collection ไม่ยึดติดแค่ฟิลด์ตัวอย่าง (`name`, `email`, `status`, `role`)
+- [ ] `ui-dev`: ปรับ `data_grid.rs` ให้แสดงคอลัมน์ตามฟิลด์จริงของ Collection และปรับ `json_viewer.rs` ให้กาง Nested Object / Array แบบ Recursive พร้อมปุ่ม Copy JSON / Copy `_id`
+
+### 4.5 Verification (`qa-tester`)
+- [ ] เขียน Integration Test ทดสอบ Live Query (`filter`/`sort`/`limit`/`skip`), Create/Drop Collection & Database และ Insert/Update/Delete Document จริง
+- [ ] ตรวจสอบ `cargo clippy --all-targets` (0 warnings) และ `cargo test` ผ่าน 100%
+
+---
+
+## Phase 5 — Advanced Features, Export/Import & Release ⬜
+
+เป้าหมาย: เพิ่มเครื่องมือระดับสูงสำหรับ DBA/Developer และการแพ็กเกจแอปพลิเคชัน
+
+### 5.1 Aggregation Pipeline Builder
+- [ ] `core-dev`: เพิ่ม Aggregation Runner ใน `src/query/aggregation.rs` & `DocumentService::run_aggregation` รองรับ Stage Builder และ Raw JSON Pipeline
+- [ ] `ui-dev`: สร้าง UI สำหรับ Add / Remove / Reorder Stages (`$match`, `$group`, `$project`, `$sort`, `$limit`, `$unwind`), โหมด JSON Editor และแสดงผลลัพธ์จาก MongoDB จริง
+
+### 5.2 Index Management
+- [ ] `core-dev`: เพิ่ม `create_index` (รองรับ Key Spec, Unique, Sparse, Background/Name) และ `drop_index` ใน `src/database/index_service.rs` (ห้ามลบ `_id_`)
+- [ ] `ui-dev`: เพิ่มปุ่ม `Create Index...` และ `Drop Index` (พร้อม Confirmation) ในแท็บ `Indexes`
+
+### 5.3 Enhanced Schema Explorer & Syntax Highlighting
+- [ ] `core-dev`: เพิ่มตัวเลือก Sample Size สำหรับคำนวณ Schema และรองรับ Nested Field Paths (เช่น `address.city`, `items[]`)
+- [ ] `ui-dev`: เชื่อม Activity Bar `Schema Analyzer`, แสดง Type Distribution Bar และนำ `syntect` มาทำ Syntax Highlighting ใน JSON / Query / Aggregation Editor
+
+### 5.4 Persistent Query History, Saved Queries & Terminal
+- [ ] `core-dev`: บันทึก Query History และ Saved Queries ลงไฟล์คอนฟิกของแอป (`directories`) + ส่งผลลัพธ์จริงใน Bottom Panel
+- [ ] `ui-dev`: เชื่อมหน้า `Saved Queries` และ `QUERY HISTORY` ให้คลิกโหลดหรือรันซ้ำได้บน Connection ที่เลือกอยู่จริง รวมถึงพัฒนา Shell Command Helper เบื้องต้น
+
+### 5.5 Export / Import Data
+- [ ] `core-dev`: สร้าง Export / Import Service (JSON, JSON Lines `.jsonl`, CSV) แบบ Streaming / Async บน Tokio
+- [ ] `ui-dev`: ใช้ `rfd` (Native File Dialog) สำหรับเลือกไฟล์/โฟลเดอร์ในการ Export ผลลัพธ์ Query หรือ Import เข้า Collection
+
+### 5.6 Quality, Cross-Platform & Release Polish
+- [ ] ตรวจสอบ Code Quality ด้วย `cargo fmt --check`, `cargo clippy --all-targets`, `cargo test`
+- [ ] ตั้งค่า `[profile.release]` (`opt-level = 3`, `lto`, `strip`) และตรวจสอบการทำงานข้ามแพลตฟอร์ม (macOS / Linux / Windows)
+

@@ -1,5 +1,5 @@
 use mongo_studio::core::{AppCommand, AppEvent, AppState};
-use mongo_studio::models::{MongoUser, UserRole, COMMON_ROLES};
+use mongo_studio::models::{CollectionInfo, MongoUser, UserRole, COMMON_ROLES};
 use mongo_studio::theme::{palette, ThemeMode};
 use mongo_studio::ui::activity_bar::ActivityView;
 use mongo_studio::workspace::{
@@ -217,6 +217,128 @@ fn collection_tab_user_inspector_and_app_state_user_management() {
     assert_eq!(rw_role.db, "shop_db");
     assert!(rw_role.description().contains("Read and modify"));
     assert!(UserRole::role_description("customRole").contains("Custom"));
+}
+
+#[test]
+fn collection_tab_new_user_initializes_phase3_draft_and_cache_fields() {
+    // Arrange / Act
+    let tab = CollectionTab::new_user("LAN Mongo", "analyst");
+
+    // Assert
+    assert_eq!(tab.draft_roles, None);
+    assert!(tab.cached_db_options.is_empty());
+    assert!(tab.cached_db_conn.is_empty());
+    assert_eq!(tab.cached_db_count, 0);
+    assert!(tab.role_db_filter.is_empty());
+    assert_eq!(tab.role_db_input, "admin");
+    assert_eq!(tab.role_name_input, "readWrite");
+    assert_eq!(tab.selected_row, None);
+}
+
+#[test]
+fn app_event_phase3_polish_variants_construct_and_compare_correctly() {
+    // Arrange
+    let multi_roles = vec![
+        UserRole::new("readWrite", "shop_db"),
+        UserRole::new("read", "admin"),
+    ];
+    let duplicate_modal = AppEvent::OpenDuplicateUserModal {
+        connection_index: 1,
+        source_username: "app_service".to_string(),
+    };
+    let create_user = AppEvent::CreateUser {
+        connection_index: 1,
+        username: "app_service_copy".to_string(),
+        password: "secret".to_string(),
+        roles: multi_roles.clone(),
+    };
+    let save_roles = AppEvent::SaveUserRoles {
+        connection_name: "LAN Mongo".to_string(),
+        username: "app_service".to_string(),
+        roles: multi_roles.clone(),
+    };
+    let open_pwd_modal = AppEvent::OpenChangePasswordModal {
+        connection_name: "LAN Mongo".to_string(),
+        username: "app_service".to_string(),
+    };
+    let pwd_ok = AppEvent::UserPasswordChanged {
+        connection_name: "LAN Mongo".to_string(),
+        username: "app_service".to_string(),
+        result: Ok(()),
+    };
+    let pwd_err = AppEvent::UserPasswordChanged {
+        connection_name: "LAN Mongo".to_string(),
+        username: "app_service".to_string(),
+        result: Err("permission denied".to_string()),
+    };
+    let db_created_ok = AppEvent::DatabaseCreated {
+        connection_name: "LAN Mongo".to_string(),
+        db_name: "inventory_db".to_string(),
+        collection_name: "items".to_string(),
+        result: Ok(CollectionInfo::new_lazy_stub("inventory_db", "items")),
+    };
+    let db_created_err = AppEvent::DatabaseCreated {
+        connection_name: "LAN Mongo".to_string(),
+        db_name: "inventory_db".to_string(),
+        collection_name: "items".to_string(),
+        result: Err("connection timed out".to_string()),
+    };
+    let keyring_some = AppEvent::KeyringPasswordLoaded {
+        index: 0,
+        open_edit_modal: true,
+        result: Ok(Some("pw123".to_string())),
+    };
+    let keyring_none = AppEvent::KeyringPasswordLoaded {
+        index: 0,
+        open_edit_modal: false,
+        result: Ok(None),
+    };
+    let keyring_err = AppEvent::KeyringPasswordLoaded {
+        index: 0,
+        open_edit_modal: false,
+        result: Err("keychain locked".to_string()),
+    };
+    let bg_err = AppEvent::BackgroundTaskError {
+        source: "Keyring".to_string(),
+        message: "Failed to save password".to_string(),
+    };
+
+    // Act / Assert
+    assert_eq!(duplicate_modal.clone(), duplicate_modal);
+    assert_ne!(pwd_ok, pwd_err);
+    assert_ne!(db_created_ok, db_created_err);
+    assert_ne!(keyring_some, keyring_none);
+    assert_ne!(keyring_none, keyring_err);
+
+    assert!(matches!(
+        create_user,
+        AppEvent::CreateUser {
+            connection_index: 1,
+            ref roles,
+            ..
+        } if roles == &multi_roles
+    ));
+    assert!(matches!(
+        save_roles,
+        AppEvent::SaveUserRoles {
+            ref roles,
+            ..
+        } if roles.len() == 2
+    ));
+    assert!(matches!(
+        open_pwd_modal,
+        AppEvent::OpenChangePasswordModal {
+            ref connection_name,
+            ref username,
+        } if connection_name == "LAN Mongo" && username == "app_service"
+    ));
+    assert!(matches!(
+        bg_err,
+        AppEvent::BackgroundTaskError {
+            ref source,
+            ref message,
+        } if source == "Keyring" && message.contains("Failed")
+    ));
 }
 
 #[test]

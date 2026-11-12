@@ -25,22 +25,61 @@ impl UserService {
         Ok(())
     }
 
-    /// Queries MongoDB `usersInfo` on the `admin` database and determines whether the
-    /// current connection has admin privileges alongside the list of users.
-    pub async fn fetch_users(client: &Client, timeout: Duration) -> (bool, Vec<MongoUser>) {
+    fn resolve_target_db(user_db: &str) -> &str {
+        let trimmed = user_db.trim();
+        if trimmed.is_empty() {
+            "admin"
+        } else {
+            trimmed
+        }
+    }
+
+    fn build_single_thread_runtime() -> AppResult<tokio::runtime::Runtime> {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|err| AppError::Connection(format!("failed to build runtime: {err}")))
+    }
+
+    async fn run_admin_command(
+        client: &Client,
+        target_db: &str,
+        command: Document,
+        timeout: Duration,
+        timeout_msg: &str,
+        error_prefix: &str,
+    ) -> AppResult<Document> {
+        tokio::time::timeout(timeout, client.database(target_db).run_command(command, None))
+            .await
+            .map_err(|_| AppError::Connection(timeout_msg.to_string()))?
+            .map_err(|err| AppError::Connection(format!("{error_prefix}: {err}")))
+    }
+
+    async fn fetch_users_result(client: &Client, timeout: Duration) -> AppResult<Vec<MongoUser>> {
         let admin_db = client.database("admin");
-
         let cmd_all = doc! { "usersInfo": { "forAllDBs": true } };
-        let res = match tokio::time::timeout(timeout, admin_db.run_command(cmd_all, None)).await {
-            Ok(Ok(doc)) => Some(doc),
-            _ => tokio::time::timeout(timeout, admin_db.run_command(doc! { "usersInfo": 1 }, None))
-                .await
-                .ok()
-                .and_then(Result::ok),
-        };
 
-        let Some(response_doc) = res else {
-            return (false, Vec::new());
+        let first_try = tokio::time::timeout(timeout, admin_db.run_command(cmd_all, None)).await;
+        let response_doc = if let Ok(Ok(doc)) = first_try {
+            doc
+        } else {
+            if let Ok(Err(err)) = first_try {
+                tracing::debug!(
+                    error = %err,
+                    "usersInfo forAllDBs failed; falling back to admin db"
+                );
+            } else {
+                tracing::debug!("usersInfo forAllDBs timed out; falling back to admin db");
+            }
+            Self::run_admin_command(
+                client,
+                "admin",
+                doc! { "usersInfo": 1 },
+                timeout,
+                "usersInfo timed out",
+                "failed to list users",
+            )
+            .await?
         };
 
         let mut users = Self::parse_users_from_doc(&response_doc);
@@ -50,18 +89,29 @@ impl UserService {
                 .then_with(|| a.username.cmp(&b.username))
         });
 
-        (true, users)
+        Ok(users)
+    }
+
+    /// Queries MongoDB `usersInfo` on the `admin` database and determines whether the
+    /// current connection has admin privileges alongside the list of users.
+    pub async fn fetch_users(client: &Client, timeout: Duration) -> (bool, Vec<MongoUser>) {
+        match Self::fetch_users_result(client, timeout).await {
+            Ok(users) => (true, users),
+            Err(err) => {
+                tracing::debug!(error = %err, "usersInfo unavailable for connection");
+                (false, Vec::new())
+            }
+        }
     }
 
     /// Connects to `uri` and returns the refreshed list of users from `usersInfo`.
     ///
     /// # Errors
     ///
-    /// Returns [`AppError::Connection`] if connecting to the MongoDB URI fails.
+    /// Returns [`AppError::Connection`] if connecting to the MongoDB URI or querying `usersInfo` fails.
     pub async fn list_users_uri(uri: &str, timeout: Duration) -> AppResult<Vec<MongoUser>> {
         let client = Self::connect_client(uri, timeout).await?;
-        let (_is_admin, users) = Self::fetch_users(&client, timeout).await;
-        Ok(users)
+        Self::fetch_users_result(&client, timeout).await
     }
 
     fn parse_users_from_doc(doc: &Document) -> Vec<MongoUser> {
@@ -74,7 +124,7 @@ impl UserService {
             let Bson::Document(user_doc) = item else {
                 continue;
             };
-            let Some(username) = user_doc.get_str("user").ok() else {
+            let Ok(username) = user_doc.get_str("user") else {
                 continue;
             };
             let db = user_doc.get_str("db").unwrap_or("admin").to_string();
@@ -135,18 +185,7 @@ impl UserService {
             .collect()
     }
 
-    /// Creates a new MongoDB user in the `admin` database with the specified initial roles.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`AppError::Connection`] if `username` is `"admin"`, empty, or the command fails.
-    pub async fn create_user(
-        uri: &str,
-        username: &str,
-        password: &str,
-        roles: &[UserRole],
-        timeout: Duration,
-    ) -> AppResult<MongoUser> {
+    fn validate_create_user<'a>(username: &'a str, password: &str) -> AppResult<&'a str> {
         let trimmed_user = username.trim();
         if trimmed_user.is_empty() {
             return Err(AppError::Connection(
@@ -160,20 +199,32 @@ impl UserService {
                 "password must not be empty".to_string(),
             ));
         }
+        Ok(trimmed_user)
+    }
 
-        let client = Self::connect_client(uri, timeout).await?;
+    async fn create_user_on_client(
+        client: &Client,
+        trimmed_user: &str,
+        password: &str,
+        roles: &[UserRole],
+        timeout: Duration,
+    ) -> AppResult<MongoUser> {
         let roles_bson = Self::roles_to_bson(roles);
-
         let cmd = doc! {
             "createUser": trimmed_user,
             "pwd": password,
             "roles": roles_bson,
         };
 
-        tokio::time::timeout(timeout, client.database("admin").run_command(cmd, None))
-            .await
-            .map_err(|_| AppError::Connection("createUser timed out".to_string()))?
-            .map_err(|err| AppError::Connection(format!("failed to create user: {err}")))?;
+        Self::run_admin_command(
+            client,
+            "admin",
+            cmd,
+            timeout,
+            "createUser timed out",
+            "failed to create user",
+        )
+        .await?;
 
         Ok(MongoUser {
             id: format!("admin.{trimmed_user}"),
@@ -181,6 +232,125 @@ impl UserService {
             db: "admin".to_string(),
             roles: roles.to_vec(),
         })
+    }
+
+    async fn update_user_roles_on_client(
+        client: &Client,
+        user_db: &str,
+        trimmed_user: &str,
+        roles: &[UserRole],
+        timeout: Duration,
+    ) -> AppResult<()> {
+        let target_db = Self::resolve_target_db(user_db);
+        let roles_bson = Self::roles_to_bson(roles);
+        let cmd = doc! {
+            "updateUser": trimmed_user,
+            "roles": roles_bson,
+        };
+
+        Self::run_admin_command(
+            client,
+            target_db,
+            cmd,
+            timeout,
+            "updateUser timed out",
+            "failed to update user roles",
+        )
+        .await?;
+
+        Ok(())
+    }
+
+    async fn change_user_password_on_client(
+        client: &Client,
+        user_db: &str,
+        trimmed_user: &str,
+        new_password: &str,
+        timeout: Duration,
+    ) -> AppResult<()> {
+        let target_db = Self::resolve_target_db(user_db);
+        let cmd = doc! {
+            "updateUser": trimmed_user,
+            "pwd": new_password,
+        };
+
+        Self::run_admin_command(
+            client,
+            target_db,
+            cmd,
+            timeout,
+            "updateUser password timed out",
+            "failed to change password",
+        )
+        .await?;
+
+        Ok(())
+    }
+
+    async fn drop_user_on_client(
+        client: &Client,
+        user_db: &str,
+        trimmed_user: &str,
+        timeout: Duration,
+    ) -> AppResult<()> {
+        let target_db = Self::resolve_target_db(user_db);
+        let cmd = doc! {
+            "dropUser": trimmed_user,
+        };
+
+        Self::run_admin_command(
+            client,
+            target_db,
+            cmd,
+            timeout,
+            "dropUser timed out",
+            "failed to delete user",
+        )
+        .await?;
+
+        Ok(())
+    }
+
+    /// Creates a new MongoDB user in the `admin` database with the specified initial roles.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AppError::Connection`] if `username` is `"admin"`, empty, or the command fails.
+    pub async fn create_user(
+        uri: &str,
+        username: &str,
+        password: &str,
+        roles: &[UserRole],
+        timeout: Duration,
+    ) -> AppResult<MongoUser> {
+        let trimmed_user = Self::validate_create_user(username, password)?;
+        let client = Self::connect_client(uri, timeout).await?;
+        Self::create_user_on_client(&client, trimmed_user, password, roles, timeout).await
+    }
+
+    /// Creates a new MongoDB user and re-fetches the user list using the same client connection.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AppError::Connection`] if validation, connection, or `createUser` fails.
+    pub async fn create_user_and_list(
+        uri: &str,
+        username: &str,
+        password: &str,
+        roles: &[UserRole],
+        timeout: Duration,
+    ) -> AppResult<Vec<MongoUser>> {
+        let trimmed_user = Self::validate_create_user(username, password)?;
+        let client = Self::connect_client(uri, timeout).await?;
+        Self::create_user_on_client(&client, trimmed_user, password, roles, timeout).await?;
+        let (is_admin, users) = Self::fetch_users(&client, timeout).await;
+        if !is_admin {
+            tracing::warn!(
+                username = trimmed_user,
+                "user created, but refreshing user list via usersInfo failed"
+            );
+        }
+        Ok(users)
     }
 
     /// Replaces the role list of a non-protected MongoDB user via `updateUser`.
@@ -197,26 +367,35 @@ impl UserService {
     ) -> AppResult<()> {
         let trimmed_user = username.trim();
         Self::ensure_not_protected_admin(trimmed_user)?;
-
         let client = Self::connect_client(uri, timeout).await?;
-        let roles_bson = Self::roles_to_bson(roles);
-        let target_db = if user_db.trim().is_empty() {
-            "admin"
-        } else {
-            user_db.trim()
-        };
+        Self::update_user_roles_on_client(&client, user_db, trimmed_user, roles, timeout).await
+    }
 
-        let cmd = doc! {
-            "updateUser": trimmed_user,
-            "roles": roles_bson,
-        };
-
-        tokio::time::timeout(timeout, client.database(target_db).run_command(cmd, None))
-            .await
-            .map_err(|_| AppError::Connection("updateUser timed out".to_string()))?
-            .map_err(|err| AppError::Connection(format!("failed to update user roles: {err}")))?;
-
-        Ok(())
+    /// Replaces the role list of a non-protected MongoDB user and re-fetches the user list
+    /// using the same client connection.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AppError::Connection`] if `username` is `"admin"`, connection fails, or `updateUser` fails.
+    pub async fn update_user_roles_and_list(
+        uri: &str,
+        user_db: &str,
+        username: &str,
+        roles: &[UserRole],
+        timeout: Duration,
+    ) -> AppResult<Vec<MongoUser>> {
+        let trimmed_user = username.trim();
+        Self::ensure_not_protected_admin(trimmed_user)?;
+        let client = Self::connect_client(uri, timeout).await?;
+        Self::update_user_roles_on_client(&client, user_db, trimmed_user, roles, timeout).await?;
+        let (is_admin, users) = Self::fetch_users(&client, timeout).await;
+        if !is_admin {
+            tracing::warn!(
+                username = trimmed_user,
+                "user roles updated, but refreshing user list via usersInfo failed"
+            );
+        }
+        Ok(users)
     }
 
     /// Updates the password of a non-protected MongoDB user via `updateUser`.
@@ -241,23 +420,8 @@ impl UserService {
         }
 
         let client = Self::connect_client(uri, timeout).await?;
-        let target_db = if user_db.trim().is_empty() {
-            "admin"
-        } else {
-            user_db.trim()
-        };
-
-        let cmd = doc! {
-            "updateUser": trimmed_user,
-            "pwd": new_password,
-        };
-
-        tokio::time::timeout(timeout, client.database(target_db).run_command(cmd, None))
+        Self::change_user_password_on_client(&client, user_db, trimmed_user, new_password, timeout)
             .await
-            .map_err(|_| AppError::Connection("updateUser password timed out".to_string()))?
-            .map_err(|err| AppError::Connection(format!("failed to change password: {err}")))?;
-
-        Ok(())
     }
 
     /// Drops a non-protected MongoDB user via `dropUser`.
@@ -273,24 +437,33 @@ impl UserService {
     ) -> AppResult<()> {
         let trimmed_user = username.trim();
         Self::ensure_not_protected_admin(trimmed_user)?;
-
         let client = Self::connect_client(uri, timeout).await?;
-        let target_db = if user_db.trim().is_empty() {
-            "admin"
-        } else {
-            user_db.trim()
-        };
+        Self::drop_user_on_client(&client, user_db, trimmed_user, timeout).await
+    }
 
-        let cmd = doc! {
-            "dropUser": trimmed_user,
-        };
-
-        tokio::time::timeout(timeout, client.database(target_db).run_command(cmd, None))
-            .await
-            .map_err(|_| AppError::Connection("dropUser timed out".to_string()))?
-            .map_err(|err| AppError::Connection(format!("failed to delete user: {err}")))?;
-
-        Ok(())
+    /// Drops a non-protected MongoDB user and re-fetches the user list using the same client connection.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AppError::Connection`] if `username` is `"admin"`, connection fails, or `dropUser` fails.
+    pub async fn drop_user_and_list(
+        uri: &str,
+        user_db: &str,
+        username: &str,
+        timeout: Duration,
+    ) -> AppResult<Vec<MongoUser>> {
+        let trimmed_user = username.trim();
+        Self::ensure_not_protected_admin(trimmed_user)?;
+        let client = Self::connect_client(uri, timeout).await?;
+        Self::drop_user_on_client(&client, user_db, trimmed_user, timeout).await?;
+        let (is_admin, users) = Self::fetch_users(&client, timeout).await;
+        if !is_admin {
+            tracing::warn!(
+                username = trimmed_user,
+                "user dropped, but refreshing user list via usersInfo failed"
+            );
+        }
+        Ok(users)
     }
 
     /// Synchronously creates a user on a live MongoDB server and returns the refreshed user list.
@@ -305,17 +478,10 @@ impl UserService {
         roles: &[UserRole],
         timeout: Duration,
     ) -> AppResult<Vec<MongoUser>> {
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .map_err(|err| AppError::Connection(format!("failed to build runtime: {err}")))?;
-
-        runtime.block_on(async {
-            Self::create_user(uri, username, password, roles, timeout).await?;
-            let client = Self::connect_client(uri, timeout).await?;
-            let (_is_admin, users) = Self::fetch_users(&client, timeout).await;
-            Ok(users)
-        })
+        let runtime = Self::build_single_thread_runtime()?;
+        runtime.block_on(Self::create_user_and_list(
+            uri, username, password, roles, timeout,
+        ))
     }
 
     /// Synchronously updates user roles on a live MongoDB server and returns the refreshed user list.
@@ -330,17 +496,10 @@ impl UserService {
         roles: &[UserRole],
         timeout: Duration,
     ) -> AppResult<Vec<MongoUser>> {
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .map_err(|err| AppError::Connection(format!("failed to build runtime: {err}")))?;
-
-        runtime.block_on(async {
-            Self::update_user_roles(uri, user_db, username, roles, timeout).await?;
-            let client = Self::connect_client(uri, timeout).await?;
-            let (_is_admin, users) = Self::fetch_users(&client, timeout).await;
-            Ok(users)
-        })
+        let runtime = Self::build_single_thread_runtime()?;
+        runtime.block_on(Self::update_user_roles_and_list(
+            uri, user_db, username, roles, timeout,
+        ))
     }
 
     /// Synchronously changes a user's password on a live MongoDB server and returns the refreshed user list.
@@ -355,15 +514,31 @@ impl UserService {
         new_password: &str,
         timeout: Duration,
     ) -> AppResult<Vec<MongoUser>> {
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .map_err(|err| AppError::Connection(format!("failed to build runtime: {err}")))?;
-
+        let runtime = Self::build_single_thread_runtime()?;
         runtime.block_on(async {
-            Self::change_user_password(uri, user_db, username, new_password, timeout).await?;
+            let trimmed_user = username.trim();
+            Self::ensure_not_protected_admin(trimmed_user)?;
+            if new_password.is_empty() {
+                return Err(AppError::Connection(
+                    "new password must not be empty".to_string(),
+                ));
+            }
             let client = Self::connect_client(uri, timeout).await?;
-            let (_is_admin, users) = Self::fetch_users(&client, timeout).await;
+            Self::change_user_password_on_client(
+                &client,
+                user_db,
+                trimmed_user,
+                new_password,
+                timeout,
+            )
+            .await?;
+            let (is_admin, users) = Self::fetch_users(&client, timeout).await;
+            if !is_admin {
+                tracing::warn!(
+                    username = trimmed_user,
+                    "user password changed, but refreshing user list via usersInfo failed"
+                );
+            }
             Ok(users)
         })
     }
@@ -379,16 +554,7 @@ impl UserService {
         username: &str,
         timeout: Duration,
     ) -> AppResult<Vec<MongoUser>> {
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .map_err(|err| AppError::Connection(format!("failed to build runtime: {err}")))?;
-
-        runtime.block_on(async {
-            Self::drop_user(uri, user_db, username, timeout).await?;
-            let client = Self::connect_client(uri, timeout).await?;
-            let (_is_admin, users) = Self::fetch_users(&client, timeout).await;
-            Ok(users)
-        })
+        let runtime = Self::build_single_thread_runtime()?;
+        runtime.block_on(Self::drop_user_and_list(uri, user_db, username, timeout))
     }
 }

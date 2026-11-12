@@ -20,6 +20,11 @@ pub enum AppEvent {
     OpenEditConnectionModal {
         index: usize,
     },
+    KeyringPasswordLoaded {
+        index: usize,
+        open_edit_modal: bool,
+        result: Result<Option<String>, String>,
+    },
     AddConnection {
         name: String,
         uri: String,
@@ -76,6 +81,12 @@ pub enum AppEvent {
         db_name: String,
         collection_name: String,
     },
+    DatabaseCreated {
+        connection_name: String,
+        db_name: String,
+        collection_name: String,
+        result: Result<CollectionInfo, String>,
+    },
     OpenCreateUserModal {
         connection_index: usize,
     },
@@ -115,6 +126,11 @@ pub enum AppEvent {
         username: String,
         new_password: String,
     },
+    UserPasswordChanged {
+        connection_name: String,
+        username: String,
+        result: Result<(), String>,
+    },
     RequestDeleteUser {
         connection_index: usize,
         username: String,
@@ -127,6 +143,10 @@ pub enum AppEvent {
         connection_name: String,
         message: String,
         result: Result<Vec<MongoUser>, String>,
+    },
+    BackgroundTaskError {
+        source: String,
+        message: String,
     },
     RefreshConnections,
     ExecuteFilterQuery {
