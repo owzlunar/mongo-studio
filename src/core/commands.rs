@@ -17,7 +17,7 @@ pub enum AppCommand {
     ResetLayout,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CommandItem {
     pub command: AppCommand,
     pub label: &'static str,
@@ -25,84 +25,88 @@ pub struct CommandItem {
     pub shortcut: &'static str,
 }
 
+const ALL_COMMAND_ITEMS: [CommandItem; 12] = [
+    CommandItem {
+        command: AppCommand::NewConnection,
+        label: "Connection: Add New MongoDB Connection...",
+        category: "Connections",
+        shortcut: "Ctrl+N",
+    },
+    CommandItem {
+        command: AppCommand::RefreshExplorer,
+        label: "Explorer: Refresh Databases & Collections",
+        category: "Explorer",
+        shortcut: "F5",
+    },
+    CommandItem {
+        command: AppCommand::ToggleSidebar,
+        label: "View: Toggle Primary Sidebar",
+        category: "View",
+        shortcut: "Ctrl+B",
+    },
+    CommandItem {
+        command: AppCommand::ToggleBottomPanel,
+        label: "View: Toggle Bottom Panel (Terminal / Output)",
+        category: "View",
+        shortcut: "Ctrl+J",
+    },
+    CommandItem {
+        command: AppCommand::SwitchToDarkTheme,
+        label: "Preferences: Color Theme -> Dark (VS Code Dark+)",
+        category: "Preferences",
+        shortcut: "",
+    },
+    CommandItem {
+        command: AppCommand::SwitchToLightTheme,
+        label: "Preferences: Color Theme -> Light",
+        category: "Preferences",
+        shortcut: "",
+    },
+    CommandItem {
+        command: AppCommand::OpenUsersCollection,
+        label: "Collection: Open admin.users",
+        category: "Collection",
+        shortcut: "",
+    },
+    CommandItem {
+        command: AppCommand::OpenProductsCollection,
+        label: "Collection: Open admin.products",
+        category: "Collection",
+        shortcut: "",
+    },
+    CommandItem {
+        command: AppCommand::OpenOrdersCollection,
+        label: "Collection: Open admin.orders",
+        category: "Collection",
+        shortcut: "",
+    },
+    CommandItem {
+        command: AppCommand::OpenCustomersCollection,
+        label: "Collection: Open shop_db.customers",
+        category: "Collection",
+        shortcut: "",
+    },
+    CommandItem {
+        command: AppCommand::ClearLogs,
+        label: "Output: Clear Output & Query Logs",
+        category: "Output",
+        shortcut: "",
+    },
+    CommandItem {
+        command: AppCommand::ResetLayout,
+        label: "Workspace: Reset Window Layout to Default",
+        category: "Workspace",
+        shortcut: "",
+    },
+];
+
 impl AppCommand {
-    pub fn all_items() -> Vec<CommandItem> {
-        vec![
-            CommandItem {
-                command: Self::NewConnection,
-                label: "Connection: Add New MongoDB Connection...",
-                category: "Connections",
-                shortcut: "Ctrl+N",
-            },
-            CommandItem {
-                command: Self::RefreshExplorer,
-                label: "Explorer: Refresh Databases & Collections",
-                category: "Explorer",
-                shortcut: "F5",
-            },
-            CommandItem {
-                command: Self::ToggleSidebar,
-                label: "View: Toggle Primary Sidebar",
-                category: "View",
-                shortcut: "Ctrl+B",
-            },
-            CommandItem {
-                command: Self::ToggleBottomPanel,
-                label: "View: Toggle Bottom Panel (Terminal / Output)",
-                category: "View",
-                shortcut: "Ctrl+J",
-            },
-            CommandItem {
-                command: Self::SwitchToDarkTheme,
-                label: "Preferences: Color Theme -> Dark (VS Code Dark+)",
-                category: "Preferences",
-                shortcut: "",
-            },
-            CommandItem {
-                command: Self::SwitchToLightTheme,
-                label: "Preferences: Color Theme -> Light",
-                category: "Preferences",
-                shortcut: "",
-            },
-            CommandItem {
-                command: Self::OpenUsersCollection,
-                label: "Collection: Open admin.users",
-                category: "Collection",
-                shortcut: "",
-            },
-            CommandItem {
-                command: Self::OpenProductsCollection,
-                label: "Collection: Open admin.products",
-                category: "Collection",
-                shortcut: "",
-            },
-            CommandItem {
-                command: Self::OpenOrdersCollection,
-                label: "Collection: Open admin.orders",
-                category: "Collection",
-                shortcut: "",
-            },
-            CommandItem {
-                command: Self::OpenCustomersCollection,
-                label: "Collection: Open shop_db.customers",
-                category: "Collection",
-                shortcut: "",
-            },
-            CommandItem {
-                command: Self::ClearLogs,
-                label: "Output: Clear Output & Query Logs",
-                category: "Output",
-                shortcut: "",
-            },
-            CommandItem {
-                command: Self::ResetLayout,
-                label: "Workspace: Reset Window Layout to Default",
-                category: "Workspace",
-                shortcut: "",
-            },
-        ]
+    #[must_use]
+    pub const fn all_items() -> &'static [CommandItem] {
+        &ALL_COMMAND_ITEMS
     }
 
+    #[must_use]
     pub fn to_event(self) -> AppEvent {
         match self {
             Self::ToggleSidebar => AppEvent::ToggleSidebar,
@@ -134,5 +138,11 @@ impl AppCommand {
             Self::ClearLogs => AppEvent::ClearOutputLogs,
             Self::ResetLayout => AppEvent::ResetWorkspaceLayout,
         }
+    }
+}
+
+impl From<AppCommand> for AppEvent {
+    fn from(command: AppCommand) -> Self {
+        command.to_event()
     }
 }

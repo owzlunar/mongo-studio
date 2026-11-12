@@ -93,6 +93,13 @@ mongo-studio/
 │   ├── settings.json
 │   └── launch.json
 │
+├── .agents/
+│   └── skills/
+│       └── rust-skills/
+│           ├── SKILL.md
+│           ├── rules/
+│           └── checks/
+│
 ├── assets/
 │   ├── fonts/
 │   ├── icons/

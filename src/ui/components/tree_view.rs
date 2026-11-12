@@ -1,4 +1,5 @@
-use egui::{Color32, RichText, Ui};
+use egui::{Color32, CursorIcon, RichText, Ui};
+use egui_phosphor::regular;
 
 use crate::core::events::AppEvent;
 use crate::models::{ConnectionConfig, ConnectionStatus};
@@ -21,24 +22,31 @@ pub fn render_connection_tree(
             ConnectionStatus::Error => palette.error_color,
         };
 
-        let arrow = if conn.expanded { "▼" } else { "▶" };
+        let arrow = if conn.expanded {
+            regular::CARET_DOWN
+        } else {
+            regular::CARET_RIGHT
+        };
 
         ui.horizontal(|ui| {
-            let toggle_resp = ui.selectable_label(
-                false,
-                RichText::new(format!("{} {}", arrow, conn.name)).strong(),
-            );
+            let toggle_resp = ui
+                .selectable_label(
+                    false,
+                    RichText::new(format!(
+                        "{arrow} {} {}",
+                        regular::PLUGS_CONNECTED,
+                        conn.name
+                    ))
+                    .strong(),
+                )
+                .on_hover_cursor(CursorIcon::PointingHand);
             if toggle_resp.clicked() {
                 conn.expanded = !conn.expanded;
             }
 
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                ui.label(
-                    RichText::new("●")
-                        .color(status_dot_color)
-                        .size(11.0),
-                )
-                .on_hover_text(format!("{} ({})", conn.status.label(), conn.host));
+                ui.label(RichText::new(regular::RECORD).color(status_dot_color).size(11.0))
+                    .on_hover_text(format!("{} ({})", conn.status.label(), conn.host));
             });
         });
 
@@ -47,7 +55,7 @@ pub fn render_connection_tree(
         }
 
         ui.indent(conn.id, |ui| {
-            for db in conn.databases.iter_mut() {
+            for db in &mut conn.databases {
                 let db_matches = query.is_empty()
                     || db.name.to_lowercase().contains(&query)
                     || db
@@ -59,12 +67,18 @@ pub fn render_connection_tree(
                     continue;
                 }
 
-                let db_arrow = if db.expanded { "▼" } else { "▶" };
-                let db_resp = ui.selectable_label(
-                    false,
-                    RichText::new(format!("{} {}", db_arrow, db.name))
-                        .color(Color32::from_rgb(210, 210, 210)),
-                );
+                let db_arrow = if db.expanded {
+                    regular::CARET_DOWN
+                } else {
+                    regular::CARET_RIGHT
+                };
+                let db_resp = ui
+                    .selectable_label(
+                        false,
+                        RichText::new(format!("{db_arrow} {} {}", regular::DATABASE, db.name))
+                            .color(Color32::from_rgb(210, 210, 210)),
+                    )
+                    .on_hover_cursor(CursorIcon::PointingHand);
                 if db_resp.clicked() {
                     db.expanded = !db.expanded;
                 }
@@ -80,8 +94,14 @@ pub fn render_connection_tree(
                             }
 
                             ui.horizontal(|ui| {
-                                let label = RichText::new(format!("  {}", coll.name));
-                                let resp = ui.selectable_label(false, label);
+                                let label = RichText::new(format!(
+                                    "  {} {}",
+                                    regular::TABLE,
+                                    coll.name
+                                ));
+                                let resp = ui
+                                    .selectable_label(false, label)
+                                    .on_hover_cursor(CursorIcon::PointingHand);
                                 if resp.clicked() {
                                     events.push(AppEvent::OpenCollection {
                                         connection_name: conn.name.clone(),

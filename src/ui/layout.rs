@@ -1,9 +1,9 @@
-use egui::{Context, Frame, Margin, RichText, ScrollArea, Stroke, TextEdit, Window};
+use egui::{Context, CursorIcon, Frame, Image, Margin, RichText, ScrollArea, Stroke, TextEdit, Vec2, Window};
 use egui_dock::{DockArea, Style};
+use egui_phosphor::regular;
 
 use crate::core::events::AppEvent;
 use crate::core::state::AppState;
-use crate::models::CollectionInfo;
 use crate::theme::{ThemeMode, ThemePalette};
 use crate::ui::activity_bar::render_activity_bar;
 use crate::ui::command_palette::render_command_palette;
@@ -29,6 +29,12 @@ pub fn render_main_layout(
     render_modals(ctx, state, palette, events);
 }
 
+fn menu_item(ui: &mut egui::Ui, label: &str) -> bool {
+    ui.button(label)
+        .on_hover_cursor(CursorIcon::PointingHand)
+        .clicked()
+}
+
 fn render_top_menu_bar(
     ctx: &Context,
     state: &mut AppState,
@@ -37,83 +43,96 @@ fn render_top_menu_bar(
 ) {
     let frame = Frame::none()
         .fill(palette.sidebar_header_bg)
-        .inner_margin(Margin::symmetric(10.0, 4.0))
-        .stroke(Stroke::new(1.0, palette.border_color));
+        .inner_margin(Margin::symmetric(10.0, 3.0))
+        .stroke(Stroke::new(1.0_f32, palette.border_color));
 
     egui::TopBottomPanel::top("top_menu_bar")
         .resizable(false)
-        .exact_height(28.0)
+        .exact_height(30.0)
         .frame(frame)
         .show(ctx, |ui| {
             egui::menu::bar(ui, |ui| {
+                ui.add(
+                    Image::new(egui::include_image!("../../assets/logo.svg"))
+                        .max_size(Vec2::new(18.0, 18.0)),
+                );
+                ui.add_space(4.0);
                 ui.label(
-                    RichText::new("🍃 Mongo Studio")
+                    RichText::new("Mongo Studio")
                         .strong()
                         .color(palette.success_color),
                 );
                 ui.add_space(12.0);
 
-                ui.menu_button("File", |ui| {
-                    if ui.button("New Connection...").clicked() {
+                let file_resp = ui.menu_button("File", |ui| {
+                    if menu_item(ui, &format!("{} New Connection...", regular::PLUS)) {
                         events.push(AppEvent::OpenNewConnectionModal);
                         ui.close_menu();
                     }
-                    if ui.button("Refresh Connections").clicked() {
+                    if menu_item(ui, &format!("{} Refresh Connections", regular::ARROWS_CLOCKWISE)) {
                         events.push(AppEvent::RefreshConnections);
                         ui.close_menu();
                     }
                     ui.separator();
-                    if ui.button("Reset Workspace Layout").clicked() {
+                    if menu_item(ui, &format!("{} Reset Workspace Layout", regular::ARROW_COUNTER_CLOCKWISE)) {
                         events.push(AppEvent::ResetWorkspaceLayout);
                         ui.close_menu();
                     }
                 });
+                file_resp.response.on_hover_cursor(CursorIcon::PointingHand);
 
-                ui.menu_button("Edit", |ui| {
-                    if ui.button("Command Palette... (Ctrl+Shift+P)").clicked() {
+                let edit_resp = ui.menu_button("Edit", |ui| {
+                    if menu_item(ui, &format!("{} Command Palette... (Ctrl+P)", regular::TERMINAL_WINDOW)) {
                         events.push(AppEvent::ToggleCommandPalette);
                         ui.close_menu();
                     }
-                    if ui.button("Clear Output Logs").clicked() {
+                    if menu_item(ui, &format!("{} Clear Output Logs", regular::TRASH)) {
                         events.push(AppEvent::ClearOutputLogs);
                         ui.close_menu();
                     }
                 });
+                edit_resp.response.on_hover_cursor(CursorIcon::PointingHand);
 
-                ui.menu_button("View", |ui| {
-                    if ui.button("Toggle Sidebar (Ctrl+B)").clicked() {
+                let view_resp = ui.menu_button("View", |ui| {
+                    if menu_item(ui, &format!("{} Toggle Sidebar (Ctrl+B)", regular::SIDEBAR_SIMPLE)) {
                         events.push(AppEvent::ToggleSidebar);
                         ui.close_menu();
                     }
-                    if ui.button("Toggle Bottom Panel (Ctrl+J)").clicked() {
+                    if menu_item(ui, &format!("{} Toggle Bottom Panel (Ctrl+J)", regular::TERMINAL_WINDOW)) {
                         events.push(AppEvent::ToggleBottomPanel);
                         ui.close_menu();
                     }
                     ui.separator();
-                    if ui.button("Dark Theme (VS Code Dark+)").clicked() {
+                    if menu_item(ui, &format!("{} Dark Theme (VS Code Dark+)", regular::MOON)) {
                         events.push(AppEvent::SwitchTheme(ThemeMode::Dark));
                         ui.close_menu();
                     }
-                    if ui.button("Light Theme").clicked() {
+                    if menu_item(ui, &format!("{} Light Theme", regular::SUN)) {
                         events.push(AppEvent::SwitchTheme(ThemeMode::Light));
                         ui.close_menu();
                     }
                 });
+                view_resp.response.on_hover_cursor(CursorIcon::PointingHand);
 
-                ui.menu_button("Help", |ui| {
-                    if ui.button("About Mongo Studio").clicked() {
+                let help_resp = ui.menu_button("Help", |ui| {
+                    if menu_item(ui, &format!("{} About Mongo Studio", regular::INFO)) {
                         state.show_about_modal = true;
                         ui.close_menu();
                     }
                 });
+                help_resp.response.on_hover_cursor(CursorIcon::PointingHand);
 
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if ui
                         .button(
-                            RichText::new("⌘ Command Palette (Ctrl+P)")
-                                .size(11.5)
-                                .color(palette.muted_text),
+                            RichText::new(format!(
+                                "{} Command Palette (Ctrl+P)",
+                                regular::TERMINAL_WINDOW
+                            ))
+                            .size(11.5)
+                            .color(palette.muted_text),
                         )
+                        .on_hover_cursor(CursorIcon::PointingHand)
                         .clicked()
                     {
                         events.push(AppEvent::ToggleCommandPalette);
@@ -136,7 +155,7 @@ fn render_bottom_panel(
     let frame = Frame::none()
         .fill(palette.panel_bg)
         .inner_margin(Margin::symmetric(10.0, 6.0))
-        .stroke(Stroke::new(1.0, palette.border_color));
+        .stroke(Stroke::new(1.0_f32, palette.border_color));
 
     egui::TopBottomPanel::bottom("bottom_output_panel")
         .resizable(true)
@@ -153,7 +172,13 @@ fn render_bottom_panel(
                 ] {
                     let is_active = state.bottom_panel.active_tab == tab;
                     if ui
-                        .selectable_label(is_active, RichText::new(tab.label()).size(11.5).strong())
+                        .selectable_label(
+                            is_active,
+                            RichText::new(format!("{} {}", tab.icon(), tab.label()))
+                                .size(11.5)
+                                .strong(),
+                        )
+                        .on_hover_cursor(CursorIcon::PointingHand)
                         .clicked()
                     {
                         state.bottom_panel.active_tab = tab;
@@ -161,10 +186,20 @@ fn render_bottom_panel(
                 }
 
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui.small_button("✕").on_hover_text("Close Panel").clicked() {
+                    if ui
+                        .small_button(regular::X)
+                        .on_hover_cursor(CursorIcon::PointingHand)
+                        .on_hover_text("Close Panel")
+                        .clicked()
+                    {
                         events.push(AppEvent::ToggleBottomPanel);
                     }
-                    if ui.small_button("🗑").on_hover_text("Clear Logs").clicked() {
+                    if ui
+                        .small_button(format!("{} Clear", regular::TRASH))
+                        .on_hover_cursor(CursorIcon::PointingHand)
+                        .on_hover_text("Clear Logs")
+                        .clicked()
+                    {
                         events.push(AppEvent::ClearOutputLogs);
                     }
                 });
@@ -205,7 +240,7 @@ fn render_bottom_panel(
                 }
                 BottomPanelTab::Terminal => {
                     ScrollArea::vertical()
-                        .max_height(ui.available_height() - 28.0)
+                        .max_height(ui.available_height() - 30.0)
                         .stick_to_bottom(true)
                         .show(ui, |ui| {
                             for line in &state.bottom_panel.terminal_history {
@@ -224,15 +259,17 @@ fn render_bottom_panel(
                             TextEdit::singleline(&mut state.bottom_panel.terminal_input)
                                 .font(egui::FontId::monospace(12.0))
                                 .hint_text("Enter mock shell command...")
+                                .margin(Margin::symmetric(6.0, 4.0))
+                                .min_size(Vec2::new(200.0, 24.0))
                                 .desired_width(f32::INFINITY),
                         );
                         if resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-                            let cmd = state.bottom_panel.terminal_input.trim().to_string();
+                            let cmd = state.bottom_panel.terminal_input.trim();
                             if !cmd.is_empty() {
                                 state
                                     .bottom_panel
                                     .terminal_history
-                                    .push(format!("mongosh> {}", cmd));
+                                    .push(format!("mongosh> {cmd}"));
                                 state.bottom_panel.terminal_history.push(
                                     "{ \"ok\": 1, \"note\": \"Executed in Phase 1 mock shell\" }"
                                         .to_string(),
@@ -249,7 +286,7 @@ fn render_bottom_panel(
                         .show(ui, |ui| {
                             for (i, q) in state.bottom_panel.query_history.iter().enumerate() {
                                 ui.label(
-                                    RichText::new(format!("{}. {}", i + 1, q))
+                                    RichText::new(format!("{}. {q}", i + 1))
                                         .monospace()
                                         .size(12.0),
                                 );
@@ -258,8 +295,11 @@ fn render_bottom_panel(
                 }
                 BottomPanelTab::Problems => {
                     ui.label(
-                        RichText::new("✔ No syntax or connection problems detected in workspace.")
-                            .color(palette.success_color),
+                        RichText::new(format!(
+                            "{} No syntax or connection problems detected in workspace.",
+                            regular::CHECK_CIRCLE
+                        ))
+                        .color(palette.success_color),
                     );
                 }
             }
@@ -272,13 +312,6 @@ fn render_central_workspace(
     palette: &ThemePalette,
     events: &mut Vec<AppEvent>,
 ) {
-    let all_collections: Vec<CollectionInfo> = state
-        .connections
-        .iter()
-        .flat_map(|conn| conn.databases.iter())
-        .flat_map(|db| db.collections.iter().cloned())
-        .collect();
-
     let frame = Frame::none().fill(palette.editor_bg);
 
     egui::CentralPanel::default().frame(frame).show(ctx, |ui| {
@@ -288,7 +321,7 @@ fn render_central_workspace(
         style.tab.inactive.bg_fill = palette.tab_inactive_bg;
 
         let mut viewer = CollectionTabViewer {
-            collections: &all_collections,
+            connections: &state.connections,
             palette,
             events,
         };
@@ -306,28 +339,45 @@ fn render_modals(
     events: &mut Vec<AppEvent>,
 ) {
     if state.show_new_connection_modal {
+        let modal_frame = Frame::window(&ctx.style())
+            .fill(palette.popup_bg)
+            .stroke(Stroke::new(1.5_f32, palette.popup_border))
+            .inner_margin(Margin::same(14.0));
+
         Window::new("Add MongoDB Connection")
             .collapsible(false)
             .resizable(false)
-            .fixed_size([420.0, 190.0])
+            .frame(modal_frame)
+            .fixed_size([420.0, 195.0])
             .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
             .show(ctx, |ui| {
                 ui.label(RichText::new("Connection Profile Name").strong());
                 ui.add(
-                    TextEdit::singleline(&mut state.new_conn_name).desired_width(f32::INFINITY),
+                    TextEdit::singleline(&mut state.new_conn_name)
+                        .margin(Margin::symmetric(6.0, 4.0))
+                        .min_size(Vec2::new(200.0, 24.0))
+                        .desired_width(f32::INFINITY),
                 );
                 ui.add_space(6.0);
 
                 ui.label(RichText::new("MongoDB Connection URI").strong());
                 ui.add(
                     TextEdit::singleline(&mut state.new_conn_uri)
-                        .font(egui::FontId::monospace(12.5))
+                        .font(egui::FontId::monospace(12.0))
+                        .margin(Margin::symmetric(6.0, 4.0))
+                        .min_size(Vec2::new(200.0, 24.0))
                         .desired_width(f32::INFINITY),
                 );
                 ui.add_space(12.0);
 
                 ui.horizontal(|ui| {
-                    if primary_button(ui, "Connect & Save", palette.accent_color).clicked() {
+                    if primary_button(
+                        ui,
+                        &format!("{} Connect & Save", regular::PLUGS_CONNECTED),
+                        palette.accent_color,
+                    )
+                    .clicked()
+                    {
                         events.push(AppEvent::AddConnection {
                             name: state.new_conn_name.clone(),
                             uri: state.new_conn_uri.clone(),
@@ -342,16 +392,29 @@ fn render_modals(
     }
 
     if state.show_about_modal {
+        let modal_frame = Frame::window(&ctx.style())
+            .fill(palette.popup_bg)
+            .stroke(Stroke::new(1.5_f32, palette.popup_border))
+            .inner_margin(Margin::same(14.0));
+
         Window::new("About Mongo Studio")
             .collapsible(false)
             .resizable(false)
-            .fixed_size([380.0, 160.0])
+            .frame(modal_frame)
+            .fixed_size([390.0, 185.0])
             .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
             .show(ctx, |ui| {
-                ui.heading("🍃 Mongo Studio v0.1.0");
-                ui.add_space(4.0);
+                ui.horizontal(|ui| {
+                    ui.add(
+                        Image::new(egui::include_image!("../../assets/logo.svg"))
+                            .max_size(Vec2::new(36.0, 36.0)),
+                    );
+                    ui.add_space(6.0);
+                    ui.heading(RichText::new("Mongo Studio v0.1.0").color(palette.success_color));
+                });
+                ui.add_space(6.0);
                 ui.label("VS Code-inspired MongoDB Desktop Admin Tool built in 100% Rust.");
-                ui.label("Stack: Rust + egui + eframe + egui_dock");
+                ui.label("Stack: Rust + egui + eframe + egui_dock + egui-phosphor");
                 ui.add_space(10.0);
                 if primary_button(ui, "Close", palette.accent_color).clicked() {
                     state.show_about_modal = false;

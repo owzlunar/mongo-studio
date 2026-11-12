@@ -1,4 +1,4 @@
-use egui::{Color32, FontId, RichText, TextEdit, Ui};
+use egui::{Color32, FontId, Margin, RichText, TextEdit, Ui, Vec2};
 
 pub fn filter_input_row(
     ui: &mut Ui,
@@ -8,22 +8,18 @@ pub fn filter_input_row(
     is_valid: bool,
     error_color: Color32,
 ) -> bool {
-    let mut submitted = false;
-    ui.horizontal(|ui| {
-        ui.label(RichText::new(label).strong().size(12.0));
-        let mut edit = TextEdit::singleline(value)
-            .font(FontId::monospace(12.5))
-            .hint_text(hint)
-            .desired_width(260.0);
+    ui.label(RichText::new(label).strong().size(12.0));
+    let mut edit = TextEdit::singleline(value)
+        .font(FontId::monospace(12.0))
+        .hint_text(hint)
+        .margin(Margin::symmetric(6.0, 4.0))
+        .min_size(Vec2::new(260.0, 24.0))
+        .desired_width(260.0);
 
-        if !is_valid {
-            edit = edit.text_color(error_color);
-        }
+    if !is_valid {
+        edit = edit.text_color(error_color);
+    }
 
-        let response = ui.add(edit);
-        if response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-            submitted = true;
-        }
-    });
-    submitted
+    let response = ui.add(edit);
+    response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter))
 }

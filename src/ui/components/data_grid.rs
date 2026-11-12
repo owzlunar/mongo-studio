@@ -1,4 +1,4 @@
-use egui::{Color32, RichText, Sense, Ui};
+use egui::{Color32, CursorIcon, RichText, Sense, Ui};
 use egui_extras::{Column, TableBuilder};
 
 use crate::models::DocumentRow;
@@ -47,19 +47,25 @@ pub fn render_document_grid(
                 row.col(|ui| {
                     if ui
                         .label(RichText::new(&doc.id).monospace().color(palette.warning_color))
+                        .on_hover_cursor(CursorIcon::PointingHand)
                         .clicked()
                     {
                         *selected_row = Some(idx);
                     }
                 });
                 row.col(|ui| {
-                    if ui.label(RichText::new(&doc.name).strong()).clicked() {
+                    if ui
+                        .label(RichText::new(&doc.name).strong())
+                        .on_hover_cursor(CursorIcon::PointingHand)
+                        .clicked()
+                    {
                         *selected_row = Some(idx);
                     }
                 });
                 row.col(|ui| {
                     if ui
                         .label(RichText::new(&doc.email).monospace().size(12.0))
+                        .on_hover_cursor(CursorIcon::PointingHand)
                         .clicked()
                     {
                         *selected_row = Some(idx);
@@ -73,13 +79,18 @@ pub fn render_document_grid(
                     };
                     if ui
                         .label(RichText::new(&doc.status).monospace().color(badge_color))
+                        .on_hover_cursor(CursorIcon::PointingHand)
                         .clicked()
                     {
                         *selected_row = Some(idx);
                     }
                 });
                 row.col(|ui| {
-                    if ui.label(RichText::new(&doc.role).monospace()).clicked() {
+                    if ui
+                        .label(RichText::new(&doc.role).monospace())
+                        .on_hover_cursor(CursorIcon::PointingHand)
+                        .clicked()
+                    {
                         *selected_row = Some(idx);
                     }
                 });
@@ -91,13 +102,14 @@ pub fn render_document_grid(
                                 .size(11.5)
                                 .color(palette.muted_text),
                         )
+                        .on_hover_cursor(CursorIcon::PointingHand)
                         .clicked()
                     {
                         *selected_row = Some(idx);
                     }
                 });
 
-                if row.response().clicked() {
+                if row.response().on_hover_cursor(CursorIcon::PointingHand).clicked() {
                     *selected_row = Some(idx);
                 }
             });

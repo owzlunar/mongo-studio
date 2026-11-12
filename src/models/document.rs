@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DocumentRow {
     pub id: String,
     pub name: String,
@@ -12,6 +12,20 @@ pub struct DocumentRow {
 }
 
 impl DocumentRow {
+    #[must_use]
+    pub fn field_str(&self, key: &str) -> Option<&str> {
+        match key {
+            "_id" | "id" => Some(&self.id),
+            "name" => Some(&self.name),
+            "email" => Some(&self.email),
+            "status" => Some(&self.status),
+            "role" => Some(&self.role),
+            "created_at" => Some(&self.created_at),
+            _ => None,
+        }
+    }
+
+    #[must_use]
     pub fn to_json_value(&self) -> Value {
         json!({
             "_id": self.id,
@@ -23,10 +37,12 @@ impl DocumentRow {
         })
     }
 
+    #[must_use]
     pub fn to_pretty_json(&self) -> String {
         serde_json::to_string_pretty(&self.to_json_value()).unwrap_or_default()
     }
 
+    #[must_use]
     pub fn mock_for_collection(collection_name: &str) -> Vec<Self> {
         match collection_name {
             "users" | "customers" => vec![

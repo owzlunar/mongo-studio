@@ -1,4 +1,5 @@
-use egui::{Context, Frame, Margin, RichText};
+use egui::{Context, CursorIcon, Frame, Margin, RichText};
+use egui_phosphor::regular;
 
 use crate::core::events::AppEvent;
 use crate::core::state::AppState;
@@ -13,31 +14,35 @@ pub fn render_status_bar(
 ) {
     let frame = Frame::none()
         .fill(palette.status_bar_bg)
-        .inner_margin(Margin::symmetric(10.0, 3.0));
+        .inner_margin(Margin::symmetric(10.0, 2.0));
 
     egui::TopBottomPanel::bottom("status_bar_panel")
         .resizable(false)
         .exact_height(24.0)
         .frame(frame)
         .show(ctx, |ui| {
-            ui.horizontal(|ui| {
+            ui.horizontal_centered(|ui| {
                 if let Some(conn) = state.connections.get(state.active_connection_idx) {
-                    let dot = match conn.status {
-                        ConnectionStatus::Connected => "● Connected",
-                        ConnectionStatus::Connecting => "◌ Connecting",
-                        ConnectionStatus::Disconnected => "○ Disconnected",
-                        ConnectionStatus::Error => "✖ Error",
+                    let status_text = match conn.status {
+                        ConnectionStatus::Connected => format!("{} Connected", regular::RECORD),
+                        ConnectionStatus::Connecting => {
+                            format!("{} Connecting", regular::CIRCLE_HALF)
+                        }
+                        ConnectionStatus::Disconnected => {
+                            format!("{} Disconnected", regular::CIRCLE)
+                        }
+                        ConnectionStatus::Error => format!("{} Error", regular::X_CIRCLE),
                     };
 
                     ui.label(
-                        RichText::new(dot)
+                        RichText::new(status_text)
                             .color(palette.status_bar_fg)
                             .strong()
                             .size(12.0),
                     );
                     ui.separator();
                     ui.label(
-                        RichText::new(&conn.host)
+                        RichText::new(format!("{} {}", regular::PLUGS_CONNECTED, conn.host))
                             .color(palette.status_bar_fg)
                             .monospace()
                             .size(12.0),
@@ -48,13 +53,14 @@ pub fn render_status_bar(
                 if ui
                     .small_button(
                         RichText::new(if state.bottom_panel.visible {
-                            "▾ Panel"
+                            format!("{} Panel", regular::CARET_DOWN)
                         } else {
-                            "▴ Panel"
+                            format!("{} Panel", regular::CARET_UP)
                         })
                         .color(palette.status_bar_fg)
                         .size(11.5),
                     )
+                    .on_hover_cursor(CursorIcon::PointingHand)
                     .on_hover_text("Toggle Terminal / Output Panel (Ctrl+J)")
                     .clicked()
                 {
@@ -63,7 +69,7 @@ pub fn render_status_bar(
 
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     ui.label(
-                        RichText::new("MongoDB")
+                        RichText::new(format!("{} MongoDB", regular::DATABASE))
                             .color(palette.status_bar_fg)
                             .strong()
                             .size(12.0),

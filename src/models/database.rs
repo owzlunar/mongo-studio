@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 
 use super::collection::CollectionInfo;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DatabaseInfo {
     pub name: String,
     pub expanded: bool,
@@ -11,10 +11,15 @@ pub struct DatabaseInfo {
 }
 
 impl DatabaseInfo {
-    pub fn new(name: &str, expanded: bool, collection_names: Vec<&str>) -> Self {
+    #[must_use]
+    pub fn new<I, S>(name: &str, expanded: bool, collection_names: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
         let collections = collection_names
             .into_iter()
-            .map(|c| CollectionInfo::mock(name, c))
+            .map(|c| CollectionInfo::mock(name, c.as_ref()))
             .collect();
 
         Self {
@@ -25,10 +30,11 @@ impl DatabaseInfo {
         }
     }
 
+    #[must_use]
     pub fn mock_databases() -> Vec<Self> {
         vec![
-            Self::new("admin", true, vec!["users", "products", "orders"]),
-            Self::new("shop_db", true, vec!["customers", "payments"]),
+            Self::new("admin", true, ["users", "products", "orders"]),
+            Self::new("shop_db", true, ["customers", "payments"]),
         ]
     }
 }

@@ -1,8 +1,10 @@
 use crate::models::IndexInfo;
 
+#[derive(Debug, Default, Clone, Copy)]
 pub struct IndexService;
 
 impl IndexService {
+    #[must_use]
     pub fn default_indexes() -> Vec<IndexInfo> {
         vec![IndexInfo {
             name: "_id_".to_string(),

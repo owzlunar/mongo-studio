@@ -1,3 +1,4 @@
+use egui_phosphor::regular;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -9,7 +10,18 @@ pub enum CollectionSubTab {
 }
 
 impl CollectionSubTab {
-    pub fn label(&self) -> &'static str {
+    #[must_use]
+    pub const fn icon(self) -> &'static str {
+        match self {
+            Self::Documents => regular::FILES,
+            Self::Indexes => regular::KEY,
+            Self::Schema => regular::TREE_STRUCTURE,
+            Self::Aggregation => regular::FUNNEL,
+        }
+    }
+
+    #[must_use]
+    pub const fn label(self) -> &'static str {
         match self {
             Self::Documents => "Documents",
             Self::Indexes => "Indexes",
@@ -50,6 +62,7 @@ impl PartialEq for CollectionTab {
 impl Eq for CollectionTab {}
 
 impl CollectionTab {
+    #[must_use]
     pub fn new(connection_name: &str, database: &str, collection: &str) -> Self {
         Self {
             connection_name: connection_name.to_string(),
@@ -65,10 +78,12 @@ impl CollectionTab {
         }
     }
 
-    pub fn title(&self) -> String {
-        self.collection.clone()
+    #[must_use]
+    pub fn title(&self) -> &str {
+        &self.collection
     }
 
+    #[must_use]
     pub fn full_namespace(&self) -> String {
         format!("{}.{}", self.database, self.collection)
     }

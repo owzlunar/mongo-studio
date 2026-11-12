@@ -29,6 +29,7 @@ impl Default for AppState {
 }
 
 impl AppState {
+    #[must_use]
     pub fn from_persistence(persisted: WorkspacePersistence) -> Self {
         let initial_tabs = if persisted.open_tabs.is_empty() {
             vec![
@@ -39,8 +40,10 @@ impl AppState {
             persisted.open_tabs
         };
 
-        let mut bottom_panel = BottomPanelState::default();
-        bottom_panel.visible = persisted.bottom_panel_visible;
+        let bottom_panel = BottomPanelState {
+            visible: persisted.bottom_panel_visible,
+            ..BottomPanelState::default()
+        };
 
         Self {
             connections: vec![
@@ -63,6 +66,7 @@ impl AppState {
         }
     }
 
+    #[must_use]
     pub fn to_persistence(&self) -> WorkspacePersistence {
         let mut open_tabs = Vec::new();
         for (_surface, node) in self.dock_state.iter_all_nodes() {
@@ -82,17 +86,14 @@ impl AppState {
         }
     }
 
+    #[must_use]
     pub fn find_collection(&self, database: &str, collection: &str) -> Option<&CollectionInfo> {
-        for conn in &self.connections {
-            for db in &conn.databases {
-                if db.name == database {
-                    if let Some(coll) = db.collections.iter().find(|c| c.name == collection) {
-                        return Some(coll);
-                    }
-                }
-            }
-        }
-        None
+        self.connections
+            .iter()
+            .flat_map(|conn| &conn.databases)
+            .filter(|db| db.name == database)
+            .flat_map(|db| &db.collections)
+            .find(|coll| coll.name == collection)
     }
 
     pub fn find_collection_mut(
@@ -100,16 +101,12 @@ impl AppState {
         database: &str,
         collection: &str,
     ) -> Option<&mut CollectionInfo> {
-        for conn in &mut self.connections {
-            for db in &mut conn.databases {
-                if db.name == database {
-                    if let Some(coll) = db.collections.iter_mut().find(|c| c.name == collection) {
-                        return Some(coll);
-                    }
-                }
-            }
-        }
-        None
+        self.connections
+            .iter_mut()
+            .flat_map(|conn| &mut conn.databases)
+            .filter(|db| db.name == database)
+            .flat_map(|db| &mut db.collections)
+            .find(|coll| coll.name == collection)
     }
 
     pub fn open_or_focus_collection(

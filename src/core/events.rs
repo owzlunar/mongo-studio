@@ -1,7 +1,7 @@
 use crate::theme::ThemeMode;
 use crate::ui::activity_bar::ActivityView;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AppEvent {
     OpenCollection {
         connection_name: String,

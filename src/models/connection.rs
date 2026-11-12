@@ -1,18 +1,22 @@
+use std::fmt;
+
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use super::database::DatabaseInfo;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ConnectionStatus {
     Connected,
+    #[default]
     Disconnected,
     Connecting,
     Error,
 }
 
 impl ConnectionStatus {
-    pub fn label(&self) -> &'static str {
+    #[must_use]
+    pub const fn label(self) -> &'static str {
         match self {
             Self::Connected => "Connected",
             Self::Disconnected => "Disconnected",
@@ -20,9 +24,20 @@ impl ConnectionStatus {
             Self::Error => "Connection Error",
         }
     }
+
+    #[must_use]
+    pub const fn is_connected(self) -> bool {
+        matches!(self, Self::Connected)
+    }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+impl fmt::Display for ConnectionStatus {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.label())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ConnectionConfig {
     pub id: Uuid,
     pub name: String,
@@ -34,6 +49,7 @@ pub struct ConnectionConfig {
 }
 
 impl ConnectionConfig {
+    #[must_use]
     pub fn mock_local() -> Self {
         Self {
             id: Uuid::new_v4(),
@@ -46,6 +62,7 @@ impl ConnectionConfig {
         }
     }
 
+    #[must_use]
     pub fn mock_staging() -> Self {
         Self {
             id: Uuid::new_v4(),
@@ -57,7 +74,7 @@ impl ConnectionConfig {
             databases: vec![DatabaseInfo::new(
                 "analytics_db",
                 false,
-                vec!["events", "sessions", "metrics"],
+                ["events", "sessions", "metrics"],
             )],
         }
     }

@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 
 use super::document::DocumentRow;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct CollectionStats {
     pub document_count: usize,
     pub avg_obj_size_bytes: usize,
@@ -10,7 +10,7 @@ pub struct CollectionStats {
     pub index_count: usize,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct IndexInfo {
     pub name: String,
     pub keys: String,
@@ -19,7 +19,7 @@ pub struct IndexInfo {
     pub size_kb: f64,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SchemaField {
     pub field_name: String,
     pub bson_type: String,
@@ -27,7 +27,7 @@ pub struct SchemaField {
     pub sample_value: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CollectionInfo {
     pub database: String,
     pub name: String,
@@ -38,6 +38,7 @@ pub struct CollectionInfo {
 }
 
 impl CollectionInfo {
+    #[must_use]
     pub fn mock(database: &str, name: &str) -> Self {
         let documents = DocumentRow::mock_for_collection(name);
         let indexes = vec![

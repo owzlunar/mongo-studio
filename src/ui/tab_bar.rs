@@ -1,10 +1,11 @@
-use egui::{Color32, RichText, Ui};
+use egui::{Color32, CursorIcon, Margin, RichText, Ui, Vec2};
 use egui_dock::TabViewer;
 use egui_extras::{Column, TableBuilder};
+use egui_phosphor::regular;
 
 use crate::core::events::AppEvent;
 use crate::database::DocumentService;
-use crate::models::CollectionInfo;
+use crate::models::{CollectionInfo, ConnectionConfig};
 use crate::query::filter::QueryFilter;
 use crate::theme::ThemePalette;
 use crate::ui::components::buttons::{primary_button, secondary_button};
@@ -14,31 +15,49 @@ use crate::ui::components::json_viewer::render_json_viewer;
 use crate::workspace::tabs::{CollectionSubTab, CollectionTab, DocumentViewMode};
 
 pub struct CollectionTabViewer<'a> {
-    pub collections: &'a [CollectionInfo],
+    pub connections: &'a [ConnectionConfig],
     pub palette: &'a ThemePalette,
     pub events: &'a mut Vec<AppEvent>,
 }
 
-impl<'a> TabViewer for CollectionTabViewer<'a> {
+impl<'a> CollectionTabViewer<'a> {
+    #[must_use]
+    fn find_collection(&self, database: &str, collection: &str) -> Option<&'a CollectionInfo> {
+        self.connections
+            .iter()
+            .flat_map(|conn| &conn.databases)
+            .filter(|db| db.name == database)
+            .flat_map(|db| &db.collections)
+            .find(|c| c.name == collection)
+    }
+}
+
+impl TabViewer for CollectionTabViewer<'_> {
     type Tab = CollectionTab;
 
     fn title(&mut self, tab: &mut Self::Tab) -> egui::WidgetText {
-        RichText::new(tab.title()).strong().into()
+        RichText::new(format!("{} {}", regular::TABLE, tab.title()))
+            .strong()
+            .into()
     }
 
     fn ui(&mut self, ui: &mut Ui, tab: &mut Self::Tab) {
-        let maybe_coll = self
-            .collections
-            .iter()
-            .find(|c| c.database == tab.database && c.name == tab.collection);
+        let maybe_coll = self.find_collection(&tab.database, &tab.collection);
 
         // Top sub-navigation bar: Documents | Indexes | Schema | Aggregation
         ui.add_space(4.0);
         ui.horizontal(|ui| {
             ui.label(
-                RichText::new(format!("{} ▸ {}", tab.database, tab.collection))
-                    .monospace()
-                    .color(self.palette.muted_text),
+                RichText::new(format!(
+                    "{} {} {} {} {}",
+                    regular::DATABASE,
+                    tab.database,
+                    regular::CARET_RIGHT,
+                    regular::TABLE,
+                    tab.collection
+                ))
+                .monospace()
+                .color(self.palette.muted_text),
             );
             ui.separator();
 
@@ -50,7 +69,11 @@ impl<'a> TabViewer for CollectionTabViewer<'a> {
             ] {
                 let selected = tab.active_subtab == subtab;
                 if ui
-                    .selectable_label(selected, RichText::new(subtab.label()).strong())
+                    .selectable_label(
+                        selected,
+                        RichText::new(format!("{} {}", subtab.icon(), subtab.label())).strong(),
+                    )
+                    .on_hover_cursor(CursorIcon::PointingHand)
                     .clicked()
                 {
                     tab.active_subtab = subtab;
@@ -62,20 +85,31 @@ impl<'a> TabViewer for CollectionTabViewer<'a> {
                     if ui
                         .selectable_label(
                             tab.view_mode == DocumentViewMode::JsonTree,
-                            "{ } JSON View",
+                            format!("{} JSON View", regular::BRACKETS_CURLY),
                         )
+                        .on_hover_cursor(CursorIcon::PointingHand)
                         .clicked()
                     {
                         tab.view_mode = DocumentViewMode::JsonTree;
                     }
                     if ui
-                        .selectable_label(tab.view_mode == DocumentViewMode::Table, "⊞ Table View")
+                        .selectable_label(
+                            tab.view_mode == DocumentViewMode::Table,
+                            format!("{} Table View", regular::TABLE),
+                        )
+                        .on_hover_cursor(CursorIcon::PointingHand)
                         .clicked()
                     {
                         tab.view_mode = DocumentViewMode::Table;
                     }
 
-                    if secondary_button(ui, "+ Insert Doc", self.palette.border_color).clicked() {
+                    if secondary_button(
+                        ui,
+                        &format!("{} Insert Doc", regular::PLUS),
+                        self.palette.border_color,
+                    )
+                    .clicked()
+                    {
                         self.events.push(AppEvent::InsertMockDocument {
                             database: tab.database.clone(),
                             collection: tab.collection.clone(),
@@ -102,7 +136,7 @@ impl<'a> TabViewer for CollectionTabViewer<'a> {
                 let parsed_filter = QueryFilter::parse(&tab.filter_query);
                 let is_valid = parsed_filter.is_valid_json();
 
-                ui.horizontal_wrapped(|ui| {
+                ui.horizontal(|ui| {
                     let enter_pressed = filter_input_row(
                         ui,
                         "Filter",
@@ -116,10 +150,17 @@ impl<'a> TabViewer for CollectionTabViewer<'a> {
                     ui.add(
                         egui::TextEdit::singleline(&mut tab.sort_query)
                             .font(egui::FontId::monospace(12.0))
+                            .margin(Margin::symmetric(6.0, 4.0))
+                            .min_size(Vec2::new(110.0, 24.0))
                             .desired_width(110.0),
                     );
 
-                    if primary_button(ui, "Find", self.palette.accent_color).clicked()
+                    if primary_button(
+                        ui,
+                        &format!("{} Find", regular::MAGNIFYING_GLASS),
+                        self.palette.accent_color,
+                    )
+                    .clicked()
                         || enter_pressed
                     {
                         self.events.push(AppEvent::ExecuteFilterQuery {
@@ -129,8 +170,15 @@ impl<'a> TabViewer for CollectionTabViewer<'a> {
                         });
                     }
 
-                    if secondary_button(ui, "Reset", self.palette.border_color).clicked() {
-                        tab.filter_query = "{}".to_string();
+                    if secondary_button(
+                        ui,
+                        &format!("{} Reset", regular::ARROW_COUNTER_CLOCKWISE),
+                        self.palette.border_color,
+                    )
+                    .clicked()
+                    {
+                        tab.filter_query.clear();
+                        tab.filter_query.push_str("{}");
                         self.events.push(AppEvent::ExecuteFilterQuery {
                             database: tab.database.clone(),
                             collection: tab.collection.clone(),
@@ -140,7 +188,7 @@ impl<'a> TabViewer for CollectionTabViewer<'a> {
 
                     if !is_valid {
                         ui.label(
-                            RichText::new("⚠ Invalid JSON filter")
+                            RichText::new(format!("{} Invalid JSON filter", regular::WARNING))
                                 .color(self.palette.error_color)
                                 .size(11.5),
                         );

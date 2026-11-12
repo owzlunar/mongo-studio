@@ -1,4 +1,5 @@
-use egui::{Context, Frame, Margin, RichText, ScrollArea, Stroke, TextEdit};
+use egui::{Context, CursorIcon, Frame, Margin, RichText, ScrollArea, Stroke, TextEdit, Vec2};
+use egui_phosphor::regular;
 
 use crate::core::events::AppEvent;
 use crate::core::state::AppState;
@@ -20,7 +21,7 @@ pub fn render_sidebar(
     let frame = Frame::none()
         .fill(palette.sidebar_bg)
         .inner_margin(Margin::symmetric(10.0, 8.0))
-        .stroke(Stroke::new(1.0, palette.border_color));
+        .stroke(Stroke::new(1.0_f32, palette.border_color));
 
     egui::SidePanel::left("sidebar_explorer_panel")
         .resizable(true)
@@ -38,15 +39,24 @@ pub fn render_sidebar(
                                 .color(palette.muted_text),
                         );
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            let refresh_btn =
+                                egui::Button::new(RichText::new(regular::ARROWS_CLOCKWISE).size(13.0))
+                                    .min_size(Vec2::new(22.0, 22.0));
                             if ui
-                                .small_button("⟳")
+                                .add(refresh_btn)
+                                .on_hover_cursor(CursorIcon::PointingHand)
                                 .on_hover_text("Refresh Explorer")
                                 .clicked()
                             {
                                 events.push(AppEvent::RefreshConnections);
                             }
+
+                            let add_btn =
+                                egui::Button::new(RichText::new(regular::PLUS).strong().size(13.0))
+                                    .min_size(Vec2::new(22.0, 22.0));
                             if ui
-                                .small_button("＋")
+                                .add(add_btn)
+                                .on_hover_cursor(CursorIcon::PointingHand)
                                 .on_hover_text("Add Connection")
                                 .clicked()
                             {
@@ -60,6 +70,8 @@ pub fn render_sidebar(
                     ui.add(
                         TextEdit::singleline(&mut state.sidebar_search)
                             .hint_text("Filter databases / collections...")
+                            .margin(Margin::symmetric(6.0, 4.0))
+                            .min_size(Vec2::new(120.0, 24.0))
                             .desired_width(f32::INFINITY),
                     );
 
@@ -79,7 +91,12 @@ pub fn render_sidebar(
                             );
 
                             ui.add_space(12.0);
-                            if primary_button(ui, "+ Add Connection", palette.accent_color).clicked()
+                            if primary_button(
+                                ui,
+                                &format!("{} Add Connection", regular::PLUS),
+                                palette.accent_color,
+                            )
+                            .clicked()
                             {
                                 events.push(AppEvent::OpenNewConnectionModal);
                             }
@@ -104,7 +121,11 @@ pub fn render_sidebar(
 
                     for (title, db, coll, filter) in presets {
                         if ui
-                            .selectable_label(false, format!("📄 {} ({}.{})", title, db, coll))
+                            .selectable_label(
+                                false,
+                                format!("{} {title} ({db}.{coll})", regular::FILE_TEXT),
+                            )
+                            .on_hover_cursor(CursorIcon::PointingHand)
                             .on_hover_text(filter)
                             .clicked()
                         {

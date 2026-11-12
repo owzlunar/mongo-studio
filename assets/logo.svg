@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
+  <defs>
+    <linearGradient id="bgGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#1E293B"/>
+      <stop offset="100%" stop-color="#0F172A"/>
+    </linearGradient>
+    <linearGradient id="leafLeft" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#4EC9B0"/>
+      <stop offset="100%" stop-color="#10B981"/>
+    </linearGradient>
+    <linearGradient id="leafRight" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#10B981"/>
+      <stop offset="100%" stop-color="#059669"/>
+    </linearGradient>
+  </defs>
+  <!-- Rounded App Icon Badge -->
+  <rect x="4" y="4" width="56" height="56" rx="14" fill="url(#bgGrad)" stroke="#4EC9B0" stroke-width="2.5"/>
+  <!-- Stylized MongoDB Leaf Left Half -->
+  <path d="M32 10 C21 20 17 31 21 41 C24 47 29 50 32 51 Z" fill="url(#leafLeft)"/>
+  <!-- Stylized MongoDB Leaf Right Half -->
+  <path d="M32 10 C43 20 47 31 43 41 C40 47 35 50 32 51 Z" fill="url(#leafRight)"/>
+  <!-- Central Stem -->
+  <path d="M32 16 L32 55" stroke="#A7F3D0" stroke-width="2.2" stroke-linecap="round"/>
+</svg>
+

@@ -1,3 +1,4 @@
+use egui_phosphor::regular;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -9,7 +10,18 @@ pub enum BottomPanelTab {
 }
 
 impl BottomPanelTab {
-    pub fn label(&self) -> &'static str {
+    #[must_use]
+    pub const fn icon(self) -> &'static str {
+        match self {
+            Self::Terminal => regular::TERMINAL_WINDOW,
+            Self::Output => regular::LIST_BULLETS,
+            Self::QueryHistory => regular::CLOCK_COUNTER_CLOCKWISE,
+            Self::Problems => regular::WARNING_CIRCLE,
+        }
+    }
+
+    #[must_use]
+    pub const fn label(self) -> &'static str {
         match self {
             Self::Terminal => "TERMINAL",
             Self::Output => "OUTPUT",

@@ -22,7 +22,7 @@ pub fn render_json_viewer(ui: &mut Ui, documents: &[DocumentRow], palette: &Them
                             .fill(Color32::from_rgba_unmultiplied(0, 0, 0, 45))
                             .inner_margin(egui::Margin::same(8.0))
                             .rounding(egui::Rounding::same(4.0))
-                            .stroke(egui::Stroke::new(1.0, palette.border_color))
+                            .stroke(egui::Stroke::new(1.0_f32, palette.border_color))
                             .show(ui, |ui| {
                                 render_key_value(ui, "_id", &doc.id, palette.warning_color);
                                 render_key_value(ui, "name", &doc.name, palette.success_color);
