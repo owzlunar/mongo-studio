@@ -218,34 +218,134 @@
           <!-- Folder Items -->
           <div id="folder-items-payments" class="pl-3.5 mt-0.5 space-y-1 border-l border-slate-800/80 ml-3">
             
-            <!-- Connection 1: Payments Production (PROD) -->
-            <div class="connection-item prod-hazard-border rounded-r-md bg-slate-800/50 hover:bg-slate-800 border-y border-r border-slate-700/60 p-2 text-xs transition cursor-pointer group" 
-                 data-env="PROD" 
-                 data-name="Payments Primary Replica"
-                 data-host="atlas-prod-shard-0.mongodb.net"
-                 onclick="selectConnection(this, 'Payments Primary Replica', 'PROD', 'atlas-prod-shard-0.mongodb.net:27017', true, true)">
-              <div class="flex items-center justify-between gap-1">
-                <div class="flex items-center gap-1.5 truncate">
-                  <span class="w-2 h-2 rounded-full bg-emerald-400 shrink-0" title="Connected"></span>
-                  <span class="font-medium text-slate-100 group-hover:text-white truncate">Payments Primary</span>
+            <!-- Connection 1: Payments Production (PROD) with FULL EXPANDABLE DBS & COLLECTIONS TREE -->
+            <div class="connection-group" data-env="PROD" data-name="Payments Primary Replica" data-host="atlas-prod-shard-0.mongodb.net">
+              <div class="connection-item prod-hazard-border rounded-r-md bg-slate-800/70 hover:bg-slate-800 border-y border-r border-slate-700/70 p-2 text-xs transition cursor-pointer group" 
+                   onclick="toggleConnectionTree('payments-primary', this, 'Payments Primary Replica', 'PROD', 'atlas-prod-shard-0.mongodb.net:27017', true, true)">
+                <div class="flex items-center justify-between gap-1">
+                  <div class="flex items-center gap-1.5 truncate">
+                    <svg id="chevron-conn-payments-primary" class="w-3 h-3 text-slate-400 transition-transform transform rotate-90" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg>
+                    <span class="w-2 h-2 rounded-full bg-emerald-400 shrink-0" title="Connected"></span>
+                    <span class="font-semibold text-slate-100 group-hover:text-white truncate">Payments Primary</span>
+                  </div>
+                  <div class="flex items-center gap-1 shrink-0">
+                    <span class="px-1.5 py-0.2 text-[9px] font-bold rounded bg-red-950 text-red-300 border border-red-700 font-mono flex items-center gap-1">
+                      <span>🔒</span> PROD
+                    </span>
+                    <span class="px-1 py-0.2 text-[9px] rounded bg-indigo-950 text-indigo-300 border border-indigo-800 font-mono" title="SSH Bastion Enabled">
+                      SSH
+                    </span>
+                  </div>
                 </div>
-                <div class="flex items-center gap-1 shrink-0">
-                  <span class="px-1.5 py-0.2 text-[9px] font-bold rounded bg-red-950 text-red-300 border border-red-700 font-mono flex items-center gap-1">
-                    <span>🔒</span> PROD
-                  </span>
-                  <span class="px-1 py-0.2 text-[9px] rounded bg-indigo-950 text-indigo-300 border border-indigo-800 font-mono" title="SSH Bastion Enabled">
-                    SSH
-                  </span>
+                <div class="flex items-center justify-between mt-1 pl-4 text-[10px] text-slate-400">
+                  <span class="truncate font-mono">atlas-prod-shard-0.mongodb.net</span>
+                  <span class="text-emerald-400 font-mono text-[9px]">24ms</span>
                 </div>
               </div>
-              <div class="flex items-center justify-between mt-1 text-[10px] text-slate-400">
-                <span class="truncate font-mono">atlas-prod-shard-0.mongodb.net</span>
-                <span class="text-emerald-400 font-mono text-[9px]">24ms</span>
-              </div>
-              <!-- Databases sublist (collapsible) -->
-              <div class="mt-1.5 pt-1.5 border-t border-slate-700/50 flex items-center justify-between text-[10px] text-slate-400">
-                <span>📦 4 dbs • 28 colls</span>
-                <span class="text-[9px] text-red-400/90 font-medium">⚠️ Safe Mode Active</span>
+
+              <!-- LEVEL 4: EXPANDED DATABASES TREE (Just like current Mongo Studio) -->
+              <div id="conn-tree-payments-primary" class="pl-4 mt-1 space-y-1 border-l-2 border-slate-800 ml-3.5 text-xs">
+                
+                <!-- Admin Users Node (like tree_view.rs is_admin) -->
+                <div class="flex items-center justify-between px-2 py-1 rounded hover:bg-slate-800/60 cursor-pointer text-slate-300 transition" onclick="showMockAction('View & Manage MongoDB Users for Payments Primary')">
+                  <div class="flex items-center gap-1.5 text-[11px]">
+                    <span class="text-amber-400">👥</span>
+                    <span class="text-slate-300 hover:text-white">Users & Roles</span>
+                  </div>
+                  <span class="text-[9px] px-1 rounded bg-slate-800 text-slate-400 font-mono">4</span>
+                </div>
+
+                <!-- Database 1: payments_gateway_prod (Expanded) -->
+                <div class="database-group">
+                  <div class="flex items-center justify-between px-2 py-1 rounded hover:bg-slate-800/80 cursor-pointer text-slate-200 transition group" onclick="toggleDatabaseTree('db-payments-prod')">
+                    <div class="flex items-center gap-1.5 font-medium truncate">
+                      <svg id="chevron-db-payments-prod" class="w-3 h-3 text-slate-400 transition-transform transform rotate-90" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg>
+                      <span class="text-emerald-400">🗄️</span>
+                      <span class="text-slate-100 group-hover:text-white truncate">payments_prod</span>
+                    </div>
+                    <div class="flex items-center gap-1">
+                      <span class="text-[10px] text-slate-400 font-mono">4 colls</span>
+                      <button onclick="event.stopPropagation(); showMockAction('Create new collection inside payments_prod')" class="opacity-0 group-hover:opacity-100 text-slate-400 hover:text-white p-0.5" title="Add Collection">+</button>
+                    </div>
+                  </div>
+
+                  <!-- LEVEL 5: COLLECTIONS TREE (Click to open tab!) -->
+                  <div id="colls-db-payments-prod" class="pl-4 mt-0.5 space-y-0.5 border-l border-slate-800 ml-3 text-[11px]">
+                    <!-- Collection 1: transactions -->
+                    <div onclick="openCollectionTab('Payments Primary', 'payments_prod', 'transactions', '1,420,500', 'PROD')" 
+                         class="coll-item flex items-center justify-between px-2 py-1 rounded hover:bg-emerald-500/10 hover:text-emerald-300 text-slate-300 cursor-pointer transition group">
+                      <div class="flex items-center gap-1.5 truncate">
+                        <span class="text-slate-400 group-hover:text-emerald-400">📄</span>
+                        <span class="font-mono text-slate-200 group-hover:text-emerald-200 truncate">transactions</span>
+                      </div>
+                      <span class="text-[9px] text-slate-500 font-mono group-hover:text-slate-400">1.4M docs</span>
+                    </div>
+
+                    <!-- Collection 2: customers -->
+                    <div onclick="openCollectionTab('Payments Primary', 'payments_prod', 'customers', '85,200', 'PROD')" 
+                         class="coll-item flex items-center justify-between px-2 py-1 rounded hover:bg-emerald-500/10 hover:text-emerald-300 text-slate-300 cursor-pointer transition group">
+                      <div class="flex items-center gap-1.5 truncate">
+                        <span class="text-slate-400 group-hover:text-emerald-400">📄</span>
+                        <span class="font-mono text-slate-200 group-hover:text-emerald-200 truncate">customers</span>
+                      </div>
+                      <span class="text-[9px] text-slate-500 font-mono group-hover:text-slate-400">85.2K</span>
+                    </div>
+
+                    <!-- Collection 3: payment_methods -->
+                    <div onclick="openCollectionTab('Payments Primary', 'payments_prod', 'payment_methods', '112,000', 'PROD')" 
+                         class="coll-item flex items-center justify-between px-2 py-1 rounded hover:bg-emerald-500/10 hover:text-emerald-300 text-slate-300 cursor-pointer transition group">
+                      <div class="flex items-center gap-1.5 truncate">
+                        <span class="text-slate-400 group-hover:text-emerald-400">📄</span>
+                        <span class="font-mono text-slate-200 group-hover:text-emerald-200 truncate">payment_methods</span>
+                      </div>
+                      <span class="text-[9px] text-slate-500 font-mono group-hover:text-slate-400">112K</span>
+                    </div>
+
+                    <!-- Collection 4: webhook_events -->
+                    <div onclick="openCollectionTab('Payments Primary', 'payments_prod', 'webhook_events', '3,890,120', 'PROD')" 
+                         class="coll-item flex items-center justify-between px-2 py-1 rounded hover:bg-emerald-500/10 hover:text-emerald-300 text-slate-300 cursor-pointer transition group">
+                      <div class="flex items-center gap-1.5 truncate">
+                        <span class="text-slate-400 group-hover:text-emerald-400">📄</span>
+                        <span class="font-mono text-slate-200 group-hover:text-emerald-200 truncate">webhook_events</span>
+                      </div>
+                      <span class="text-[9px] text-slate-500 font-mono group-hover:text-slate-400">3.8M</span>
+                    </div>
+                  </div>
+                </div>
+
+                <!-- Database 2: ledger_accounting (Collapsible) -->
+                <div class="database-group">
+                  <div class="flex items-center justify-between px-2 py-1 rounded hover:bg-slate-800/80 cursor-pointer text-slate-200 transition group" onclick="toggleDatabaseTree('db-ledger-prod')">
+                    <div class="flex items-center gap-1.5 font-medium truncate">
+                      <svg id="chevron-db-ledger-prod" class="w-3 h-3 text-slate-400 transition-transform transform" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg>
+                      <span class="text-emerald-400">🗄️</span>
+                      <span class="text-slate-100 group-hover:text-white truncate">ledger_accounting</span>
+                    </div>
+                    <span class="text-[10px] text-slate-400 font-mono">2 colls</span>
+                  </div>
+
+                  <div id="colls-db-ledger-prod" class="hidden pl-4 mt-0.5 space-y-0.5 border-l border-slate-800 ml-3 text-[11px]">
+                    <div onclick="openCollectionTab('Payments Primary', 'ledger_accounting', 'journal_entries', '420,000', 'PROD')" class="coll-item flex items-center justify-between px-2 py-1 rounded hover:bg-emerald-500/10 hover:text-emerald-300 text-slate-300 cursor-pointer transition">
+                      <span class="font-mono">📄 journal_entries</span>
+                      <span class="text-[9px] text-slate-500 font-mono">420K</span>
+                    </div>
+                    <div onclick="openCollectionTab('Payments Primary', 'ledger_accounting', 'balances', '12,500', 'PROD')" class="coll-item flex items-center justify-between px-2 py-1 rounded hover:bg-emerald-500/10 hover:text-emerald-300 text-slate-300 cursor-pointer transition">
+                      <span class="font-mono">📄 balances</span>
+                      <span class="text-[9px] text-slate-500 font-mono">12.5K</span>
+                    </div>
+                  </div>
+                </div>
+
+                <!-- Database 3: admin (System) -->
+                <div class="flex items-center justify-between px-2 py-1 rounded hover:bg-slate-800/60 cursor-pointer text-slate-400 transition" onclick="showMockAction('System database: admin')">
+                  <div class="flex items-center gap-1.5 text-[11px]">
+                    <svg class="w-3 h-3 text-slate-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg>
+                    <span>🔒</span>
+                    <span class="font-mono text-slate-400">admin</span>
+                  </div>
+                  <span class="text-[9px] text-slate-500 font-mono">system</span>
+                </div>
+
               </div>
             </div>
 
@@ -883,6 +983,63 @@
         noRes.classList.remove('hidden');
       } else {
         noRes.classList.add('hidden');
+      }
+    }
+
+    // Toggle Connection Subtree (Databases & Collections)
+    function toggleConnectionTree(connId, el, name, env, host, isConnected, isProd) {
+      selectConnection(el, name, env, host, isConnected, isProd);
+      const tree = document.getElementById('conn-tree-' + connId);
+      const chevron = document.getElementById('chevron-conn-' + connId);
+      if (tree) {
+        if (tree.classList.contains('hidden')) {
+          tree.classList.remove('hidden');
+          if (chevron) chevron.classList.add('rotate-90');
+        } else {
+          tree.classList.add('hidden');
+          if (chevron) chevron.classList.remove('rotate-90');
+        }
+      }
+    }
+
+    // Toggle Database Subtree (Collections)
+    function toggleDatabaseTree(dbId) {
+      const colls = document.getElementById('colls-' + dbId);
+      const chevron = document.getElementById('chevron-' + dbId);
+      if (colls) {
+        if (colls.classList.contains('hidden')) {
+          colls.classList.remove('hidden');
+          if (chevron) chevron.classList.add('rotate-90');
+        } else {
+          colls.classList.add('hidden');
+          if (chevron) chevron.classList.remove('rotate-90');
+        }
+      }
+    }
+
+    // Open Collection Tab Simulator
+    function openCollectionTab(connName, dbName, collName, docCount, env) {
+      const banner = document.getElementById('inspectorBanner');
+      const badge = document.getElementById('inspectBadge');
+      const nameEl = document.getElementById('inspectName');
+      const hostEl = document.getElementById('inspectHost');
+      const descEl = document.getElementById('inspectDescription');
+
+      nameEl.innerText = `${dbName}.${collName}`;
+      hostEl.innerText = `${connName} (${env})`;
+
+      if (env === 'PROD') {
+        banner.className = "p-4 rounded-xl border border-red-500/60 bg-red-950/40 shadow-lg flex flex-wrap items-center justify-between gap-4";
+        badge.className = "px-2 py-0.5 text-xs font-bold rounded bg-red-900 text-red-100 border border-red-600 font-mono";
+        badge.innerText = "🔴 PROD COLLECTION TAB";
+        descEl.className = "text-xs text-red-200 flex items-center gap-1.5";
+        descEl.innerHTML = `<span>📑</span> Opened Tab: <strong>${dbName}.${collName}</strong> (~${docCount} documents) | <span class="text-amber-300 font-semibold">⚠️ Production Safe Write Guard Active</span>`;
+      } else {
+        banner.className = "p-4 rounded-xl border border-emerald-500/50 bg-emerald-950/30 shadow-md flex flex-wrap items-center justify-between gap-4";
+        badge.className = "px-2 py-0.5 text-xs font-bold rounded bg-emerald-900 text-emerald-200 border border-emerald-600 font-mono";
+        badge.innerText = "📑 COLLECTION TAB OPENED";
+        descEl.className = "text-xs text-emerald-200 flex items-center gap-1.5";
+        descEl.innerHTML = `<span>📑</span> Target: <strong>${dbName}.${collName}</strong> (~${docCount} documents). Ready for query & edit.`;
       }
     }
 
