@@ -57,7 +57,8 @@ fn query_field_input(
     response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter))
 }
 
-fn bson_type_color(ty: &str, palette: &ThemePalette) -> Color32 {
+#[must_use]
+pub fn bson_type_color(ty: &str, palette: &ThemePalette) -> Color32 {
     let is_dark = palette.editor_bg.r() < 128;
     if is_dark {
         match ty {
@@ -312,7 +313,7 @@ impl<'a> CollectionTabViewer<'a> {
 
         // Top Bar: Breadcrumb + Status + [Change Password] & [Delete User]
         ui.add_space(6.0);
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
             ui.label(
                 RichText::new(regular::PLUGS_CONNECTED)
                     .strong()
@@ -379,49 +380,49 @@ impl<'a> CollectionTabViewer<'a> {
                 );
             }
 
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if !is_protected
-                    && secondary_button(
-                        ui,
-                        &format!("{} Delete User", regular::TRASH),
-                        self.palette.error_color,
-                    )
-                    .clicked()
-                {
-                    self.events.push(AppEvent::RequestDeleteUser {
-                        connection_index: conn_idx,
-                        username: username.to_string(),
-                    });
-                }
+            ui.separator();
 
-                if !is_protected
-                    && secondary_button(
-                        ui,
-                        &format!("{} Change Password...", regular::KEY),
-                        self.palette.accent_color,
-                    )
-                    .clicked()
-                {
-                    self.events.push(AppEvent::OpenChangePasswordModal {
-                        connection_name: conn_name.to_string(),
-                        username: username.to_string(),
-                    });
-                }
+            if secondary_button(
+                ui,
+                &format!("{} Duplicate User...", regular::COPY),
+                self.palette.border_color,
+            )
+            .on_hover_text("Create a new user copying all database roles from this user")
+            .clicked()
+            {
+                self.events.push(AppEvent::OpenDuplicateUserModal {
+                    connection_index: conn_idx,
+                    source_username: username.to_string(),
+                });
+            }
 
-                if secondary_button(
+            if !is_protected
+                && secondary_button(
                     ui,
-                    &format!("{} Duplicate User...", regular::COPY),
-                    self.palette.border_color,
+                    &format!("{} Change Password...", regular::KEY),
+                    self.palette.accent_color,
                 )
-                .on_hover_text("Create a new user copying all database roles from this user")
                 .clicked()
-                {
-                    self.events.push(AppEvent::OpenDuplicateUserModal {
-                        connection_index: conn_idx,
-                        source_username: username.to_string(),
-                    });
-                }
-            });
+            {
+                self.events.push(AppEvent::OpenChangePasswordModal {
+                    connection_name: conn_name.to_string(),
+                    username: username.to_string(),
+                });
+            }
+
+            if !is_protected
+                && secondary_button(
+                    ui,
+                    &format!("{} Delete User", regular::TRASH),
+                    self.palette.error_color,
+                )
+                .clicked()
+            {
+                self.events.push(AppEvent::RequestDeleteUser {
+                    connection_index: conn_idx,
+                    username: username.to_string(),
+                });
+            }
         });
 
         ui.separator();
@@ -1643,7 +1644,7 @@ impl TabViewer for CollectionTabViewer<'_> {
 
         // Top sub-navigation bar: Documents | Indexes | Schema | Aggregation
         ui.add_space(4.0);
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
             ui.label(
                 RichText::new(format!(
                     "{} {} {} {} {}",
@@ -1684,44 +1685,44 @@ impl TabViewer for CollectionTabViewer<'_> {
                 }
             }
 
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if secondary_button(
-                    ui,
-                    &format!("{} Refresh", regular::ARROWS_CLOCKWISE),
-                    self.palette.border_color,
-                )
-                .clicked()
-                {
-                    self.events.push(AppEvent::RefreshCollection {
-                        connection_name: tab.connection_name.clone(),
-                        database: tab.database.clone(),
-                        collection: tab.collection.clone(),
-                    });
-                }
+            ui.separator();
 
-                if tab.active_subtab == CollectionSubTab::Documents {
-                    if ui
-                        .selectable_label(
-                            tab.view_mode == DocumentViewMode::JsonTree,
-                            format!("{} JSON View", regular::BRACKETS_CURLY),
-                        )
-                        .on_hover_cursor(CursorIcon::PointingHand)
-                        .clicked()
-                    {
-                        tab.view_mode = DocumentViewMode::JsonTree;
-                    }
-                    if ui
-                        .selectable_label(
-                            tab.view_mode == DocumentViewMode::Table,
-                            format!("{} Table View", regular::TABLE),
-                        )
-                        .on_hover_cursor(CursorIcon::PointingHand)
-                        .clicked()
-                    {
-                        tab.view_mode = DocumentViewMode::Table;
-                    }
+            if tab.active_subtab == CollectionSubTab::Documents {
+                if ui
+                    .selectable_label(
+                        tab.view_mode == DocumentViewMode::Table,
+                        format!("{} Table View", regular::TABLE),
+                    )
+                    .on_hover_cursor(CursorIcon::PointingHand)
+                    .clicked()
+                {
+                    tab.view_mode = DocumentViewMode::Table;
                 }
-            });
+                if ui
+                    .selectable_label(
+                        tab.view_mode == DocumentViewMode::JsonTree,
+                        format!("{} JSON View", regular::BRACKETS_CURLY),
+                    )
+                    .on_hover_cursor(CursorIcon::PointingHand)
+                    .clicked()
+                {
+                    tab.view_mode = DocumentViewMode::JsonTree;
+                }
+            }
+
+            if secondary_button(
+                ui,
+                &format!("{} Refresh", regular::ARROWS_CLOCKWISE),
+                self.palette.border_color,
+            )
+            .clicked()
+            {
+                self.events.push(AppEvent::RefreshCollection {
+                    connection_name: tab.connection_name.clone(),
+                    database: tab.database.clone(),
+                    collection: tab.collection.clone(),
+                });
+            }
         });
 
         ui.separator();

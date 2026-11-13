@@ -1,6 +1,9 @@
 pub mod dark;
 pub mod light;
 
+pub use dark::dark_palette;
+pub use light::light_palette;
+
 use egui::{Color32, Context, Rounding, Vec2};
 use serde::{Deserialize, Serialize};
 

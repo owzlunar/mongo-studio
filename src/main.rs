@@ -1,4 +1,7 @@
 use mongo_studio::app::MongoStudioApp;
+use mongo_studio::ui::layout::{
+    DEFAULT_WINDOW_HEIGHT, DEFAULT_WINDOW_WIDTH, MIN_WINDOW_HEIGHT, MIN_WINDOW_WIDTH,
+};
 
 fn main() -> eframe::Result<()> {
     tracing_subscriber::fmt()
@@ -11,8 +14,8 @@ fn main() -> eframe::Result<()> {
     let native_options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("Mongo Studio")
-            .with_inner_size([1380.0, 860.0])
-            .with_min_inner_size([960.0, 600.0]),
+            .with_inner_size([DEFAULT_WINDOW_WIDTH, DEFAULT_WINDOW_HEIGHT])
+            .with_min_inner_size([MIN_WINDOW_WIDTH, MIN_WINDOW_HEIGHT]),
         ..Default::default()
     };
 

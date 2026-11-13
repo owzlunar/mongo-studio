@@ -21,6 +21,15 @@ use crate::ui::status_bar::render_status_bar;
 use crate::ui::tab_bar::CollectionTabViewer;
 use crate::workspace::{BottomPanelTab, LogLevel};
 
+pub const DEFAULT_WINDOW_WIDTH: f32 = 1380.0;
+pub const DEFAULT_WINDOW_HEIGHT: f32 = 860.0;
+pub const MIN_WINDOW_WIDTH: f32 = 1080.0;
+pub const MIN_WINDOW_HEIGHT: f32 = 680.0;
+pub const ACTIVITY_BAR_WIDTH: f32 = 48.0;
+pub const SIDEBAR_MIN_WIDTH: f32 = 190.0;
+pub const SIDEBAR_DEFAULT_WIDTH: f32 = 250.0;
+pub const SIDEBAR_MAX_WIDTH: f32 = 420.0;
+
 pub fn render_main_layout(
     ctx: &Context,
     state: &mut AppState,
