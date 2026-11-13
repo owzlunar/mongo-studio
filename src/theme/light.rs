@@ -35,17 +35,19 @@ pub fn apply_light_theme(ctx: &Context) -> ThemePalette {
 
     visuals.panel_fill = p.editor_bg;
     visuals.window_fill = p.popup_bg;
-    visuals.extreme_bg_color = Color32::from_rgb(232, 232, 234);
+    visuals.extreme_bg_color = Color32::from_rgb(240, 240, 243);
     visuals.faint_bg_color = Color32::from_rgb(245, 245, 245);
     visuals.selection.bg_fill = Color32::from_rgb(173, 214, 255);
     visuals.selection.stroke = Stroke::new(1.0_f32, Color32::from_rgb(0, 90, 158));
+
+    visuals.override_text_color = Some(p.text_primary);
 
     visuals.widgets.noninteractive.bg_fill = p.popup_bg;
     visuals.widgets.noninteractive.bg_stroke = Stroke::new(1.0_f32, p.border_color);
     visuals.widgets.noninteractive.fg_stroke = Stroke::new(1.0_f32, p.text_primary);
 
-    visuals.widgets.inactive.bg_fill = Color32::from_rgb(198, 202, 208);
-    visuals.widgets.inactive.bg_stroke = Stroke::new(1.0_f32, Color32::from_rgb(200, 204, 212));
+    visuals.widgets.inactive.bg_fill = Color32::from_rgb(230, 232, 236);
+    visuals.widgets.inactive.bg_stroke = Stroke::new(1.0_f32, Color32::from_rgb(210, 214, 220));
     visuals.widgets.inactive.rounding = Rounding::same(3.0);
     visuals.widgets.inactive.fg_stroke = Stroke::new(1.0_f32, p.text_primary);
 
@@ -54,9 +56,9 @@ pub fn apply_light_theme(ctx: &Context) -> ThemePalette {
     visuals.widgets.hovered.rounding = Rounding::same(3.0);
     visuals.widgets.hovered.fg_stroke = Stroke::new(1.0_f32, Color32::from_rgb(10, 10, 10));
 
-    visuals.widgets.active.bg_fill = p.accent_color;
+    visuals.widgets.active.bg_fill = Color32::from_rgb(180, 214, 255);
     visuals.widgets.active.rounding = Rounding::same(3.0);
-    visuals.widgets.active.fg_stroke = Stroke::new(1.0_f32, Color32::WHITE);
+    visuals.widgets.active.fg_stroke = Stroke::new(1.5_f32, Color32::from_rgb(15, 15, 15));
 
     visuals.widgets.open.bg_fill = Color32::from_rgb(214, 232, 255);
     visuals.widgets.open.bg_stroke = Stroke::new(1.0_f32, p.accent_color);

@@ -79,7 +79,10 @@ pub fn render_command_palette(
 
                     ui.horizontal(|ui| {
                         if ui
-                            .selectable_label(false, item.label)
+                            .selectable_label(
+                                false,
+                                RichText::new(item.label).color(palette.text_primary),
+                            )
                             .on_hover_cursor(CursorIcon::PointingHand)
                             .clicked()
                         {

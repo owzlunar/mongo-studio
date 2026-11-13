@@ -36,7 +36,12 @@ fn query_field_input(
     is_valid: bool,
     error_color: Color32,
 ) -> bool {
-    ui.label(RichText::new(label).strong().size(12.0));
+    ui.label(
+        RichText::new(label)
+            .strong()
+            .size(12.0)
+            .color(ui.visuals().text_color()),
+    );
     let mut edit = TextEdit::singleline(value)
         .font(FontId::monospace(12.0))
         .hint_text(hint)
@@ -53,16 +58,31 @@ fn query_field_input(
 }
 
 fn bson_type_color(ty: &str, palette: &ThemePalette) -> Color32 {
-    match ty {
-        "String" => Color32::from_rgb(86, 156, 214),
-        "Int32" | "Int64" | "Double" | "Decimal128" => Color32::from_rgb(78, 201, 176),
-        "ObjectId" => Color32::from_rgb(206, 145, 120),
-        "Boolean" => Color32::from_rgb(197, 134, 192),
-        "DateTime" => Color32::from_rgb(220, 220, 170),
-        "Document" => Color32::from_rgb(156, 220, 254),
-        "Array" => Color32::from_rgb(181, 206, 168),
-        "Null" => palette.muted_text,
-        _ => palette.accent_color,
+    let is_dark = palette.editor_bg.r() < 128;
+    if is_dark {
+        match ty {
+            "String" => Color32::from_rgb(86, 156, 214),
+            "Int32" | "Int64" | "Double" | "Decimal128" => Color32::from_rgb(78, 201, 176),
+            "ObjectId" => Color32::from_rgb(206, 145, 120),
+            "Boolean" => Color32::from_rgb(197, 134, 192),
+            "DateTime" => Color32::from_rgb(220, 220, 170),
+            "Document" => Color32::from_rgb(156, 220, 254),
+            "Array" => Color32::from_rgb(181, 206, 168),
+            "Null" => palette.muted_text,
+            _ => palette.accent_color,
+        }
+    } else {
+        match ty {
+            "String" => Color32::from_rgb(4, 81, 165),
+            "Int32" | "Int64" | "Double" | "Decimal128" => Color32::from_rgb(9, 134, 88),
+            "ObjectId" => Color32::from_rgb(163, 21, 21),
+            "Boolean" => Color32::from_rgb(129, 31, 144),
+            "DateTime" => Color32::from_rgb(160, 90, 0),
+            "Document" => Color32::from_rgb(0, 102, 180),
+            "Array" => Color32::from_rgb(30, 120, 60),
+            "Null" => palette.muted_text,
+            _ => palette.accent_color,
+        }
     }
 }
 
@@ -135,7 +155,12 @@ fn render_type_distribution_bar(ui: &mut Ui, field: &SchemaField, palette: &Them
     }
 
     resp.on_hover_ui(|ui| {
-        ui.label(RichText::new(&field.field_name).monospace().strong());
+        ui.label(
+            RichText::new(&field.field_name)
+                .monospace()
+                .strong()
+                .color(palette.text_primary),
+        );
         ui.label(
             RichText::new(format!(
                 "Present in {} doc(s) ({:.1}%)",
@@ -146,7 +171,12 @@ fn render_type_distribution_bar(ui: &mut Ui, field: &SchemaField, palette: &Them
         );
         ui.separator();
         if field.type_breakdown.is_empty() {
-            ui.label(RichText::new(&field.bson_type).monospace().size(11.5));
+            ui.label(
+                RichText::new(&field.bson_type)
+                    .monospace()
+                    .size(11.5)
+                    .color(palette.text_primary),
+            );
         } else {
             for (ty, pct) in &field.type_breakdown {
                 ui.horizontal(|ui| {
@@ -159,7 +189,8 @@ fn render_type_distribution_bar(ui: &mut Ui, field: &SchemaField, palette: &Them
                     ui.label(
                         RichText::new(format!("{ty}: {pct:.1}%"))
                             .monospace()
-                            .size(11.5),
+                            .size(11.5)
+                            .color(palette.text_primary),
                     );
                 });
             }
@@ -282,11 +313,29 @@ impl<'a> CollectionTabViewer<'a> {
         // Top Bar: Breadcrumb + Status + [Change Password] & [Delete User]
         ui.add_space(6.0);
         ui.horizontal(|ui| {
-            ui.label(RichText::new(regular::PLUGS_CONNECTED).strong());
-            ui.label(RichText::new(conn_name).monospace().strong());
+            ui.label(
+                RichText::new(regular::PLUGS_CONNECTED)
+                    .strong()
+                    .color(self.palette.text_primary),
+            );
+            ui.label(
+                RichText::new(conn_name)
+                    .monospace()
+                    .strong()
+                    .color(self.palette.text_primary),
+            );
             ui.label(RichText::new(regular::CARET_RIGHT).color(self.palette.muted_text));
-            ui.label(RichText::new(regular::USERS).strong());
-            ui.label(RichText::new("Users").monospace().strong());
+            ui.label(
+                RichText::new(regular::USERS)
+                    .strong()
+                    .color(self.palette.text_primary),
+            );
+            ui.label(
+                RichText::new("Users")
+                    .monospace()
+                    .strong()
+                    .color(self.palette.text_primary),
+            );
             ui.label(RichText::new(regular::CARET_RIGHT).color(self.palette.muted_text));
             ui.label(
                 RichText::new(if is_protected {
@@ -294,9 +343,15 @@ impl<'a> CollectionTabViewer<'a> {
                 } else {
                     regular::USER
                 })
-                .strong(),
+                .strong()
+                .color(self.palette.text_primary),
             );
-            ui.label(RichText::new(username).monospace().strong());
+            ui.label(
+                RichText::new(username)
+                    .monospace()
+                    .strong()
+                    .color(self.palette.text_primary),
+            );
             ui.separator();
 
             if is_protected {
@@ -490,7 +545,8 @@ impl<'a> CollectionTabViewer<'a> {
                             regular::KEY
                         ))
                         .strong()
-                        .size(13.5),
+                        .size(13.5)
+                        .color(self.palette.text_primary),
                     );
                     if !is_protected {
                         ui.label(
@@ -786,7 +842,8 @@ impl<'a> CollectionTabViewer<'a> {
                     tab.collection,
                     coll.indexes.len()
                 ))
-                .strong(),
+                .strong()
+                .color(self.palette.text_primary),
             );
             ui.label(
                 RichText::new(
@@ -853,13 +910,24 @@ impl<'a> CollectionTabViewer<'a> {
                 body.rows(26.0, coll.indexes.len(), |mut row| {
                     let idx_info = &coll.indexes[row.index()];
                     row.col(|ui| {
-                        ui.label(RichText::new(&idx_info.name).monospace().strong());
+                        ui.label(
+                            RichText::new(&idx_info.name)
+                                .monospace()
+                                .strong()
+                                .color(self.palette.text_primary),
+                        );
                     });
                     row.col(|ui| {
-                        ui.label(RichText::new(&idx_info.keys).monospace());
+                        ui.label(
+                            RichText::new(&idx_info.keys)
+                                .monospace()
+                                .color(self.palette.text_primary),
+                        );
                     });
                     row.col(|ui| {
-                        ui.label(&idx_info.index_type);
+                        ui.label(
+                            RichText::new(&idx_info.index_type).color(self.palette.text_primary),
+                        );
                     });
                     row.col(|ui| {
                         let badge = if idx_info.unique { "UNIQUE" } else { "—" };
@@ -870,7 +938,10 @@ impl<'a> CollectionTabViewer<'a> {
                         }));
                     });
                     row.col(|ui| {
-                        ui.label(format!("{:.1} KB", idx_info.size_kb));
+                        ui.label(
+                            RichText::new(format!("{:.1} KB", idx_info.size_kb))
+                                .color(self.palette.text_primary),
+                        );
                     });
                     row.col(|ui| {
                         let is_primary = idx_info.name == "_id_";
@@ -927,10 +998,16 @@ impl<'a> CollectionTabViewer<'a> {
                     tab.collection,
                     coll.schema_fields.len()
                 ))
-                .strong(),
+                .strong()
+                .color(self.palette.text_primary),
             );
             ui.separator();
-            ui.label(RichText::new("Sample Size").size(12.0).strong());
+            ui.label(
+                RichText::new("Sample Size")
+                    .size(12.0)
+                    .strong()
+                    .color(self.palette.text_primary),
+            );
             ComboBox::from_id_source((
                 "schema_sample_size_combo",
                 &tab.connection_name,
@@ -1020,7 +1097,12 @@ impl<'a> CollectionTabViewer<'a> {
                 body.rows(24.0, coll.schema_fields.len(), |mut row| {
                     let field = &coll.schema_fields[row.index()];
                     row.col(|ui| {
-                        ui.label(RichText::new(&field.field_name).monospace().strong());
+                        ui.label(
+                            RichText::new(&field.field_name)
+                                .monospace()
+                                .strong()
+                                .color(self.palette.text_primary),
+                        );
                     });
                     row.col(|ui| {
                         ui.label(
@@ -1067,7 +1149,8 @@ impl<'a> CollectionTabViewer<'a> {
                     "Aggregation Pipeline — {}.{}",
                     tab.database, tab.collection
                 ))
-                .strong(),
+                .strong()
+                .color(self.palette.text_primary),
             );
             ui.separator();
 
@@ -1282,7 +1365,12 @@ impl<'a> CollectionTabViewer<'a> {
                                         &tab.collection,
                                         idx,
                                     ))
-                                    .selected_text(RichText::new(&selected_op).monospace().strong())
+                                    .selected_text(
+                                        RichText::new(&selected_op)
+                                            .monospace()
+                                            .strong()
+                                            .color(self.palette.text_primary),
+                                    )
                                     .width(120.0)
                                     .show_ui(ui, |ui| {
                                         for &op in AggregationStage::SUPPORTED_OPERATORS {
@@ -1534,10 +1622,12 @@ impl TabViewer for CollectionTabViewer<'_> {
         if tab.selected_user.is_some() {
             RichText::new(format!("{} User: {}", regular::USER_GEAR, tab.title()))
                 .strong()
+                .color(self.palette.text_primary)
                 .into()
         } else {
             RichText::new(format!("{} {}", regular::TABLE, tab.title()))
                 .strong()
+                .color(self.palette.text_primary)
                 .into()
         }
     }
@@ -1575,10 +1665,17 @@ impl TabViewer for CollectionTabViewer<'_> {
                 CollectionSubTab::Aggregation,
             ] {
                 let selected = tab.active_subtab == subtab;
+                let subtab_color = if selected {
+                    self.palette.accent_color
+                } else {
+                    self.palette.text_primary
+                };
                 if ui
                     .selectable_label(
                         selected,
-                        RichText::new(format!("{} {}", subtab.icon(), subtab.label())).strong(),
+                        RichText::new(format!("{} {}", subtab.icon(), subtab.label()))
+                            .strong()
+                            .color(subtab_color),
                     )
                     .on_hover_cursor(CursorIcon::PointingHand)
                     .clicked()
@@ -1705,7 +1802,12 @@ impl TabViewer for CollectionTabViewer<'_> {
                 ui.add_space(4.0);
 
                 ui.horizontal_wrapped(|ui| {
-                    ui.label(RichText::new("Limit").strong().size(12.0));
+                    ui.label(
+                        RichText::new("Limit")
+                            .strong()
+                            .size(12.0)
+                            .color(self.palette.text_primary),
+                    );
                     ComboBox::from_id_source((
                         "doc_limit_combo",
                         &tab.connection_name,

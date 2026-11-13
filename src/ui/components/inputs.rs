@@ -8,7 +8,12 @@ pub fn filter_input_row(
     is_valid: bool,
     error_color: Color32,
 ) -> bool {
-    ui.label(RichText::new(label).strong().size(12.0));
+    ui.label(
+        RichText::new(label)
+            .strong()
+            .size(12.0)
+            .color(ui.visuals().text_color()),
+    );
     let mut edit = TextEdit::singleline(value)
         .font(FontId::monospace(12.0))
         .hint_text(hint)

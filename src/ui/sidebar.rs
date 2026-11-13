@@ -74,7 +74,8 @@ fn render_saved_queries_sidebar(
                                 .selectable_label(
                                     false,
                                     RichText::new(format!("{} {}", regular::FILE_TEXT, sq.name))
-                                        .strong(),
+                                        .strong()
+                                        .color(palette.text_primary),
                                 )
                                 .on_hover_cursor(CursorIcon::PointingHand)
                                 .on_hover_text(&tooltip);
@@ -287,7 +288,12 @@ fn render_schema_sidebar(
             ui.add_space(6.0);
 
             ui.horizontal(|ui| {
-                ui.label(RichText::new("Sample Size").size(11.5).strong());
+                ui.label(
+                    RichText::new("Sample Size")
+                        .size(11.5)
+                        .strong()
+                        .color(palette.text_primary),
+                );
                 ComboBox::from_id_source("sidebar_schema_sample_size")
                     .selected_text(RichText::new(tab.schema_sample_size.to_string()).monospace())
                     .width(74.0)
@@ -392,7 +398,8 @@ fn render_schema_sidebar(
                                 RichText::new(&field.field_name)
                                     .monospace()
                                     .strong()
-                                    .size(11.5),
+                                    .size(11.5)
+                                    .color(palette.text_primary),
                             );
                             ui.with_layout(
                                 egui::Layout::right_to_left(egui::Align::Center),
@@ -443,7 +450,12 @@ fn render_settings_sidebar(
     ui.separator();
     ui.add_space(6.0);
 
-    ui.label(RichText::new("Color Theme").strong().size(12.0));
+    ui.label(
+        RichText::new("Color Theme")
+            .strong()
+            .size(12.0)
+            .color(palette.text_primary),
+    );
     ui.add_space(4.0);
     ui.horizontal(|ui| {
         let is_dark = state.theme_mode == ThemeMode::Dark;
@@ -467,7 +479,12 @@ fn render_settings_sidebar(
     ui.separator();
     ui.add_space(6.0);
 
-    ui.label(RichText::new("Workspace Layout").strong().size(12.0));
+    ui.label(
+        RichText::new("Workspace Layout")
+            .strong()
+            .size(12.0)
+            .color(palette.text_primary),
+    );
     ui.add_space(4.0);
     if secondary_button(
         ui,
@@ -506,7 +523,12 @@ fn render_settings_sidebar(
     ui.separator();
     ui.add_space(6.0);
 
-    ui.label(RichText::new("Config File Locations").strong().size(12.0));
+    ui.label(
+        RichText::new("Config File Locations")
+            .strong()
+            .size(12.0)
+            .color(palette.text_primary),
+    );
     ui.add_space(4.0);
 
     let config_paths = [
