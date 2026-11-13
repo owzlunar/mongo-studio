@@ -3,1132 +3,976 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Mongo Studio - Workspace & Environment Left Panel Design</title>
+  <title>Mongo Studio - Workspace & Connection Explorer Design</title>
   <script src="https://www.gstatic.com/antigravity/web/dev/tailwindcss.min.js"></script>
   <style>
     /* Custom Scrollbar for Studio feel */
     ::-webkit-scrollbar {
-      width: 6px;
-      height: 6px;
+      width: 5px;
+      height: 5px;
     }
     ::-webkit-scrollbar-track {
       background: transparent;
     }
     ::-webkit-scrollbar-thumb {
-      background: rgba(156, 163, 175, 0.3);
+      background: rgba(148, 163, 184, 0.2);
       border-radius: 3px;
     }
     ::-webkit-scrollbar-thumb:hover {
-      background: rgba(156, 163, 175, 0.5);
+      background: rgba(148, 163, 184, 0.4);
     }
-    .prod-hazard-border {
-      border-left: 3px solid #ef4444 !important;
+    .selected-connection {
+      background-color: rgba(30, 58, 102, 0.6) !important;
+      border: 1px solid rgba(59, 130, 246, 0.4) !important;
     }
-    .prod-glow {
-      box-shadow: 0 0 0 1px rgba(239, 68, 68, 0.2);
+    .selected-connection-light {
+      background-color: rgba(219, 234, 254, 0.8) !important;
+      border: 1px solid rgba(147, 197, 253, 0.9) !important;
     }
   </style>
 </head>
 <body class="bg-slate-950 text-slate-100 antialiased font-sans transition-colors duration-200">
 
-  <!-- TOP APP BANNER / DEMO CONTROLS -->
-  <header class="border-b border-slate-800 bg-slate-900/90 backdrop-blur px-5 py-3 sticky top-0 z-50 flex flex-wrap items-center justify-between gap-4">
+  <!-- TOP DEMO CONTROL BAR -->
+  <header class="border-b border-slate-800 bg-slate-900/95 backdrop-blur px-5 py-2.5 sticky top-0 z-50 flex flex-wrap items-center justify-between gap-4">
     <div class="flex items-center gap-3">
-      <div class="w-8 h-8 rounded-lg bg-emerald-500/20 border border-emerald-500/40 flex items-center justify-center text-emerald-400 font-bold text-lg shadow-sm">
+      <div class="w-7 h-7 rounded-lg bg-blue-500/20 border border-blue-500/40 flex items-center justify-center text-blue-400 font-bold text-sm shadow-sm">
         🍃
       </div>
       <div>
         <div class="flex items-center gap-2">
-          <h1 class="text-base font-semibold text-white tracking-wide">Mongo Studio</h1>
-          <span class="text-xs px-2 py-0.5 rounded-full bg-indigo-500/20 text-indigo-300 border border-indigo-500/30 font-medium">UX Concept</span>
+          <h1 class="text-sm font-semibold text-white tracking-wide">Mongo Studio</h1>
+          <span class="text-[10px] px-2 py-0.5 rounded-full bg-blue-500/20 text-blue-300 border border-blue-500/30 font-medium">Design Rev. 2 (Matches Screenshots)</span>
         </div>
-        <p class="text-xs text-slate-400">Workspace / Project / Environment Hierarchy Mockup</p>
+        <p class="text-[11px] text-slate-400">อิงตาม UI Reference (No Env Chips • Dropdown Workspace • Smart Add • Config & Import/Export)</p>
       </div>
     </div>
 
     <!-- Interactive Prototype Controls -->
-    <div class="flex items-center gap-3 text-xs">
-      <div class="flex items-center bg-slate-800/80 p-1 rounded-lg border border-slate-700">
-        <span class="text-slate-400 px-2 font-medium">Theme:</span>
-        <button id="themeToggleDark" onclick="setTheme('dark')" class="px-2.5 py-1 rounded bg-slate-700 text-white font-medium shadow-sm transition">
-          🌙 Dark
+    <div class="flex items-center gap-2.5 text-xs">
+      <!-- Toggle State Demo (Populated vs Empty State) -->
+      <div class="flex items-center bg-slate-800/90 p-0.5 rounded-lg border border-slate-700">
+        <span class="text-slate-400 px-2 text-[11px]">View Demo:</span>
+        <button id="viewActiveBtn" onclick="toggleEmptyState(false)" class="px-2.5 py-1 rounded bg-slate-700 text-white font-medium transition text-[11px]">
+          Tree View (Image 2)
         </button>
-        <button id="themeToggleLight" onclick="setTheme('light')" class="px-2.5 py-1 rounded text-slate-400 hover:text-white font-medium transition">
-          ☀️ Light
+        <button id="viewEmptyBtn" onclick="toggleEmptyState(true)" class="px-2.5 py-1 rounded text-slate-400 hover:text-white font-medium transition text-[11px]">
+          Empty State (Image 1)
         </button>
       </div>
 
-      <div class="hidden sm:flex items-center gap-2 bg-slate-800/80 px-3 py-1.5 rounded-lg border border-slate-700 text-slate-300">
-        <span class="inline-block w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
-        <span>Interactive Sandbox</span>
+      <!-- Theme Switcher -->
+      <div class="flex items-center bg-slate-800/90 p-0.5 rounded-lg border border-slate-700">
+        <button id="themeToggleDark" onclick="setTheme('dark')" class="px-2.5 py-1 rounded bg-slate-700 text-white font-medium shadow-sm transition text-[11px]">
+          🌙 Dark
+        </button>
+        <button id="themeToggleLight" onclick="setTheme('light')" class="px-2.5 py-1 rounded text-slate-400 hover:text-white font-medium transition text-[11px]">
+          ☀️ Light
+        </button>
       </div>
     </div>
   </header>
 
   <!-- MAIN DUAL-PANE CONTAINER -->
-  <main class="grid grid-cols-1 lg:grid-cols-12 min-h-[calc(100vh-60px)]">
+  <main class="grid grid-cols-1 lg:grid-cols-12 min-h-[calc(100vh-55px)]">
 
-    <!-- ========================================== -->
-    <!-- LEFT PANEL: WORKSPACE CONNECTION EXPLORER -->
-    <!-- ========================================== -->
-    <aside id="sidebarContainer" class="lg:col-span-4 xl:col-span-3 border-r border-slate-800 bg-slate-900/70 flex flex-col h-[calc(100vh-60px)] sticky top-[60px]">
+    <!-- ================================================================= -->
+    <!-- LEFT PANEL: CONNECTION & WORKSPACE EXPLORER (Exact Style as Image) -->
+    <!-- ================================================================= -->
+    <aside id="sidebarContainer" class="lg:col-span-4 xl:col-span-3 border-r border-slate-800 bg-[#131926] flex flex-col h-[calc(100vh-55px)] sticky top-[55px]">
       
-      <!-- 1. WORKSPACE HEADER & SWITCHER -->
-      <div class="p-3 border-b border-slate-800 space-y-2.5">
-        <div class="flex items-center justify-between">
-          <span class="text-[11px] font-bold tracking-wider text-slate-400 uppercase">Workspace</span>
-          <div class="flex items-center gap-1">
-            <button onclick="toggleNewWorkspaceModal(true)" title="Create New Workspace" class="p-1 rounded text-slate-400 hover:text-slate-200 hover:bg-slate-800 transition">
-              <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/></svg>
-            </button>
-            <button onclick="alert('Manage Workspaces: Export/Import, Reorder, or Configure access policies.')" title="Workspace Settings" class="p-1 rounded text-slate-400 hover:text-slate-200 hover:bg-slate-800 transition">
-              <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"/><circle cx="12" cy="12" r="3"/></svg>
-            </button>
-          </div>
+      <!-- 1. SIDEBAR HEADER: MongoDB Client & Collapse Icon -->
+      <div class="px-4 py-3 border-b border-slate-800/80 flex items-center justify-between">
+        <div class="flex items-center gap-2 text-slate-100 font-semibold text-sm">
+          <svg class="w-4 h-4 text-blue-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 7v10c0 2 1.5 3 3.5 3h9c2 0 3.5-1 3.5-3V7M4 7c0-2 1.5-3 3.5-3h9c2 0 3.5 1 3.5 3M4 7h16M4 12h16"/>
+          </svg>
+          <span class="tracking-wide text-[13px]">MongoDB Client</span>
         </div>
-
-        <!-- Custom Workspace Selector Dropdown -->
-        <div class="relative">
-          <button id="workspaceDropdownBtn" onclick="toggleWorkspaceDropdown()" class="w-full flex items-center justify-between gap-2 px-2.5 py-2 rounded-lg bg-slate-800/90 hover:bg-slate-800 border border-slate-700/80 text-left text-xs font-medium text-white transition shadow-sm">
-            <div class="flex items-center gap-2 truncate">
-              <span id="activeWorkspaceIcon" class="text-sm">🏢</span>
-              <div class="truncate">
-                <div id="activeWorkspaceName" class="font-semibold text-slate-100 truncate">FinTech Global Client</div>
-                <div id="activeWorkspaceMeta" class="text-[10px] text-slate-400 font-normal truncate">11 connections • 4 projects</div>
-              </div>
-            </div>
-            <svg class="w-3.5 h-3.5 text-slate-400 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/></svg>
+        <div class="flex items-center gap-1">
+          <!-- Config & Import/Export button in header -->
+          <button onclick="openConfigModal()" class="text-slate-400 hover:text-slate-200 p-1 rounded hover:bg-slate-800 transition" title="Configuration, Import & Export">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6V4m0 2a2 2 0 100 4m0-4a2 2 0 110 4m-6 8a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4m6 6v10m6-2a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4"/>
+            </svg>
           </button>
-
-          <!-- Workspace Dropdown Menu Popover -->
-          <div id="workspaceMenu" class="hidden absolute top-full left-0 right-0 mt-1 bg-slate-800 border border-slate-700 rounded-lg shadow-xl py-1.5 z-40 text-xs">
-            <div class="px-2.5 py-1 text-[10px] uppercase font-bold text-slate-400 tracking-wider">Switch Workspace</div>
-            
-            <button onclick="selectWorkspace('all', '🌐', 'All Workspaces', '24 connections across all clients')" class="w-full flex items-center gap-2.5 px-3 py-1.5 hover:bg-slate-700/70 text-left text-slate-200">
-              <span class="text-sm">🌐</span>
-              <div class="truncate">
-                <div class="font-medium text-slate-100">All Workspaces (Unified)</div>
-                <div class="text-[10px] text-slate-400">View everything in one tree</div>
-              </div>
-            </button>
-
-            <button onclick="selectWorkspace('fintech', '🏢', 'FinTech Global Client', '11 connections • 4 projects')" class="w-full flex items-center justify-between px-3 py-1.5 bg-emerald-500/10 hover:bg-slate-700/70 text-left text-slate-200">
-              <div class="flex items-center gap-2.5 truncate">
-                <span class="text-sm">🏢</span>
-                <div class="truncate">
-                  <div class="font-medium text-emerald-300">FinTech Global Client</div>
-                  <div class="text-[10px] text-slate-400">Payment, Billing, KYC</div>
-                </div>
-              </div>
-              <span class="text-[10px] text-emerald-400 font-mono">Active</span>
-            </button>
-
-            <button onclick="selectWorkspace('ecommerce', '🛍️', 'OmniRetail Solutions', '8 connections • 2 projects')" class="w-full flex items-center gap-2.5 px-3 py-1.5 hover:bg-slate-700/70 text-left text-slate-200">
-              <span class="text-sm">🛍️</span>
-              <div class="truncate">
-                <div class="font-medium text-slate-100">OmniRetail Solutions</div>
-                <div class="text-[10px] text-slate-400">Catalog, Cart, Inventory</div>
-              </div>
-            </button>
-
-            <button onclick="selectWorkspace('internal', '🚀', 'Internal Labs & Infra', '5 connections • 1 project')" class="w-full flex items-center gap-2.5 px-3 py-1.5 hover:bg-slate-700/70 text-left text-slate-200">
-              <span class="text-sm">🚀</span>
-              <div class="truncate">
-                <div class="font-medium text-slate-100">Internal Labs & Infra</div>
-                <div class="text-[10px] text-slate-400">Dev cluster, Metrics, Staging</div>
-              </div>
-            </button>
-
-            <div class="border-t border-slate-700 my-1"></div>
-            <button onclick="toggleNewWorkspaceModal(true)" class="w-full flex items-center gap-2 px-3 py-1.5 text-emerald-400 hover:bg-slate-700/70 text-left font-medium">
-              <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/></svg>
-              <span>Create New Workspace...</span>
-            </button>
-          </div>
-        </div>
-
-        <!-- Action Buttons: New Connection + New Folder -->
-        <div class="grid grid-cols-2 gap-1.5 pt-1">
-          <button onclick="showMockAction('Opening New Connection Modal with current workspace preselected')" class="flex items-center justify-center gap-1.5 px-2 py-1.5 rounded-md bg-emerald-600 hover:bg-emerald-500 text-white font-medium text-xs shadow-sm transition">
-            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/></svg>
-            <span>Connection</span>
-          </button>
-          <button onclick="showMockAction('Create Folder / Project Group inside workspace')" class="flex items-center justify-center gap-1.5 px-2 py-1.5 rounded-md bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 font-medium text-xs transition">
-            <svg class="w-3.5 h-3.5 text-amber-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 13h6m-3-3v6m-9 1V7a2 2 0 012-2h6l2 2h6a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2z"/></svg>
-            <span>New Folder</span>
+          <button onclick="showMockAction('Collapse Left Sidebar')" class="text-slate-400 hover:text-slate-200 p-1 rounded hover:bg-slate-800 transition" title="Toggle Sidebar">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2"/>
+            </svg>
           </button>
         </div>
-
       </div>
 
-      <!-- 2. SEARCH & ENVIRONMENT FILTER CHIPS -->
-      <div class="p-3 border-b border-slate-800 space-y-2 bg-slate-900/40">
-        <!-- Live Search Input -->
-        <div class="relative">
-          <svg class="w-3.5 h-3.5 text-slate-400 absolute left-2.5 top-2.5 pointer-events-none" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/></svg>
+      <!-- 2. SEARCH BAR WITH ⌘K (Full Width, No Env Chips) -->
+      <div class="p-3">
+        <div class="relative flex items-center">
+          <svg class="w-3.5 h-3.5 text-slate-400 absolute left-3 pointer-events-none" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/>
+          </svg>
           <input 
             type="text" 
             id="searchInput" 
             oninput="handleSearch(this.value)" 
-            placeholder="Search connections, hosts, tags..." 
-            class="w-full bg-slate-800/90 border border-slate-700 rounded-md pl-8 pr-7 py-1.5 text-xs text-slate-100 placeholder-slate-400 focus:outline-none focus:ring-1 focus:ring-emerald-500 focus:border-emerald-500"
+            placeholder="Search connections..." 
+            class="w-full bg-[#1c2436] border border-slate-700/60 rounded-md pl-8 pr-12 py-1.5 text-xs text-slate-100 placeholder-slate-400 focus:outline-none focus:ring-1 focus:ring-blue-500 focus:border-blue-500 transition"
           />
-          <button id="clearSearchBtn" onclick="clearSearch()" class="hidden absolute right-2.5 top-2 text-slate-400 hover:text-slate-200 text-xs">✕</button>
-        </div>
-
-        <!-- Quick Filter Pills: All / Prod / Staging / Dev / Local -->
-        <div class="flex items-center gap-1 overflow-x-auto pb-0.5 no-scrollbar text-[11px]">
-          <button id="filter-all" onclick="setEnvFilter('ALL')" class="env-pill px-2 py-0.5 rounded-full font-semibold bg-slate-700 text-white shadow-xs">
-            All <span id="count-all" class="text-[10px] opacity-80">(11)</span>
-          </button>
-          <button id="filter-prod" onclick="setEnvFilter('PROD')" class="env-pill px-2 py-0.5 rounded-full font-semibold bg-red-950/60 hover:bg-red-900/80 text-red-400 border border-red-800/60 transition">
-            🔴 Prod <span id="count-prod" class="text-[10px] opacity-80">(3)</span>
-          </button>
-          <button id="filter-staging" onclick="setEnvFilter('STAGING')" class="env-pill px-2 py-0.5 rounded-full font-semibold bg-amber-950/60 hover:bg-amber-900/80 text-amber-400 border border-amber-800/60 transition">
-            🟡 Stg <span id="count-staging" class="text-[10px] opacity-80">(3)</span>
-          </button>
-          <button id="filter-dev" onclick="setEnvFilter('DEV')" class="env-pill px-2 py-0.5 rounded-full font-semibold bg-emerald-950/60 hover:bg-emerald-900/80 text-emerald-400 border border-emerald-800/60 transition">
-            🟢 Dev <span id="count-dev" class="text-[10px] opacity-80">(3)</span>
-          </button>
-          <button id="filter-local" onclick="setEnvFilter('LOCAL')" class="env-pill px-2 py-0.5 rounded-full font-semibold bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 transition">
-            ⚪ Local <span id="count-local" class="text-[10px] opacity-80">(2)</span>
-          </button>
+          <div class="absolute right-2 flex items-center pointer-events-none text-[10px] text-slate-500 font-mono">
+            ⌘ K
+          </div>
         </div>
       </div>
 
-      <!-- 3. HIERARCHICAL CONNECTION TREE (FOLDERS & CONNECTIONS) -->
-      <div id="treeContainer" class="flex-1 overflow-y-auto p-2 space-y-1.5 select-none">
+      <!-- 3. QUICK ACCESS: FAVORITES & RECENT -->
+      <div class="px-2 pb-2 space-y-0.5 text-xs text-slate-300 border-b border-slate-800/80">
+        <div onclick="filterByQuickAccess('favorites')" class="flex items-center justify-between px-3 py-1.5 rounded-md hover:bg-slate-800/60 cursor-pointer group transition">
+          <div class="flex items-center gap-2.5">
+            <span class="text-amber-400 text-sm">⭐</span>
+            <span class="text-slate-200 group-hover:text-white font-medium text-[12.5px]">Favorites</span>
+          </div>
+          <span class="text-[11px] text-slate-400 font-mono font-medium">4</span>
+        </div>
+
+        <div onclick="filterByQuickAccess('recent')" class="flex items-center justify-between px-3 py-1.5 rounded-md hover:bg-slate-800/60 cursor-pointer group transition">
+          <div class="flex items-center gap-2.5">
+            <span class="text-slate-400 group-hover:text-slate-300 text-sm">🕒</span>
+            <span class="text-slate-300 group-hover:text-white font-medium text-[12.5px]">Recent</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- 4. WORKSPACES SECTION HEADER WITH DROPDOWN + SMART '+' MENU -->
+      <div class="px-3 pt-3 pb-1.5 flex items-center justify-between">
+        <!-- Left: Workspace Title with Filter Dropdown -->
+        <div class="relative">
+          <button id="wsFilterDropdownBtn" onclick="toggleWorkspaceDropdown()" class="flex items-center gap-1.5 text-[11px] font-bold tracking-wider text-slate-400 uppercase hover:text-slate-200 transition">
+            <span id="currentWorkspaceLabel">WORKSPACES</span>
+            <svg class="w-3 h-3 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/>
+            </svg>
+          </button>
+
+          <!-- Workspace Switcher Popover -->
+          <div id="wsDropdownMenu" class="hidden absolute top-full left-0 mt-1 w-56 bg-[#1a2333] border border-slate-700 rounded-lg shadow-2xl py-1.5 z-40 text-xs">
+            <div class="px-3 py-1 text-[10px] uppercase font-bold text-slate-400 tracking-wider">Switch Workspace View</div>
+            <button onclick="selectWorkspaceFilter('all', 'WORKSPACES (ALL)')" class="w-full text-left px-3 py-1.5 hover:bg-slate-700/70 text-slate-200 flex items-center justify-between">
+              <span>🌐 All Workspaces (Unified)</span>
+              <span class="text-[10px] text-blue-400 font-mono">Default</span>
+            </button>
+            <button onclick="selectWorkspaceFilter('Customer A', 'Customer A')" class="w-full text-left px-3 py-1.5 hover:bg-slate-700/70 text-slate-200 flex items-center gap-2">
+              <span>🏢 Customer A</span>
+            </button>
+            <button onclick="selectWorkspaceFilter('Customer B', 'Customer B')" class="w-full text-left px-3 py-1.5 hover:bg-slate-700/70 text-slate-200 flex items-center gap-2">
+              <span>🏢 Customer B</span>
+            </button>
+            <button onclick="selectWorkspaceFilter('Internal', 'Internal Projects')" class="w-full text-left px-3 py-1.5 hover:bg-slate-700/70 text-slate-200 flex items-center gap-2">
+              <span>📁 Internal</span>
+            </button>
+            <div class="border-t border-slate-700 my-1"></div>
+            <button onclick="openConfigModal()" class="w-full text-left px-3 py-1.5 text-blue-400 hover:bg-slate-700/70 flex items-center gap-2 font-medium">
+              <span>⚙️</span> Manage & Import/Export...
+            </button>
+          </div>
+        </div>
+
+        <!-- Right: SMART '+' ACTION BUTTON (Solves "+conn vs +folder" confusion!) -->
+        <div class="relative">
+          <button id="smartAddBtn" onclick="toggleSmartAddMenu()" class="w-5 h-5 flex items-center justify-center rounded text-slate-400 hover:text-white hover:bg-slate-800 transition text-sm font-semibold" title="Add Connection, Folder, or Workspace">
+            +
+          </button>
+
+          <!-- Unified Smart Add Popover -->
+          <div id="smartAddMenu" class="hidden absolute right-0 top-full mt-1 w-52 bg-[#1a2333] border border-slate-700 rounded-lg shadow-2xl py-1 z-40 text-xs text-slate-200">
+            <button onclick="openNewConnectionDialog(null, null)" class="w-full text-left px-3 py-2 hover:bg-blue-600/20 hover:text-blue-300 flex items-center gap-2.5 transition">
+              <span class="text-emerald-400 text-sm">➕</span>
+              <div>
+                <div class="font-medium text-slate-100">New Connection...</div>
+                <div class="text-[10px] text-slate-400">Add MongoDB profile (URI / Host)</div>
+              </div>
+            </button>
+            <button onclick="openNewFolderDialog(null)" class="w-full text-left px-3 py-2 hover:bg-blue-600/20 hover:text-blue-300 flex items-center gap-2.5 transition">
+              <span class="text-amber-400 text-sm">📁</span>
+              <div>
+                <div class="font-medium text-slate-100">New Project / Folder...</div>
+                <div class="text-[10px] text-slate-400">Group connections by service</div>
+              </div>
+            </button>
+            <div class="border-t border-slate-700 my-1"></div>
+            <button onclick="openNewWorkspaceDialog()" class="w-full text-left px-3 py-2 hover:bg-blue-600/20 hover:text-blue-300 flex items-center gap-2.5 transition">
+              <span class="text-blue-400 text-sm">🏢</span>
+              <div>
+                <div class="font-medium text-slate-100">New Workspace / Client...</div>
+                <div class="text-[10px] text-slate-400">Create client organization</div>
+              </div>
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <!-- 5. TREE VIEW AREA (Or EMPTY STATE) -->
+      <div id="sidebarScrollArea" class="flex-1 overflow-y-auto px-2 py-1 select-none">
         
-        <!-- FOLDER 1: PAYMENT GATEWAY SERVICE -->
-        <div class="folder-group" data-folder="payments">
-          <div class="flex items-center justify-between px-2 py-1.5 rounded-md hover:bg-slate-800/60 cursor-pointer group text-slate-300 transition" onclick="toggleFolder('payments')">
-            <div class="flex items-center gap-1.5 text-xs font-semibold truncate">
-              <svg id="chevron-payments" class="w-3.5 h-3.5 text-slate-400 transition-transform transform rotate-90" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg>
-              <span class="text-amber-400">📁</span>
-              <span class="text-slate-200 group-hover:text-white truncate">💳 Payment Gateway</span>
-            </div>
-            <div class="flex items-center gap-1.5">
-              <span class="text-[10px] px-1.5 py-0.2 rounded bg-slate-800 text-slate-400 font-mono">3</span>
-              <button onclick="event.stopPropagation(); showFolderMenu('Payment Gateway', event)" class="opacity-0 group-hover:opacity-100 p-0.5 text-slate-400 hover:text-white rounded hover:bg-slate-700 transition">
-                <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><circle cx="12" cy="12" r="1.5"/><circle cx="6" cy="12" r="1.5"/><circle cx="18" cy="12" r="1.5"/></svg>
+        <!-- ============================================= -->
+        <!-- STATE A: POPULATED TREE (Exact as Image 2)    -->
+        <!-- ============================================= -->
+        <div id="treeContainer" class="space-y-1">
+
+          <!-- 🏢 WORKSPACE 1: Customer A -->
+          <div class="workspace-node" data-ws="Customer A">
+            <div class="flex items-center justify-between px-2 py-1 rounded hover:bg-slate-800/60 cursor-pointer text-slate-200 group transition" onclick="toggleCollapse('ws-customer-a')">
+              <div class="flex items-center gap-1.5 text-xs font-semibold truncate">
+                <svg id="chevron-ws-customer-a" class="w-3.5 h-3.5 text-slate-400 transition-transform transform rotate-90" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/>
+                </svg>
+                <span class="text-blue-400 text-sm">🏢</span>
+                <span class="text-slate-100 group-hover:text-white font-medium truncate">Customer A</span>
+              </div>
+              <!-- In-line '+' button on hover -->
+              <button onclick="event.stopPropagation(); openNewFolderDialog('Customer A')" class="opacity-0 group-hover:opacity-100 p-0.5 text-slate-400 hover:text-white rounded hover:bg-slate-700 text-xs" title="Add Folder in Customer A">
+                +
               </button>
             </div>
-          </div>
 
-          <!-- Folder Items -->
-          <div id="folder-items-payments" class="pl-3.5 mt-0.5 space-y-1 border-l border-slate-800/80 ml-3">
-            
-            <!-- Connection 1: Payments Production (PROD) with FULL EXPANDABLE DBS & COLLECTIONS TREE -->
-            <div class="connection-group" data-env="PROD" data-name="Payments Primary Replica" data-host="atlas-prod-shard-0.mongodb.net">
-              <div class="connection-item prod-hazard-border rounded-r-md bg-slate-800/70 hover:bg-slate-800 border-y border-r border-slate-700/70 p-2 text-xs transition cursor-pointer group" 
-                   onclick="toggleConnectionTree('payments-primary', this, 'Payments Primary Replica', 'PROD', 'atlas-prod-shard-0.mongodb.net:27017', true, true)">
-                <div class="flex items-center justify-between gap-1">
-                  <div class="flex items-center gap-1.5 truncate">
-                    <svg id="chevron-conn-payments-primary" class="w-3 h-3 text-slate-400 transition-transform transform rotate-90" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg>
-                    <span class="w-2 h-2 rounded-full bg-emerald-400 shrink-0" title="Connected"></span>
-                    <span class="font-semibold text-slate-100 group-hover:text-white truncate">Payments Primary</span>
+            <!-- Children of Customer A -->
+            <div id="content-ws-customer-a" class="pl-4 mt-0.5 space-y-1 border-l border-slate-800/80 ml-3.5">
+              
+              <!-- 📁 PROJECT FOLDER 1: ERP -->
+              <div class="folder-node" data-folder="ERP">
+                <div class="flex items-center justify-between px-2 py-1 rounded hover:bg-slate-800/60 cursor-pointer text-slate-300 group transition" onclick="toggleCollapse('folder-erp')">
+                  <div class="flex items-center gap-1.5 text-xs font-medium truncate">
+                    <svg id="chevron-folder-erp" class="w-3 h-3 text-slate-400 transition-transform transform rotate-90" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/>
+                    </svg>
+                    <span class="text-amber-400 text-xs">📁</span>
+                    <span class="text-slate-200 group-hover:text-white truncate">ERP</span>
                   </div>
-                  <div class="flex items-center gap-1 shrink-0">
-                    <span class="px-1.5 py-0.2 text-[9px] font-bold rounded bg-red-950 text-red-300 border border-red-700 font-mono flex items-center gap-1">
-                      <span>🔒</span> PROD
+                  <!-- In-line '+' button on hover -->
+                  <button onclick="event.stopPropagation(); openNewConnectionDialog('Customer A', 'ERP')" class="opacity-0 group-hover:opacity-100 p-0.5 text-slate-400 hover:text-white rounded hover:bg-slate-700 text-xs" title="Add Connection in ERP">
+                    +
+                  </button>
+                </div>
+
+                <!-- Connections inside ERP -->
+                <div id="content-folder-erp" class="pl-3.5 mt-0.5 space-y-0.5 border-l border-slate-800/60 ml-3 text-xs">
+                  
+                  <!-- Connection 1: erp-dev (DEV) -->
+                  <div onclick="selectTreeConnection(this, 'erp-dev', 'DEV', 'Customer A / ERP', '10.0.1.15:27017', 3, 14)" 
+                       class="conn-row flex items-center gap-2 px-2.5 py-1.5 rounded-md hover:bg-slate-800/60 cursor-pointer text-slate-300 transition group"
+                       data-name="erp-dev" data-env="DEV">
+                    <span class="px-1.5 py-0.2 rounded text-[9px] font-bold font-mono tracking-wider bg-emerald-950/80 text-emerald-400 border border-emerald-700/60 shrink-0">
+                      DEV
                     </span>
-                    <span class="px-1 py-0.2 text-[9px] rounded bg-indigo-950 text-indigo-300 border border-indigo-800 font-mono" title="SSH Bastion Enabled">
-                      SSH
+                    <span class="font-mono text-slate-200 group-hover:text-white truncate text-[11.5px]">erp-dev</span>
+                  </div>
+
+                  <!-- Connection 2: erp-test (TEST - Highlighted as Selected like image) -->
+                  <div onclick="selectTreeConnection(this, 'erp-test', 'TEST', 'Customer A / ERP', '10.0.1.20:27017', 4, 22)" 
+                       class="conn-row selected-connection flex items-center justify-between px-2.5 py-1.5 rounded-md cursor-pointer text-slate-200 transition group"
+                       data-name="erp-test" data-env="TEST">
+                    <div class="flex items-center gap-2 truncate">
+                      <span class="px-1.5 py-0.2 rounded text-[9px] font-bold font-mono tracking-wider bg-amber-950/90 text-amber-400 border border-amber-700/80 shrink-0">
+                        TEST
+                      </span>
+                      <span class="font-mono text-white font-medium truncate text-[11.5px]">erp-test</span>
+                    </div>
+                    <!-- Collapsible Databases Arrow when active -->
+                    <button onclick="event.stopPropagation(); toggleSubTree('dbs-erp-test')" title="Expand databases" class="text-slate-400 hover:text-white p-0.5">
+                      <svg id="chevron-dbs-erp-test" class="w-3 h-3 transition-transform transform rotate-90" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/>
+                      </svg>
+                    </button>
+                  </div>
+
+                  <!-- Subtree Databases for erp-test (Demonstrating DB -> Collection expansion) -->
+                  <div id="dbs-erp-test" class="pl-4 mt-0.5 space-y-0.5 border-l border-blue-500/30 ml-3 text-[11px]">
+                    <div onclick="openCollection('Customer A / ERP / erp-test', 'erp_core_db', 'orders', 42000)" class="flex items-center justify-between px-2 py-0.5 rounded hover:bg-slate-800 cursor-pointer text-slate-300">
+                      <span class="truncate">🗄️ erp_core_db</span>
+                      <span class="text-[9px] text-slate-500 font-mono">3 colls</span>
+                    </div>
+                    <!-- Collections -->
+                    <div class="pl-3 space-y-0.5 border-l border-slate-800 ml-2 text-[10.5px]">
+                      <div onclick="openCollection('Customer A / ERP / erp-test', 'erp_core_db', 'orders', 42000)" class="flex items-center justify-between px-1.5 py-0.5 rounded hover:bg-blue-600/20 hover:text-blue-200 cursor-pointer text-slate-400">
+                        <span class="font-mono">📄 orders</span>
+                        <span class="text-[9px] text-slate-500 font-mono">42k</span>
+                      </div>
+                      <div onclick="openCollection('Customer A / ERP / erp-test', 'erp_core_db', 'invoices', 18500)" class="flex items-center justify-between px-1.5 py-0.5 rounded hover:bg-blue-600/20 hover:text-blue-200 cursor-pointer text-slate-400">
+                        <span class="font-mono">📄 invoices</span>
+                        <span class="text-[9px] text-slate-500 font-mono">18k</span>
+                      </div>
+                    </div>
+                  </div>
+
+                  <!-- Connection 3: erp-prod (PROD) -->
+                  <div onclick="selectTreeConnection(this, 'erp-prod', 'PROD', 'Customer A / ERP', 'atlas-prod.mongodb.net:27017', 6, 45)" 
+                       class="conn-row flex items-center gap-2 px-2.5 py-1.5 rounded-md hover:bg-slate-800/60 cursor-pointer text-slate-300 transition group"
+                       data-name="erp-prod" data-env="PROD">
+                    <span class="px-1.5 py-0.2 rounded text-[9px] font-bold font-mono tracking-wider bg-red-950/90 text-red-400 border border-red-700/80 shrink-0">
+                      PROD
                     </span>
+                    <span class="font-mono text-slate-200 group-hover:text-white truncate text-[11.5px]">erp-prod</span>
                   </div>
-                </div>
-                <div class="flex items-center justify-between mt-1 pl-4 text-[10px] text-slate-400">
-                  <span class="truncate font-mono">atlas-prod-shard-0.mongodb.net</span>
-                  <span class="text-emerald-400 font-mono text-[9px]">24ms</span>
+
                 </div>
               </div>
 
-              <!-- LEVEL 4: EXPANDED DATABASES TREE (Just like current Mongo Studio) -->
-              <div id="conn-tree-payments-primary" class="pl-4 mt-1 space-y-1 border-l-2 border-slate-800 ml-3.5 text-xs">
-                
-                <!-- Admin Users Node (like tree_view.rs is_admin) -->
-                <div class="flex items-center justify-between px-2 py-1 rounded hover:bg-slate-800/60 cursor-pointer text-slate-300 transition" onclick="showMockAction('View & Manage MongoDB Users for Payments Primary')">
-                  <div class="flex items-center gap-1.5 text-[11px]">
-                    <span class="text-amber-400">👥</span>
-                    <span class="text-slate-300 hover:text-white">Users & Roles</span>
+              <!-- 📁 PROJECT FOLDER 2: E-Commerce (Collapsed) -->
+              <div class="folder-node" data-folder="E-Commerce">
+                <div class="flex items-center justify-between px-2 py-1 rounded hover:bg-slate-800/60 cursor-pointer text-slate-300 group transition" onclick="toggleCollapse('folder-ecom')">
+                  <div class="flex items-center gap-1.5 text-xs font-medium truncate">
+                    <svg id="chevron-folder-ecom" class="w-3 h-3 text-slate-400 transition-transform transform" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/>
+                    </svg>
+                    <span class="text-amber-400 text-xs">📁</span>
+                    <span class="text-slate-200 group-hover:text-white truncate">E-Commerce</span>
                   </div>
-                  <span class="text-[9px] px-1 rounded bg-slate-800 text-slate-400 font-mono">4</span>
+                  <span class="text-[10px] text-slate-500 font-mono">2</span>
                 </div>
 
-                <!-- Database 1: payments_gateway_prod (Expanded) -->
-                <div class="database-group">
-                  <div class="flex items-center justify-between px-2 py-1 rounded hover:bg-slate-800/80 cursor-pointer text-slate-200 transition group" onclick="toggleDatabaseTree('db-payments-prod')">
-                    <div class="flex items-center gap-1.5 font-medium truncate">
-                      <svg id="chevron-db-payments-prod" class="w-3 h-3 text-slate-400 transition-transform transform rotate-90" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg>
-                      <span class="text-emerald-400">🗄️</span>
-                      <span class="text-slate-100 group-hover:text-white truncate">payments_prod</span>
-                    </div>
-                    <div class="flex items-center gap-1">
-                      <span class="text-[10px] text-slate-400 font-mono">4 colls</span>
-                      <button onclick="event.stopPropagation(); showMockAction('Create new collection inside payments_prod')" class="opacity-0 group-hover:opacity-100 text-slate-400 hover:text-white p-0.5" title="Add Collection">+</button>
-                    </div>
+                <div id="content-folder-ecom" class="hidden pl-3.5 mt-0.5 space-y-0.5 border-l border-slate-800/60 ml-3 text-xs">
+                  <div onclick="selectTreeConnection(this, 'ecom-stage', 'TEST', 'Customer A / E-Commerce', 'ecom-stg.internal:27017', 2, 8)" class="conn-row flex items-center gap-2 px-2.5 py-1 rounded hover:bg-slate-800/60 cursor-pointer" data-name="ecom-stage" data-env="TEST">
+                    <span class="px-1.5 py-0.2 rounded text-[9px] font-bold font-mono bg-amber-950/90 text-amber-400 border border-amber-700/80">TEST</span>
+                    <span class="font-mono text-slate-200">ecom-stage</span>
                   </div>
-
-                  <!-- LEVEL 5: COLLECTIONS TREE (Click to open tab!) -->
-                  <div id="colls-db-payments-prod" class="pl-4 mt-0.5 space-y-0.5 border-l border-slate-800 ml-3 text-[11px]">
-                    <!-- Collection 1: transactions -->
-                    <div onclick="openCollectionTab('Payments Primary', 'payments_prod', 'transactions', '1,420,500', 'PROD')" 
-                         class="coll-item flex items-center justify-between px-2 py-1 rounded hover:bg-emerald-500/10 hover:text-emerald-300 text-slate-300 cursor-pointer transition group">
-                      <div class="flex items-center gap-1.5 truncate">
-                        <span class="text-slate-400 group-hover:text-emerald-400">📄</span>
-                        <span class="font-mono text-slate-200 group-hover:text-emerald-200 truncate">transactions</span>
-                      </div>
-                      <span class="text-[9px] text-slate-500 font-mono group-hover:text-slate-400">1.4M docs</span>
-                    </div>
-
-                    <!-- Collection 2: customers -->
-                    <div onclick="openCollectionTab('Payments Primary', 'payments_prod', 'customers', '85,200', 'PROD')" 
-                         class="coll-item flex items-center justify-between px-2 py-1 rounded hover:bg-emerald-500/10 hover:text-emerald-300 text-slate-300 cursor-pointer transition group">
-                      <div class="flex items-center gap-1.5 truncate">
-                        <span class="text-slate-400 group-hover:text-emerald-400">📄</span>
-                        <span class="font-mono text-slate-200 group-hover:text-emerald-200 truncate">customers</span>
-                      </div>
-                      <span class="text-[9px] text-slate-500 font-mono group-hover:text-slate-400">85.2K</span>
-                    </div>
-
-                    <!-- Collection 3: payment_methods -->
-                    <div onclick="openCollectionTab('Payments Primary', 'payments_prod', 'payment_methods', '112,000', 'PROD')" 
-                         class="coll-item flex items-center justify-between px-2 py-1 rounded hover:bg-emerald-500/10 hover:text-emerald-300 text-slate-300 cursor-pointer transition group">
-                      <div class="flex items-center gap-1.5 truncate">
-                        <span class="text-slate-400 group-hover:text-emerald-400">📄</span>
-                        <span class="font-mono text-slate-200 group-hover:text-emerald-200 truncate">payment_methods</span>
-                      </div>
-                      <span class="text-[9px] text-slate-500 font-mono group-hover:text-slate-400">112K</span>
-                    </div>
-
-                    <!-- Collection 4: webhook_events -->
-                    <div onclick="openCollectionTab('Payments Primary', 'payments_prod', 'webhook_events', '3,890,120', 'PROD')" 
-                         class="coll-item flex items-center justify-between px-2 py-1 rounded hover:bg-emerald-500/10 hover:text-emerald-300 text-slate-300 cursor-pointer transition group">
-                      <div class="flex items-center gap-1.5 truncate">
-                        <span class="text-slate-400 group-hover:text-emerald-400">📄</span>
-                        <span class="font-mono text-slate-200 group-hover:text-emerald-200 truncate">webhook_events</span>
-                      </div>
-                      <span class="text-[9px] text-slate-500 font-mono group-hover:text-slate-400">3.8M</span>
-                    </div>
+                  <div onclick="selectTreeConnection(this, 'ecom-prod', 'PROD', 'Customer A / E-Commerce', 'ecom-prod.internal:27017', 4, 18)" class="conn-row flex items-center gap-2 px-2.5 py-1 rounded hover:bg-slate-800/60 cursor-pointer" data-name="ecom-prod" data-env="PROD">
+                    <span class="px-1.5 py-0.2 rounded text-[9px] font-bold font-mono bg-red-950/90 text-red-400 border border-red-700/80">PROD</span>
+                    <span class="font-mono text-slate-200">ecom-prod</span>
                   </div>
                 </div>
-
-                <!-- Database 2: ledger_accounting (Collapsible) -->
-                <div class="database-group">
-                  <div class="flex items-center justify-between px-2 py-1 rounded hover:bg-slate-800/80 cursor-pointer text-slate-200 transition group" onclick="toggleDatabaseTree('db-ledger-prod')">
-                    <div class="flex items-center gap-1.5 font-medium truncate">
-                      <svg id="chevron-db-ledger-prod" class="w-3 h-3 text-slate-400 transition-transform transform" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg>
-                      <span class="text-emerald-400">🗄️</span>
-                      <span class="text-slate-100 group-hover:text-white truncate">ledger_accounting</span>
-                    </div>
-                    <span class="text-[10px] text-slate-400 font-mono">2 colls</span>
-                  </div>
-
-                  <div id="colls-db-ledger-prod" class="hidden pl-4 mt-0.5 space-y-0.5 border-l border-slate-800 ml-3 text-[11px]">
-                    <div onclick="openCollectionTab('Payments Primary', 'ledger_accounting', 'journal_entries', '420,000', 'PROD')" class="coll-item flex items-center justify-between px-2 py-1 rounded hover:bg-emerald-500/10 hover:text-emerald-300 text-slate-300 cursor-pointer transition">
-                      <span class="font-mono">📄 journal_entries</span>
-                      <span class="text-[9px] text-slate-500 font-mono">420K</span>
-                    </div>
-                    <div onclick="openCollectionTab('Payments Primary', 'ledger_accounting', 'balances', '12,500', 'PROD')" class="coll-item flex items-center justify-between px-2 py-1 rounded hover:bg-emerald-500/10 hover:text-emerald-300 text-slate-300 cursor-pointer transition">
-                      <span class="font-mono">📄 balances</span>
-                      <span class="text-[9px] text-slate-500 font-mono">12.5K</span>
-                    </div>
-                  </div>
-                </div>
-
-                <!-- Database 3: admin (System) -->
-                <div class="flex items-center justify-between px-2 py-1 rounded hover:bg-slate-800/60 cursor-pointer text-slate-400 transition" onclick="showMockAction('System database: admin')">
-                  <div class="flex items-center gap-1.5 text-[11px]">
-                    <svg class="w-3 h-3 text-slate-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg>
-                    <span>🔒</span>
-                    <span class="font-mono text-slate-400">admin</span>
-                  </div>
-                  <span class="text-[9px] text-slate-500 font-mono">system</span>
-                </div>
-
               </div>
+
             </div>
-
-            <!-- Connection 2: Payments Staging (STAGING) -->
-            <div class="connection-item rounded-md bg-slate-800/30 hover:bg-slate-800 border border-slate-700/50 p-2 text-xs transition cursor-pointer group"
-                 data-env="STAGING" 
-                 data-name="Payments Staging Clust"
-                 data-host="staging-db01.fintech.internal"
-                 onclick="selectConnection(this, 'Payments Staging Clust', 'STAGING', 'staging-db01.fintech.internal:27017', true, false)">
-              <div class="flex items-center justify-between gap-1">
-                <div class="flex items-center gap-1.5 truncate">
-                  <span class="w-2 h-2 rounded-full bg-emerald-400 shrink-0" title="Connected"></span>
-                  <span class="font-medium text-slate-200 group-hover:text-white truncate">Payments Staging</span>
-                </div>
-                <span class="px-1.5 py-0.2 text-[9px] font-bold rounded bg-amber-950 text-amber-300 border border-amber-700 font-mono">
-                  STG
-                </span>
-              </div>
-              <div class="flex items-center justify-between mt-1 text-[10px] text-slate-400">
-                <span class="truncate font-mono">staging-db01.fintech.internal</span>
-                <span class="text-slate-500 font-mono text-[9px]">4 dbs</span>
-              </div>
-            </div>
-
-            <!-- Connection 3: Payments Local Dev (LOCAL) -->
-            <div class="connection-item rounded-md bg-slate-800/30 hover:bg-slate-800 border border-slate-700/50 p-2 text-xs transition cursor-pointer group"
-                 data-env="LOCAL" 
-                 data-name="Payments Docker Local"
-                 data-host="localhost:27017"
-                 onclick="selectConnection(this, 'Payments Docker Local', 'LOCAL', '127.0.0.1:27017', false, false)">
-              <div class="flex items-center justify-between gap-1">
-                <div class="flex items-center gap-1.5 truncate">
-                  <span class="w-2 h-2 rounded-full bg-slate-500 shrink-0" title="Disconnected"></span>
-                  <span class="font-medium text-slate-300 group-hover:text-white truncate">Payments Local Dev</span>
-                </div>
-                <span class="px-1.5 py-0.2 text-[9px] font-bold rounded bg-slate-800 text-slate-300 border border-slate-600 font-mono">
-                  LOCAL
-                </span>
-              </div>
-              <div class="flex items-center justify-between mt-1 text-[10px] text-slate-400">
-                <span class="truncate font-mono">127.0.0.1:27017</span>
-                <span class="text-slate-500 text-[9px]">Disconnected</span>
-              </div>
-            </div>
-
           </div>
+
+          <!-- 🏢 WORKSPACE 2: Customer B (Collapsed) -->
+          <div class="workspace-node" data-ws="Customer B">
+            <div class="flex items-center justify-between px-2 py-1 rounded hover:bg-slate-800/60 cursor-pointer text-slate-200 group transition" onclick="toggleCollapse('ws-customer-b')">
+              <div class="flex items-center gap-1.5 text-xs font-semibold truncate">
+                <svg id="chevron-ws-customer-b" class="w-3.5 h-3.5 text-slate-400 transition-transform transform" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/>
+                </svg>
+                <span class="text-blue-400 text-sm">🏢</span>
+                <span class="text-slate-200 group-hover:text-white font-medium truncate">Customer B</span>
+              </div>
+              <span class="text-[10px] text-slate-500 font-mono">3 conns</span>
+            </div>
+
+            <div id="content-ws-customer-b" class="hidden pl-4 mt-0.5 space-y-1 border-l border-slate-800/80 ml-3.5 text-xs">
+              <div onclick="selectTreeConnection(this, 'b-analytics-prod', 'PROD', 'Customer B', 'b-lake.mongo:27017', 2, 9)" class="conn-row flex items-center gap-2 px-2.5 py-1 rounded hover:bg-slate-800/60 cursor-pointer" data-name="b-analytics-prod" data-env="PROD">
+                <span class="px-1.5 py-0.2 rounded text-[9px] font-bold font-mono bg-red-950/90 text-red-400 border border-red-700/80">PROD</span>
+                <span class="font-mono text-slate-200">b-analytics-prod</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- 📁 WORKSPACE 3: Internal (Collapsed) -->
+          <div class="workspace-node" data-ws="Internal">
+            <div class="flex items-center justify-between px-2 py-1 rounded hover:bg-slate-800/60 cursor-pointer text-slate-200 group transition" onclick="toggleCollapse('ws-internal')">
+              <div class="flex items-center gap-1.5 text-xs font-semibold truncate">
+                <svg id="chevron-ws-internal" class="w-3.5 h-3.5 text-slate-400 transition-transform transform" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/>
+                </svg>
+                <span class="text-amber-400 text-sm">📁</span>
+                <span class="text-slate-200 group-hover:text-white font-medium truncate">Internal</span>
+              </div>
+              <span class="text-[10px] text-slate-500 font-mono">2 conns</span>
+            </div>
+
+            <div id="content-ws-internal" class="hidden pl-4 mt-0.5 space-y-1 border-l border-slate-800/80 ml-3.5 text-xs">
+              <div onclick="selectTreeConnection(this, 'local-docker', 'DEV', 'Internal', '127.0.0.1:27017', 1, 3)" class="conn-row flex items-center gap-2 px-2.5 py-1 rounded hover:bg-slate-800/60 cursor-pointer" data-name="local-docker" data-env="DEV">
+                <span class="px-1.5 py-0.2 rounded text-[9px] font-bold font-mono bg-emerald-950/80 text-emerald-400 border border-emerald-700/60">DEV</span>
+                <span class="font-mono text-slate-200">local-docker</span>
+              </div>
+            </div>
+          </div>
+
         </div>
 
-        <!-- FOLDER 2: USER IDENTITY & AUTH -->
-        <div class="folder-group" data-folder="identity">
-          <div class="flex items-center justify-between px-2 py-1.5 rounded-md hover:bg-slate-800/60 cursor-pointer group text-slate-300 transition" onclick="toggleFolder('identity')">
-            <div class="flex items-center gap-1.5 text-xs font-semibold truncate">
-              <svg id="chevron-identity" class="w-3.5 h-3.5 text-slate-400 transition-transform transform rotate-90" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg>
-              <span class="text-amber-400">📁</span>
-              <span class="text-slate-200 group-hover:text-white truncate">👤 User Identity & Auth</span>
-            </div>
-            <div class="flex items-center gap-1.5">
-              <span class="text-[10px] px-1.5 py-0.2 rounded bg-slate-800 text-slate-400 font-mono">3</span>
-              <button onclick="event.stopPropagation(); showFolderMenu('User Identity & Auth', event)" class="opacity-0 group-hover:opacity-100 p-0.5 text-slate-400 hover:text-white rounded hover:bg-slate-700 transition">
-                <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><circle cx="12" cy="12" r="1.5"/><circle cx="6" cy="12" r="1.5"/><circle cx="18" cy="12" r="1.5"/></svg>
-              </button>
-            </div>
+        <!-- ============================================== -->
+        <!-- STATE B: EMPTY STATE (Identical to Image 1)    -->
+        <!-- ============================================== -->
+        <div id="emptyStateContainer" class="hidden py-14 px-4 text-center space-y-3">
+          <div class="w-12 h-12 mx-auto rounded-xl bg-blue-500/10 border border-blue-500/20 flex items-center justify-center text-blue-400 text-xl shadow-inner">
+            <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.8" d="M9 13h6m-3-3v6m-9 1V7a2 2 0 012-2h6l2 2h6a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2z"/>
+            </svg>
           </div>
-
-          <div id="folder-items-identity" class="pl-3.5 mt-0.5 space-y-1 border-l border-slate-800/80 ml-3">
-            <!-- Connection 4: Auth Prod -->
-            <div class="connection-item prod-hazard-border rounded-r-md bg-slate-800/50 hover:bg-slate-800 border-y border-r border-slate-700/60 p-2 text-xs transition cursor-pointer group"
-                 data-env="PROD" 
-                 data-name="Auth Users Cluster Prod"
-                 data-host="auth-prod.mongo.cloud"
-                 onclick="selectConnection(this, 'Auth Users Cluster Prod', 'PROD', 'auth-prod.mongo.cloud:27017', true, true)">
-              <div class="flex items-center justify-between gap-1">
-                <div class="flex items-center gap-1.5 truncate">
-                  <span class="w-2 h-2 rounded-full bg-emerald-400 shrink-0"></span>
-                  <span class="font-medium text-slate-100 group-hover:text-white truncate">Auth Users Cluster</span>
-                </div>
-                <span class="px-1.5 py-0.2 text-[9px] font-bold rounded bg-red-950 text-red-300 border border-red-700 font-mono flex items-center gap-1">
-                  <span>🔒</span> PROD
-                </span>
-              </div>
-              <div class="flex items-center justify-between mt-1 text-[10px] text-slate-400">
-                <span class="truncate font-mono">auth-prod.mongo.cloud</span>
-                <span class="text-emerald-400 font-mono text-[9px]">18ms</span>
-              </div>
-            </div>
-
-            <!-- Connection 5: Auth Dev Cluster -->
-            <div class="connection-item rounded-md bg-slate-800/30 hover:bg-slate-800 border border-slate-700/50 p-2 text-xs transition cursor-pointer group"
-                 data-env="DEV" 
-                 data-name="Auth Dev Cluster"
-                 data-host="auth-dev.internal"
-                 onclick="selectConnection(this, 'Auth Dev Cluster', 'DEV', 'auth-dev.internal:27017', true, false)">
-              <div class="flex items-center justify-between gap-1">
-                <div class="flex items-center gap-1.5 truncate">
-                  <span class="w-2 h-2 rounded-full bg-emerald-400 shrink-0"></span>
-                  <span class="font-medium text-slate-200 group-hover:text-white truncate">Auth Dev Cluster</span>
-                </div>
-                <span class="px-1.5 py-0.2 text-[9px] font-bold rounded bg-emerald-950 text-emerald-300 border border-emerald-700 font-mono">
-                  DEV
-                </span>
-              </div>
-              <div class="flex items-center justify-between mt-1 text-[10px] text-slate-400">
-                <span class="truncate font-mono">auth-dev.internal</span>
-                <span class="text-slate-500 font-mono text-[9px]">2 dbs</span>
-              </div>
-            </div>
-
-            <!-- Connection 6: Auth Local Mock -->
-            <div class="connection-item rounded-md bg-slate-800/30 hover:bg-slate-800 border border-slate-700/50 p-2 text-xs transition cursor-pointer group"
-                 data-env="LOCAL" 
-                 data-name="Auth Local Testcontainer"
-                 data-host="127.0.0.1:27018"
-                 onclick="selectConnection(this, 'Auth Local Testcontainer', 'LOCAL', '127.0.0.1:27018', false, false)">
-              <div class="flex items-center justify-between gap-1">
-                <div class="flex items-center gap-1.5 truncate">
-                  <span class="w-2 h-2 rounded-full bg-slate-500 shrink-0"></span>
-                  <span class="font-medium text-slate-300 group-hover:text-white truncate">Auth Local Test</span>
-                </div>
-                <span class="px-1.5 py-0.2 text-[9px] font-bold rounded bg-slate-800 text-slate-300 border border-slate-600 font-mono">
-                  LOCAL
-                </span>
-              </div>
-              <div class="flex items-center justify-between mt-1 text-[10px] text-slate-400">
-                <span class="truncate font-mono">127.0.0.1:27018</span>
-                <span class="text-slate-500 text-[9px]">Standby</span>
-              </div>
-            </div>
+          <div class="space-y-1">
+            <h3 class="text-sm font-semibold text-white">No workspaces yet</h3>
+            <p class="text-xs text-slate-400 max-w-[220px] mx-auto leading-relaxed">
+              Organize your connections into customers and projects.
+            </p>
           </div>
-        </div>
-
-        <!-- FOLDER 3: ANALYTICS & EVENT PIPELINE -->
-        <div class="folder-group" data-folder="analytics">
-          <div class="flex items-center justify-between px-2 py-1.5 rounded-md hover:bg-slate-800/60 cursor-pointer group text-slate-300 transition" onclick="toggleFolder('analytics')">
-            <div class="flex items-center gap-1.5 text-xs font-semibold truncate">
-              <svg id="chevron-analytics" class="w-3.5 h-3.5 text-slate-400 transition-transform transform rotate-90" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg>
-              <span class="text-amber-400">📁</span>
-              <span class="text-slate-200 group-hover:text-white truncate">📊 Analytics & Warehouse</span>
-            </div>
-            <div class="flex items-center gap-1.5">
-              <span class="text-[10px] px-1.5 py-0.2 rounded bg-slate-800 text-slate-400 font-mono">3</span>
-              <button onclick="event.stopPropagation(); showFolderMenu('Analytics & Warehouse', event)" class="opacity-0 group-hover:opacity-100 p-0.5 text-slate-400 hover:text-white rounded hover:bg-slate-700 transition">
-                <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><circle cx="12" cy="12" r="1.5"/><circle cx="6" cy="12" r="1.5"/><circle cx="18" cy="12" r="1.5"/></svg>
-              </button>
-            </div>
+          <div class="pt-2">
+            <button onclick="openConfigModal()" class="px-4 py-2 rounded-lg bg-blue-600 hover:bg-blue-500 text-white font-medium text-xs shadow-md shadow-blue-900/30 transition">
+              Manage Workspaces
+            </button>
           </div>
-
-          <div id="folder-items-analytics" class="pl-3.5 mt-0.5 space-y-1 border-l border-slate-800/80 ml-3">
-            <!-- Connection 7: Analytics Prod -->
-            <div class="connection-item prod-hazard-border rounded-r-md bg-slate-800/50 hover:bg-slate-800 border-y border-r border-slate-700/60 p-2 text-xs transition cursor-pointer group"
-                 data-env="PROD" 
-                 data-name="Analytics DataLake Prod"
-                 data-host="lake-prod.analytics.internal"
-                 onclick="selectConnection(this, 'Analytics DataLake Prod', 'PROD', 'lake-prod.analytics.internal:27017', true, true)">
-              <div class="flex items-center justify-between gap-1">
-                <div class="flex items-center gap-1.5 truncate">
-                  <span class="w-2 h-2 rounded-full bg-emerald-400 shrink-0"></span>
-                  <span class="font-medium text-slate-100 group-hover:text-white truncate">Analytics DataLake</span>
-                </div>
-                <span class="px-1.5 py-0.2 text-[9px] font-bold rounded bg-red-950 text-red-300 border border-red-700 font-mono flex items-center gap-1">
-                  <span>🔒</span> PROD
-                </span>
-              </div>
-              <div class="flex items-center justify-between mt-1 text-[10px] text-slate-400">
-                <span class="truncate font-mono">lake-prod.analytics.internal</span>
-                <span class="text-emerald-400 font-mono text-[9px]">45ms</span>
-              </div>
-            </div>
-
-            <!-- Connection 8: Analytics Staging -->
-            <div class="connection-item rounded-md bg-slate-800/30 hover:bg-slate-800 border border-slate-700/50 p-2 text-xs transition cursor-pointer group"
-                 data-env="STAGING" 
-                 data-name="Analytics Staging Warehouse"
-                 data-host="lake-stg.internal"
-                 onclick="selectConnection(this, 'Analytics Staging Warehouse', 'STAGING', 'lake-stg.internal:27017', true, false)">
-              <div class="flex items-center justify-between gap-1">
-                <div class="flex items-center gap-1.5 truncate">
-                  <span class="w-2 h-2 rounded-full bg-emerald-400 shrink-0"></span>
-                  <span class="font-medium text-slate-200 group-hover:text-white truncate">Analytics Staging</span>
-                </div>
-                <span class="px-1.5 py-0.2 text-[9px] font-bold rounded bg-amber-950 text-amber-300 border border-amber-700 font-mono">
-                  STG
-                </span>
-              </div>
-              <div class="flex items-center justify-between mt-1 text-[10px] text-slate-400">
-                <span class="truncate font-mono">lake-stg.internal</span>
-                <span class="text-slate-500 font-mono text-[9px]">3 dbs</span>
-              </div>
-            </div>
-
-            <!-- Connection 9: Analytics Dev -->
-            <div class="connection-item rounded-md bg-slate-800/30 hover:bg-slate-800 border border-slate-700/50 p-2 text-xs transition cursor-pointer group"
-                 data-env="DEV" 
-                 data-name="Analytics Dev Sandbox"
-                 data-host="lake-dev.internal"
-                 onclick="selectConnection(this, 'Analytics Dev Sandbox', 'DEV', 'lake-dev.internal:27017', true, false)">
-              <div class="flex items-center justify-between gap-1">
-                <div class="flex items-center gap-1.5 truncate">
-                  <span class="w-2 h-2 rounded-full bg-emerald-400 shrink-0"></span>
-                  <span class="font-medium text-slate-200 group-hover:text-white truncate">Analytics Dev Sandbox</span>
-                </div>
-                <span class="px-1.5 py-0.2 text-[9px] font-bold rounded bg-emerald-950 text-emerald-300 border border-emerald-700 font-mono">
-                  DEV
-                </span>
-              </div>
-              <div class="flex items-center justify-between mt-1 text-[10px] text-slate-400">
-                <span class="truncate font-mono">lake-dev.internal</span>
-                <span class="text-slate-500 font-mono text-[9px]">1 db</span>
-              </div>
-            </div>
-          </div>
-        </div>
-
-        <!-- UNGROUPED CONNECTIONS (Backward Compatibility) -->
-        <div class="folder-group pt-2" data-folder="ungrouped">
-          <div class="flex items-center justify-between px-2 py-1 text-slate-400 text-[11px] font-semibold uppercase tracking-wider">
-            <span>Ungrouped (2)</span>
-            <span class="text-[9px] text-slate-500 lowercase font-normal">drag into folder</span>
-          </div>
-
-          <div class="space-y-1 mt-1">
-            <!-- Connection 10: Scratchpad Dev -->
-            <div class="connection-item rounded-md bg-slate-800/30 hover:bg-slate-800 border border-slate-700/50 p-2 text-xs transition cursor-pointer group"
-                 data-env="DEV" 
-                 data-name="Ad-Hoc QA Sandbox"
-                 data-host="qa-temp.local.lan"
-                 onclick="selectConnection(this, 'Ad-Hoc QA Sandbox', 'DEV', 'qa-temp.local.lan:27017', true, false)">
-              <div class="flex items-center justify-between gap-1">
-                <div class="flex items-center gap-1.5 truncate">
-                  <span class="w-2 h-2 rounded-full bg-emerald-400 shrink-0"></span>
-                  <span class="font-medium text-slate-200 group-hover:text-white truncate">Ad-Hoc QA Sandbox</span>
-                </div>
-                <span class="px-1.5 py-0.2 text-[9px] font-bold rounded bg-emerald-950 text-emerald-300 border border-emerald-700 font-mono">
-                  DEV
-                </span>
-              </div>
-              <div class="flex items-center justify-between mt-1 text-[10px] text-slate-400">
-                <span class="truncate font-mono">qa-temp.local.lan</span>
-                <span class="text-slate-500 font-mono text-[9px]">2 dbs</span>
-              </div>
-            </div>
-
-            <!-- Connection 11: Staging Legacy Migration -->
-            <div class="connection-item rounded-md bg-slate-800/30 hover:bg-slate-800 border border-slate-700/50 p-2 text-xs transition cursor-pointer group"
-                 data-env="STAGING" 
-                 data-name="Legacy V3 Migration Test"
-                 data-host="migration-stg.internal"
-                 onclick="selectConnection(this, 'Legacy V3 Migration Test', 'STAGING', 'migration-stg.internal:27017', false, false)">
-              <div class="flex items-center justify-between gap-1">
-                <div class="flex items-center gap-1.5 truncate">
-                  <span class="w-2 h-2 rounded-full bg-slate-500 shrink-0"></span>
-                  <span class="font-medium text-slate-300 group-hover:text-white truncate">Legacy V3 Migration</span>
-                </div>
-                <span class="px-1.5 py-0.2 text-[9px] font-bold rounded bg-amber-950 text-amber-300 border border-amber-700 font-mono">
-                  STG
-                </span>
-              </div>
-              <div class="flex items-center justify-between mt-1 text-[10px] text-slate-400">
-                <span class="truncate font-mono">migration-stg.internal</span>
-                <span class="text-slate-500 text-[9px]">Standby</span>
-              </div>
-            </div>
-          </div>
-        </div>
-
-        <!-- No Results Fallback -->
-        <div id="noResults" class="hidden py-8 text-center text-xs text-slate-400 space-y-2">
-          <div class="text-xl">🔍</div>
-          <div>No connections match filter</div>
-          <button onclick="clearSearch(); setEnvFilter('ALL')" class="text-emerald-400 hover:underline">Reset Filters</button>
         </div>
 
       </div>
 
-      <!-- 4. SIDEBAR FOOTER (QUICK STATUS & SSH KEYCHAIN) -->
-      <div class="p-2.5 border-t border-slate-800 bg-slate-900 flex items-center justify-between text-[11px] text-slate-400">
-        <div class="flex items-center gap-2">
-          <span class="flex items-center gap-1 text-emerald-400">
-            <span class="w-2 h-2 rounded-full bg-emerald-400"></span> 7 active
-          </span>
-          <span>•</span>
-          <span class="text-slate-400">4 standby</span>
-        </div>
-        <button onclick="showMockAction('Opening SSH Key & Credential Manager')" title="SSH Key & Keychain status" class="flex items-center gap-1 px-1.5 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 transition">
-          <span>🔑</span> Keychain
+      <!-- 6. SIDEBAR FOOTER: MANAGE WORKSPACES & IMPORT/EXPORT (Exact from Screenshot) -->
+      <div class="p-3 border-t border-slate-800/80 bg-[#101520] flex items-center justify-between">
+        <button onclick="openConfigModal()" class="flex items-center gap-2 text-xs text-slate-300 hover:text-white py-1 px-1.5 rounded hover:bg-slate-800/70 transition">
+          <svg class="w-3.5 h-3.5 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"/>
+            <circle cx="12" cy="12" r="3"/>
+          </svg>
+          <span class="font-medium text-[12px]">Manage Workspaces</span>
+        </button>
+
+        <!-- Quick Import / Export Action Button -->
+        <button onclick="openConfigModal('import_export')" title="Import or Export Workspaces & Connections" class="p-1 rounded text-slate-400 hover:text-slate-200 hover:bg-slate-800 transition">
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7H5a2 2 0 00-2 2v9a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-3m-1 4l-3 3m0 0l-3-3m3 3V4"/>
+          </svg>
         </button>
       </div>
 
     </aside>
 
-    <!-- ========================================== -->
-    <!-- RIGHT MAIN PANEL: INTERACTIVE DESIGN SPEC -->
-    <!-- ========================================== -->
+    <!-- ================================================================= -->
+    <!-- RIGHT MAIN PANEL: INTERACTIVE DESIGN SPEC & UX SOLUTION BREAKDOWN -->
+    <!-- ================================================================= -->
     <section class="lg:col-span-8 xl:col-span-9 p-6 overflow-y-auto space-y-6">
 
       <!-- ACTIVE SELECTION INSPECTION BANNER -->
-      <div id="inspectorBanner" class="p-4 rounded-xl border border-red-500/40 bg-red-950/20 shadow-md flex flex-wrap items-center justify-between gap-4">
+      <div id="inspectorBanner" class="p-4 rounded-xl border border-amber-500/40 bg-amber-950/20 shadow-md flex flex-wrap items-center justify-between gap-4">
         <div class="space-y-1">
           <div class="flex items-center gap-2">
-            <span id="inspectBadge" class="px-2 py-0.5 text-xs font-bold rounded bg-red-900 text-red-200 border border-red-600 font-mono">
-              🔴 PROD SAFEGUARD
+            <span id="inspectBadge" class="px-2 py-0.5 text-xs font-bold rounded bg-amber-900 text-amber-200 border border-amber-600 font-mono">
+              🟡 TEST ENVIRONMENT
             </span>
-            <h2 id="inspectName" class="text-base font-bold text-white">Payments Primary Replica</h2>
-            <span id="inspectHost" class="text-xs font-mono text-slate-400">atlas-prod-shard-0.mongodb.net:27017</span>
+            <h2 id="inspectName" class="text-base font-bold text-white">erp-test</h2>
+            <span id="inspectPath" class="text-xs text-slate-400">Customer A / ERP</span>
           </div>
-          <p id="inspectDescription" class="text-xs text-red-300 flex items-center gap-1.5">
-            <span>🛡️</span> <strong>Write Safeguard Active:</strong> Destructive operations (drop, updateMany without filter, deleteMany) require explicit confirmation dialog with profile name typing.
+          <p id="inspectDescription" class="text-xs text-amber-300 flex items-center gap-1.5">
+            <span>🛡️</span> <strong>Selected Connection:</strong> Host: <code class="font-mono text-white">10.0.1.20:27017</code> • 4 databases • 22 collections.
           </p>
         </div>
 
         <div class="flex items-center gap-2">
-          <button onclick="alert('Action simulated: Re-checking ping and latency to cluster.')" class="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-medium border border-slate-700 transition">
-            Test Ping (24ms)
+          <button onclick="openConfigModal('import_export')" class="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-medium border border-slate-700 transition flex items-center gap-1.5">
+            <span>💾</span> Export / Backup
           </button>
-          <button onclick="alert('Safety Settings: Configure read-only mode, custom alert color, or bastion proxy.')" class="px-3 py-1.5 rounded-lg bg-red-900/80 hover:bg-red-800 text-white text-xs font-semibold shadow-sm transition">
-            Safeguard Rules
+          <button onclick="openNewConnectionDialog('Customer A', 'ERP')" class="px-3 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-500 text-white text-xs font-semibold shadow-sm transition">
+            + New Connection Here
           </button>
         </div>
       </div>
 
-      <!-- DESIGN ARCHITECTURE SPECIFICATION CARDS -->
-      <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-        
-        <!-- CARD 1: WORKSPACE & FOLDER HIERARCHY -->
-        <div class="p-5 rounded-xl border border-slate-800 bg-slate-900/60 space-y-3">
-          <div class="flex items-center gap-2 text-emerald-400 font-semibold text-sm">
-            <span>🏢</span>
-            <h3>1. Multi-Client & Multi-Project Workspaces</h3>
-          </div>
-          <p class="text-xs text-slate-300 leading-relaxed">
-            แยก Context ชัดเจนระหว่าง <strong>Client</strong> (เช่น FinTech vs Retail), <strong>Project Group</strong> (Folder เช่น Payments, Auth, Analytics) และ <strong>Environment</strong> (Prod, Staging, Dev, Local) ไม่ให้ปะปนกัน
-          </p>
-          <ul class="text-xs text-slate-400 space-y-1.5 list-disc list-inside">
-            <li><strong class="text-slate-200">Workspace Level:</strong> Top-level switch สำหรับแยกตามองค์กร/ลูกค้า มี config แยกหรือรวมใน workspace profile</li>
-            <li><strong class="text-slate-200">Folder Level:</strong> Collapsible folder จัดกลุ่มตาม microservice หรือ project ย้าย/drag-and-drop ได้</li>
-            <li><strong class="text-slate-200">Unified Mode:</strong> มีตัวเลือก "All Workspaces" สำหรับคนที่ต้องการดูภาพรวมทั้งหมดในหน้าต่างเดียว</li>
-          </ul>
+      <!-- UX SOLUTION 1: SOLVING THE "+CONNECTION" VS "+FOLDER" AMBIGUITY -->
+      <div class="p-5 rounded-xl border border-blue-500/30 bg-blue-950/15 space-y-3">
+        <div class="flex items-center gap-2 text-blue-400 font-semibold text-sm">
+          <span>💡</span>
+          <h3>วิธีแก้ปัญหาเรื่องปุ่ม "+connection" และ "+folder" ไม่ให้สับสนลำดับการกด</h3>
         </div>
+        <p class="text-xs text-slate-300 leading-relaxed">
+          ข้อสังเกตของผู้ใช้ตรงจุดที่สุดครับ: <em>ถ้ามีปุ่ม <code>+ Connection</code> และ <code>+ Folder</code> อยู่คู่กันด้านบน ผู้ใช้จะไม่แน่ใจว่าต้องกดอะไรก่อน-หลัง และถ้ายังไม่มีโฟลเดอร์แล้วกด + Connection จะเอาไปไว้ที่ไหน?</em>
+        </p>
 
-        <!-- CARD 2: ENVIRONMENT SAFEGUARDS -->
-        <div class="p-5 rounded-xl border border-slate-800 bg-slate-900/60 space-y-3">
-          <div class="flex items-center gap-2 text-red-400 font-semibold text-sm">
-            <span>🛡️</span>
-            <h3>2. Environment Tagging & Production Safeguards</h3>
+        <div class="grid grid-cols-1 md:grid-cols-3 gap-3 pt-1 text-xs">
+          <!-- Solution 1 -->
+          <div class="p-3 rounded-lg bg-slate-900/90 border border-slate-800 space-y-1.5">
+            <div class="flex items-center gap-1.5 text-emerald-400 font-semibold">
+              <span>1️⃣</span> <span>Smart '+' Context Menu</span>
+            </div>
+            <p class="text-[11.5px] text-slate-400 leading-relaxed">
+              ที่แถบ <strong>WORKSPACES</strong> มีปุ่ม <code>+</code> เพียงปุ่มเดียว เมื่อกดจะมีเมนูให้เลือกชัดเจน:
+              <br/><span class="text-slate-200 font-mono">1. New Connection...</span>
+              <br/><span class="text-slate-200 font-mono">2. New Project / Folder...</span>
+              <br/><span class="text-slate-200 font-mono">3. New Workspace...</span>
+            </p>
           </div>
-          <p class="text-xs text-slate-300 leading-relaxed">
-            แก้ปัญหาการทำงานผิด environment โดยเฉพาะ <strong>Production</strong> ซึ่งสร้างความเสียหายร้ายแรงได้หากรัน Drop/Update ผิดตัว
-          </p>
-          <div class="grid grid-cols-2 gap-2 text-[11px] font-mono">
-            <div class="p-2 rounded bg-red-950/40 border border-red-800 text-red-300">
-              <span class="font-bold">🔴 PROD:</span> Red Hazard border, Safe write mode, drop confirmation.
+
+          <!-- Solution 2 -->
+          <div class="p-3 rounded-lg bg-slate-900/90 border border-slate-800 space-y-1.5">
+            <div class="flex items-center gap-1.5 text-amber-400 font-semibold">
+              <span>2️⃣</span> <span>In-line Hover '+' on Nodes</span>
             </div>
-            <div class="p-2 rounded bg-amber-950/40 border border-amber-800 text-amber-300">
-              <span class="font-bold">🟡 STAGING:</span> Amber badge, mirror of prod testing.
+            <p class="text-[11.5px] text-slate-400 leading-relaxed">
+              เมื่อเอาเมาส์ชี้ที่ <strong>Customer A</strong> จะมีปุ่ม <code>+</code> ปรากฏขึ้นสำหรับสร้าง Folder ในลูกค้ารายนี้ทันที และเมื่อชี้ที่ <strong>ERP</strong> จะมีปุ่ม <code>+</code> สำหรับสร้าง Connection ใน ERP ทันที รู้ context โดยอัตโนมัติ!
+            </p>
+          </div>
+
+          <!-- Solution 3 -->
+          <div class="p-3 rounded-lg bg-slate-900/90 border border-slate-800 space-y-1.5">
+            <div class="flex items-center gap-1.5 text-blue-400 font-semibold">
+              <span>3️⃣</span> <span>ไม่บังคับลำดับ (Non-blocking)</span>
             </div>
-            <div class="p-2 rounded bg-emerald-950/40 border border-emerald-800 text-emerald-300">
-              <span class="font-bold">🟢 DEV:</span> Green badge, rapid prototyping & seed scripts.
-            </div>
-            <div class="p-2 rounded bg-slate-800 border border-slate-700 text-slate-300">
-              <span class="font-bold">⚪ LOCAL:</span> Docker/localhost dev instances.
-            </div>
+            <p class="text-[11.5px] text-slate-400 leading-relaxed">
+              ในหน้าต่างเพิ่ม Connection ช่อง Workspace และ Folder จะเป็นแบบ Optional ถ้าผู้ใช้รีบๆ สามารถกรอก URI แล้วกดบันทึกเป็น Standalone ก่อนได้เสมอ แล้วค่อยลาก Drag-and-drop เข้าโฟลเดอร์ทีหลังได้
+            </p>
           </div>
         </div>
-
       </div>
 
-      <!-- PROPOSED RUST DATA MODELS -->
+      <!-- UX SOLUTION 2: CONFIG & IMPORT/EXPORT CAPABILITIES -->
       <div class="p-5 rounded-xl border border-slate-800 bg-slate-900/60 space-y-3">
         <div class="flex items-center justify-between">
           <div class="flex items-center gap-2 text-indigo-400 font-semibold text-sm">
-            <span>🦀</span>
-            <h3>Proposed Rust Data Model Architecture</h3>
+            <span>⚙️</span>
+            <h3>ปุ่ม Config & Import/Export (รักษาไว้ใช้งานต่อยอดได้เต็มที่)</h3>
           </div>
-          <span class="text-[11px] px-2 py-0.5 rounded bg-indigo-950 text-indigo-300 border border-indigo-800 font-mono">Backward Compatible</span>
+          <button onclick="openConfigModal('import_export')" class="text-xs px-2.5 py-1 rounded bg-indigo-950 text-indigo-300 border border-indigo-800 hover:bg-indigo-900 transition">
+            เปิดหน้าต่าง Config Demo
+          </button>
         </div>
-        <p class="text-xs text-slate-400">
-          โครงสร้างข้อมูลใหม่ขยายจาก <code class="text-emerald-400 font-mono bg-slate-800 px-1 py-0.5 rounded">ConnectionConfig</code> เดิม โดยเพิ่ม <code class="text-indigo-300 font-mono">EnvironmentType</code> และสร้างโมเดล <code class="text-indigo-300 font-mono">WorkspaceConfig</code> + <code class="text-indigo-300 font-mono">FolderGroup</code>:
+        <p class="text-xs text-slate-300 leading-relaxed">
+          ปุ่ม Config ถูกจัดวางไว้ 2 ตำแหน่งให้เข้าถึงง่าย:
         </p>
-        <pre class="bg-slate-950 p-4 rounded-lg border border-slate-800 text-[11px] font-mono text-slate-300 overflow-x-auto leading-relaxed">
-<span class="text-indigo-400">#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]</span>
-<span class="text-indigo-300">pub enum</span> <span class="text-amber-300">EnvironmentType</span> {
-    <span class="text-red-400">Production</span>,
-    <span class="text-amber-400">Staging</span>,
-    <span class="text-emerald-400">Development</span>,
-    <span class="text-indigo-400">#[default]</span>
-    <span class="text-slate-300">Local</span>,
-}
-
-<span class="text-indigo-400">#[derive(Debug, Clone, Serialize, Deserialize)]</span>
-<span class="text-indigo-300">pub struct</span> <span class="text-amber-300">FolderGroup</span> {
-    <span class="text-indigo-300">pub</span> id: <span class="text-emerald-300">Uuid</span>,
-    <span class="text-indigo-300">pub</span> name: <span class="text-emerald-300">String</span>,
-    <span class="text-indigo-300">pub</span> icon: <span class="text-emerald-300">Option&lt;String&gt;</span>,       <span class="text-slate-500">// e.g. "💳", "👤", "📊"</span>
-    <span class="text-indigo-300">pub</span> expanded: <span class="text-emerald-300">bool</span>,
-    <span class="text-indigo-300">pub</span> connection_ids: <span class="text-emerald-300">Vec&lt;Uuid&gt;</span>,
-}
-
-<span class="text-indigo-400">#[derive(Debug, Clone, Serialize, Deserialize)]</span>
-<span class="text-indigo-300">pub struct</span> <span class="text-amber-300">WorkspaceConfig</span> {
-    <span class="text-indigo-300">pub</span> id: <span class="text-emerald-300">Uuid</span>,
-    <span class="text-indigo-300">pub</span> name: <span class="text-emerald-300">String</span>,
-    <span class="text-indigo-300">pub</span> icon: <span class="text-emerald-300">String</span>,               <span class="text-slate-500">// e.g. "🏢", "🛍️", "🚀"</span>
-    <span class="text-indigo-300">pub</span> folders: <span class="text-emerald-300">Vec&lt;FolderGroup&gt;</span>,
-    <span class="text-indigo-300">pub</span> ungrouped_ids: <span class="text-emerald-300">Vec&lt;Uuid&gt;</span>,   <span class="text-slate-500">// connections not in any folder</span>
-}
-
-<span class="text-slate-500">// In ConnectionConfig (Extended):</span>
-<span class="text-indigo-400">#[serde(default)]</span>
-<span class="text-indigo-300">pub</span> environment: <span class="text-amber-300">EnvironmentType</span>,
-<span class="text-indigo-400">#[serde(default)]</span>
-<span class="text-indigo-300">pub</span> safe_mode: <span class="text-emerald-300">bool</span>,               <span class="text-slate-500">// Prompt before Drop/Delete</span>
-<span class="text-indigo-400">#[serde(default)]</span>
-<span class="text-indigo-300">pub</span> tags: <span class="text-emerald-300">Vec&lt;String&gt;</span>,             <span class="text-slate-500">// Custom search tags</span>
-        </pre>
-      </div>
-
-      <!-- INTERACTIVE USER ACTIONS & VERIFICATION -->
-      <div class="p-5 rounded-xl border border-slate-800 bg-slate-900/60 space-y-3">
-        <h3 class="text-sm font-semibold text-slate-200">✨ ทดสอบฟังก์ชันของ Interactive Prototype (คลิกที่ Sidebar ด้านซ้ายได้จริง):</h3>
-        <div class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-2 text-xs">
-          <div class="p-3 rounded-lg bg-slate-800/80 border border-slate-700/80 space-y-1">
-            <span class="font-semibold text-emerald-400">1. Switch Workspace</span>
-            <p class="text-[11px] text-slate-400">กดที่ Dropdown ด้านบนเพื่อสลับดู Client อื่นๆ หรือ All Workspaces</p>
-          </div>
-          <div class="p-3 rounded-lg bg-slate-800/80 border border-slate-700/80 space-y-1">
-            <span class="font-semibold text-red-400">2. Filter by Env</span>
-            <p class="text-[11px] text-slate-400">กดปุ่ม 🔴 Prod, 🟡 Stg, 🟢 Dev เพื่อกรองดูเฉพาะ connection ที่ต้องการ</p>
-          </div>
-          <div class="p-3 rounded-lg bg-slate-800/80 border border-slate-700/80 space-y-1">
-            <span class="font-semibold text-amber-400">3. Live Search</span>
-            <p class="text-[11px] text-slate-400">พิมพ์ค้นหาชื่อ db, host, หรือ keyword ระบบจะกรองและเปิดโฟลเดอร์ให้อัตโนมัติ</p>
-          </div>
-          <div class="p-3 rounded-lg bg-slate-800/80 border border-slate-700/80 space-y-1">
-            <span class="font-semibold text-indigo-400">4. Theme Toggle</span>
-            <p class="text-[11px] text-slate-400">กดเปลี่ยนเป็น Light / Dark mode เพื่อตรวจ contrast และความคมชัด</p>
-          </div>
-        </div>
+        <ul class="text-xs text-slate-400 space-y-2 list-disc list-inside">
+          <li><strong class="text-slate-200">ปุ่ม ⚙️ Manage Workspaces ด้านล่างสุด:</strong> เข้าถึงการจัดการ Workspace, ย้ายลำดับโฟลเดอร์, ตั้งค่าสิทธิ์ และ Export/Import ข้อมูล</li>
+          <li><strong class="text-slate-200">ปุ่ม Config ที่ Header ด้านบน:</strong> สำหรับเปิด Quick Actions เช่น นำเข้า Connection จาก MongoDB Compass/URI, Export Workspace เป็นไฟล์ JSON เพื่อแชร์กับเพื่อนร่วมทีม (โดยสามารถเลือกซ่อนรหัสผ่านได้)</li>
+        </ul>
       </div>
 
     </section>
 
   </main>
 
-  <!-- POPUP / MODAL: CREATE WORKSPACE -->
-  <div id="newWorkspaceModal" class="hidden fixed inset-0 bg-black/70 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-    <div class="bg-slate-900 border border-slate-700 rounded-xl max-w-md w-full p-5 space-y-4 shadow-2xl">
-      <div class="flex items-center justify-between border-b border-slate-800 pb-3">
+  <!-- ============================================== -->
+  <!-- MODAL 1: ADD CONNECTION (Smart & Non-blocking) -->
+  <!-- ============================================== -->
+  <div id="newConnectionModal" class="hidden fixed inset-0 bg-black/75 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+    <div class="bg-[#182130] border border-slate-700 rounded-xl max-w-lg w-full p-5 space-y-4 shadow-2xl">
+      <div class="flex items-center justify-between border-b border-slate-700/80 pb-3">
         <h3 class="font-semibold text-white text-sm flex items-center gap-2">
-          <span>🏢</span> Create New Workspace
+          <span class="text-emerald-400">➕</span> Add MongoDB Connection Profile
         </h3>
-        <button onclick="toggleNewWorkspaceModal(false)" class="text-slate-400 hover:text-white">✕</button>
+        <button onclick="toggleModal('newConnectionModal', false)" class="text-slate-400 hover:text-white">✕</button>
       </div>
+
       <div class="space-y-3 text-xs">
         <div>
-          <label class="block text-slate-300 font-medium mb-1">Workspace Name (Client / Organization)</label>
-          <input type="text" id="newWsName" placeholder="e.g. HealthTech Enterprise, Personal Projects" class="w-full bg-slate-800 border border-slate-700 rounded px-3 py-2 text-white focus:outline-none focus:border-emerald-500">
+          <label class="block text-slate-300 font-medium mb-1">Connection Name</label>
+          <input type="text" id="inputConnName" placeholder="e.g. erp-prod, billing-dev" class="w-full bg-[#131926] border border-slate-700 rounded-md px-3 py-2 text-white focus:outline-none focus:border-blue-500 font-mono">
         </div>
+
         <div>
-          <label class="block text-slate-300 font-medium mb-1">Icon / Emoji</label>
-          <input type="text" id="newWsIcon" value="💼" class="w-16 bg-slate-800 border border-slate-700 rounded px-3 py-2 text-center text-white focus:outline-none focus:border-emerald-500">
+          <label class="block text-slate-300 font-medium mb-1">MongoDB URI / Host</label>
+          <input type="text" id="inputConnUri" value="mongodb://localhost:27017" class="w-full bg-[#131926] border border-slate-700 rounded-md px-3 py-2 text-white focus:outline-none focus:border-blue-500 font-mono">
         </div>
+
+        <!-- Smart Placement (Solves sequence confusion!) -->
+        <div class="p-3 rounded-lg bg-slate-900/80 border border-slate-800 space-y-2.5">
+          <div class="text-[11px] font-semibold text-blue-400 uppercase tracking-wider">Placement (Optional - Can organize later)</div>
+          
+          <div class="grid grid-cols-2 gap-2">
+            <div>
+              <label class="block text-slate-400 text-[11px] mb-1">Workspace / Customer</label>
+              <select id="selectModalWs" class="w-full bg-[#131926] border border-slate-700 rounded px-2.5 py-1.5 text-slate-200">
+                <option value="">(None - Standalone)</option>
+                <option value="Customer A" selected>Customer A</option>
+                <option value="Customer B">Customer B</option>
+                <option value="Internal">Internal</option>
+              </select>
+            </div>
+            <div>
+              <label class="block text-slate-400 text-[11px] mb-1">Project Folder</label>
+              <select id="selectModalFolder" class="w-full bg-[#131926] border border-slate-700 rounded px-2.5 py-1.5 text-slate-200">
+                <option value="">(None - Root of Workspace)</option>
+                <option value="ERP" selected>ERP</option>
+                <option value="E-Commerce">E-Commerce</option>
+              </select>
+            </div>
+          </div>
+        </div>
+
+        <!-- Environment Tag (Auto-detected from name suffix) -->
+        <div class="flex items-center justify-between p-2.5 rounded bg-slate-900/60 border border-slate-800 text-[11px]">
+          <span class="text-slate-400">Environment Tag:</span>
+          <div class="flex items-center gap-1.5">
+            <label class="flex items-center gap-1 cursor-pointer">
+              <input type="radio" name="modalEnv" value="DEV" class="text-emerald-500">
+              <span class="text-emerald-400 font-mono font-bold">DEV</span>
+            </label>
+            <label class="flex items-center gap-1 cursor-pointer ml-2">
+              <input type="radio" name="modalEnv" value="TEST" checked class="text-amber-500">
+              <span class="text-amber-400 font-mono font-bold">TEST</span>
+            </label>
+            <label class="flex items-center gap-1 cursor-pointer ml-2">
+              <input type="radio" name="modalEnv" value="PROD" class="text-red-500">
+              <span class="text-red-400 font-mono font-bold">PROD</span>
+            </label>
+          </div>
+        </div>
+
       </div>
-      <div class="flex items-center justify-end gap-2 pt-2 border-t border-slate-800">
-        <button onclick="toggleNewWorkspaceModal(false)" class="px-3 py-1.5 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs">Cancel</button>
-        <button onclick="submitNewWorkspace()" class="px-3 py-1.5 rounded bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold">Create Workspace</button>
+
+      <div class="flex items-center justify-end gap-2 pt-2 border-t border-slate-700/80">
+        <button onclick="toggleModal('newConnectionModal', false)" class="px-3 py-1.5 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs">Cancel</button>
+        <button onclick="submitNewConnection()" class="px-4 py-1.5 rounded bg-blue-600 hover:bg-blue-500 text-white text-xs font-semibold shadow-sm">Save Connection</button>
       </div>
     </div>
   </div>
 
-  <!-- CONTEXT MENU MODAL (Folder Actions) -->
-  <div id="folderContextMenu" class="hidden fixed bg-slate-800 border border-slate-700 rounded-lg shadow-2xl py-1 text-xs z-50 w-48 text-slate-200">
-    <div id="contextFolderTitle" class="px-3 py-1.5 font-bold text-slate-400 border-b border-slate-700 text-[10px] uppercase"></div>
-    <button onclick="showMockAction('Add connection to folder')" class="w-full text-left px-3 py-1.5 hover:bg-slate-700 flex items-center gap-2">
-      <span>➕</span> Add Connection Inside
-    </button>
-    <button onclick="showMockAction('Rename folder')" class="w-full text-left px-3 py-1.5 hover:bg-slate-700 flex items-center gap-2">
-      <span>✏️</span> Rename Folder
-    </button>
-    <button onclick="showMockAction('Disconnect all connections in folder')" class="w-full text-left px-3 py-1.5 hover:bg-slate-700 flex items-center gap-2 text-amber-400">
-      <span>🔌</span> Disconnect All
-    </button>
-    <div class="border-t border-slate-700 my-1"></div>
-    <button onclick="showMockAction('Delete folder (connections move to ungrouped)')" class="w-full text-left px-3 py-1.5 hover:bg-red-900/50 text-red-400 flex items-center gap-2">
-      <span>🗑️</span> Delete Folder
-    </button>
+  <!-- ============================================== -->
+  <!-- MODAL 2: ADD PROJECT FOLDER DIALOG             -->
+  <!-- ============================================== -->
+  <div id="newFolderModal" class="hidden fixed inset-0 bg-black/75 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+    <div class="bg-[#182130] border border-slate-700 rounded-xl max-w-sm w-full p-5 space-y-4 shadow-2xl">
+      <div class="flex items-center justify-between border-b border-slate-700/80 pb-2">
+        <h3 class="font-semibold text-white text-sm flex items-center gap-2">
+          <span class="text-amber-400">📁</span> Create Project Folder
+        </h3>
+        <button onclick="toggleModal('newFolderModal', false)" class="text-slate-400 hover:text-white">✕</button>
+      </div>
+      <div class="space-y-3 text-xs">
+        <div>
+          <label class="block text-slate-300 font-medium mb-1">Target Workspace</label>
+          <input type="text" id="targetFolderWs" readonly class="w-full bg-slate-800 border border-slate-700 rounded px-2.5 py-1.5 text-slate-400 font-medium">
+        </div>
+        <div>
+          <label class="block text-slate-300 font-medium mb-1">Folder Name (Project / Service)</label>
+          <input type="text" id="inputFolderName" placeholder="e.g. Payments, Analytics, Auth" class="w-full bg-[#131926] border border-slate-700 rounded px-2.5 py-1.5 text-white focus:outline-none focus:border-blue-500">
+        </div>
+      </div>
+      <div class="flex items-center justify-end gap-2 pt-2 border-t border-slate-700/80">
+        <button onclick="toggleModal('newFolderModal', false)" class="px-3 py-1.5 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs">Cancel</button>
+        <button onclick="submitNewFolder()" class="px-3 py-1.5 rounded bg-blue-600 hover:bg-blue-500 text-white text-xs font-semibold">Create Folder</button>
+      </div>
+    </div>
   </div>
 
-  <!-- JAVASCRIPT LOGIC FOR INTERACTIVITY -->
-  <script>
-    let currentFilter = 'ALL';
-    let currentTheme = 'dark';
+  <!-- ============================================================== -->
+  <!-- MODAL 3: CONFIG, MANAGE WORKSPACES & IMPORT/EXPORT (Requested) -->
+  <!-- ============================================================== -->
+  <div id="configModal" class="hidden fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+    <div class="bg-[#182130] border border-slate-700 rounded-xl max-w-xl w-full p-6 space-y-5 shadow-2xl">
+      <div class="flex items-center justify-between border-b border-slate-700/80 pb-3">
+        <div class="flex items-center gap-2.5">
+          <div class="p-1.5 rounded-lg bg-blue-500/20 text-blue-400">
+            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"/><circle cx="12" cy="12" r="3"/>
+            </svg>
+          </div>
+          <div>
+            <h3 class="font-semibold text-white text-sm">Manage Workspaces & Configuration</h3>
+            <p class="text-xs text-slate-400">Import, export, backup, and configure client workspaces</p>
+          </div>
+        </div>
+        <button onclick="toggleModal('configModal', false)" class="text-slate-400 hover:text-white">✕</button>
+      </div>
 
-    // Set Theme (Dark / Light)
+      <!-- Config Tabs / Sections -->
+      <div class="space-y-4 text-xs">
+        
+        <!-- SECTION A: IMPORT & EXPORT WORKSPACES -->
+        <div class="p-4 rounded-lg bg-slate-900/80 border border-slate-800 space-y-3">
+          <div class="flex items-center justify-between">
+            <span class="font-semibold text-blue-400 uppercase tracking-wider text-[11px]">📦 Import & Export Data</span>
+            <span class="text-[10px] text-slate-400">JSON Format</span>
+          </div>
+          <p class="text-slate-300 text-[11.5px]">
+            สำรองข้อมูลหรือนำเข้าการตั้งค่า Workspaces, Folders, และ Connection Profiles สำหรับย้ายเครื่องหรือแชร์ให้ทีม:
+          </p>
+          <div class="grid grid-cols-2 gap-3 pt-1">
+            <button onclick="alert('Export: Downloading workspaces_backup.json (Secrets stripped for safety)')" class="flex items-center justify-center gap-2 px-3 py-2 rounded-lg bg-[#1a2436] hover:bg-slate-800 text-slate-200 border border-slate-700 transition font-medium">
+              <svg class="w-4 h-4 text-emerald-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/></svg>
+              <span>Export Workspaces (JSON)</span>
+            </button>
+            <button onclick="alert('Import: Select JSON file to merge or restore workspaces')" class="flex items-center justify-center gap-2 px-3 py-2 rounded-lg bg-[#1a2436] hover:bg-slate-800 text-slate-200 border border-slate-700 transition font-medium">
+              <svg class="w-4 h-4 text-blue-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12"/></svg>
+              <span>Import Connections / JSON</span>
+            </button>
+          </div>
+        </div>
+
+        <!-- SECTION B: WORKSPACE REORDER & MANAGEMENT -->
+        <div class="p-4 rounded-lg bg-slate-900/80 border border-slate-800 space-y-2.5">
+          <span class="font-semibold text-amber-400 uppercase tracking-wider text-[11px]">🏢 Existing Workspaces (Drag to Reorder)</span>
+          <div class="space-y-1.5 pt-1">
+            <div class="flex items-center justify-between p-2 rounded bg-slate-800/80 border border-slate-700">
+              <div class="flex items-center gap-2">
+                <span>⋮⋮</span>
+                <span class="font-medium text-white">Customer A</span>
+                <span class="text-[10px] text-slate-400 font-mono">(2 folders • 5 conns)</span>
+              </div>
+              <div class="flex items-center gap-2">
+                <button onclick="alert('Rename Customer A')" class="text-slate-400 hover:text-white text-[11px]">Rename</button>
+                <button onclick="alert('Export Customer A only')" class="text-blue-400 hover:underline text-[11px]">Export</button>
+              </div>
+            </div>
+
+            <div class="flex items-center justify-between p-2 rounded bg-slate-800/80 border border-slate-700">
+              <div class="flex items-center gap-2">
+                <span>⋮⋮</span>
+                <span class="font-medium text-white">Customer B</span>
+                <span class="text-[10px] text-slate-400 font-mono">(1 folder • 3 conns)</span>
+              </div>
+              <div class="flex items-center gap-2">
+                <button onclick="alert('Rename Customer B')" class="text-slate-400 hover:text-white text-[11px]">Rename</button>
+                <button onclick="alert('Export Customer B only')" class="text-blue-400 hover:underline text-[11px]">Export</button>
+              </div>
+            </div>
+
+            <div class="flex items-center justify-between p-2 rounded bg-slate-800/80 border border-slate-700">
+              <div class="flex items-center gap-2">
+                <span>⋮⋮</span>
+                <span class="font-medium text-white">Internal</span>
+                <span class="text-[10px] text-slate-400 font-mono">(1 folder • 2 conns)</span>
+              </div>
+              <div class="flex items-center gap-2">
+                <button onclick="alert('Rename Internal')" class="text-slate-400 hover:text-white text-[11px]">Rename</button>
+                <button onclick="alert('Export Internal only')" class="text-blue-400 hover:underline text-[11px]">Export</button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+      </div>
+
+      <div class="flex items-center justify-end gap-2 pt-2 border-t border-slate-700/80">
+        <button onclick="toggleModal('configModal', false)" class="px-4 py-1.5 rounded bg-blue-600 hover:bg-blue-500 text-white text-xs font-semibold">Done</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- JAVASCRIPT LOGIC -->
+  <script>
+    let isDark = true;
+
+    // Toggle Dark / Light Theme
     function setTheme(theme) {
-      currentTheme = theme;
       const html = document.documentElement;
       const sidebar = document.getElementById('sidebarContainer');
       const darkBtn = document.getElementById('themeToggleDark');
       const lightBtn = document.getElementById('themeToggleLight');
 
       if (theme === 'light') {
+        isDark = false;
         html.classList.remove('dark');
         document.body.classList.replace('bg-slate-950', 'bg-slate-100');
         document.body.classList.replace('text-slate-100', 'text-slate-800');
-        
-        sidebar.classList.replace('bg-slate-900/70', 'bg-white');
+        sidebar.style.backgroundColor = '#FFFFFF';
         sidebar.classList.replace('border-slate-800', 'border-slate-200');
 
-        lightBtn.className = "px-2.5 py-1 rounded bg-white text-slate-900 font-bold shadow-sm transition";
-        darkBtn.className = "px-2.5 py-1 rounded text-slate-500 hover:text-slate-900 font-medium transition";
+        lightBtn.className = "px-2.5 py-1 rounded bg-white text-slate-900 font-bold shadow-sm transition text-[11px]";
+        darkBtn.className = "px-2.5 py-1 rounded text-slate-500 hover:text-slate-900 font-medium transition text-[11px]";
       } else {
+        isDark = true;
         html.classList.add('dark');
         document.body.classList.replace('bg-slate-100', 'bg-slate-950');
         document.body.classList.replace('text-slate-800', 'text-slate-100');
-
-        sidebar.classList.replace('bg-white', 'bg-slate-900/70');
+        sidebar.style.backgroundColor = '#131926';
         sidebar.classList.replace('border-slate-200', 'border-slate-800');
 
-        darkBtn.className = "px-2.5 py-1 rounded bg-slate-700 text-white font-medium shadow-sm transition";
-        lightBtn.className = "px-2.5 py-1 rounded text-slate-400 hover:text-white font-medium transition";
+        darkBtn.className = "px-2.5 py-1 rounded bg-slate-700 text-white font-medium shadow-sm transition text-[11px]";
+        lightBtn.className = "px-2.5 py-1 rounded text-slate-400 hover:text-white font-medium transition text-[11px]";
       }
     }
 
-    // Toggle Workspace Menu
+    // Toggle Empty State Demo (Matching Image 1 vs Image 2)
+    function toggleEmptyState(empty) {
+      const tree = document.getElementById('treeContainer');
+      const emptyState = document.getElementById('emptyStateContainer');
+      const activeBtn = document.getElementById('viewActiveBtn');
+      const emptyBtn = document.getElementById('viewEmptyBtn');
+
+      if (empty) {
+        tree.classList.add('hidden');
+        emptyState.classList.remove('hidden');
+        emptyBtn.className = "px-2.5 py-1 rounded bg-slate-700 text-white font-medium transition text-[11px]";
+        activeBtn.className = "px-2.5 py-1 rounded text-slate-400 hover:text-white font-medium transition text-[11px]";
+      } else {
+        tree.classList.remove('hidden');
+        emptyState.classList.add('hidden');
+        activeBtn.className = "px-2.5 py-1 rounded bg-slate-700 text-white font-medium transition text-[11px]";
+        emptyBtn.className = "px-2.5 py-1 rounded text-slate-400 hover:text-white font-medium transition text-[11px]";
+      }
+    }
+
+    // Toggle Expand / Collapse on nodes
+    function toggleCollapse(id) {
+      const content = document.getElementById('content-' + id);
+      const chevron = document.getElementById('chevron-' + id);
+      if (content) {
+        if (content.classList.contains('hidden')) {
+          content.classList.remove('hidden');
+          if (chevron) chevron.classList.add('rotate-90');
+        } else {
+          content.classList.add('hidden');
+          if (chevron) chevron.classList.remove('rotate-90');
+        }
+      }
+    }
+
+    function toggleSubTree(id) {
+      const el = document.getElementById(id);
+      const chevron = document.getElementById('chevron-' + id);
+      if (el) {
+        if (el.classList.contains('hidden')) {
+          el.classList.remove('hidden');
+          if (chevron) chevron.classList.add('rotate-90');
+        } else {
+          el.classList.add('hidden');
+          if (chevron) chevron.classList.remove('rotate-90');
+        }
+      }
+    }
+
+    // Smart Add Menu & Workspace Dropdowns
+    function toggleSmartAddMenu() {
+      document.getElementById('smartAddMenu').classList.toggle('hidden');
+    }
+
     function toggleWorkspaceDropdown() {
-      const menu = document.getElementById('workspaceMenu');
-      menu.classList.toggle('hidden');
+      document.getElementById('wsDropdownMenu').classList.toggle('hidden');
     }
 
-    // Select Workspace
-    function selectWorkspace(id, icon, name, meta) {
-      document.getElementById('activeWorkspaceIcon').innerText = icon;
-      document.getElementById('activeWorkspaceName').innerText = name;
-      document.getElementById('activeWorkspaceMeta').innerText = meta;
-      toggleWorkspaceDropdown();
+    // Workspace Filter Selection
+    function selectWorkspaceFilter(wsId, label) {
+      document.getElementById('currentWorkspaceLabel').innerText = label;
+      document.getElementById('wsDropdownMenu').classList.add('hidden');
 
-      // Update inspector
-      const banner = document.getElementById('inspectorBanner');
-      banner.className = "p-4 rounded-xl border border-indigo-500/40 bg-indigo-950/20 shadow-md flex flex-wrap items-center justify-between gap-4";
-      document.getElementById('inspectBadge').className = "px-2 py-0.5 text-xs font-bold rounded bg-indigo-900 text-indigo-200 border border-indigo-600 font-mono";
-      document.getElementById('inspectBadge').innerText = "🏢 WORKSPACE LOADED";
-      document.getElementById('inspectName').innerText = name;
-      document.getElementById('inspectHost').innerText = meta;
-      document.getElementById('inspectDescription').innerHTML = "<span>✨</span> Active workspace filtered. Only connections belonging to <strong>" + name + "</strong> are displayed in the tree.";
-    }
-
-    // Toggle Folder Expand/Collapse
-    function toggleFolder(folderId) {
-      const items = document.getElementById('folder-items-' + folderId);
-      const chevron = document.getElementById('chevron-' + folderId);
-      if (items.classList.contains('hidden')) {
-        items.classList.remove('hidden');
-        chevron.classList.add('rotate-90');
-      } else {
-        items.classList.add('hidden');
-        chevron.classList.remove('rotate-90');
-      }
-    }
-
-    // Environment Filter Pills
-    function setEnvFilter(env) {
-      currentFilter = env;
-      
-      // Update pill styling
-      document.querySelectorAll('.env-pill').forEach(btn => {
-        btn.classList.remove('ring-2', 'ring-white', 'ring-offset-2', 'ring-offset-slate-900');
-      });
-
-      const activeBtn = document.getElementById('filter-' + env.toLowerCase());
-      if (activeBtn) {
-        activeBtn.classList.add('ring-2', 'ring-white', 'ring-offset-1', 'ring-offset-slate-900');
-      }
-
-      applyFilters();
-    }
-
-    // Live Search
-    function handleSearch(val) {
-      const clearBtn = document.getElementById('clearSearchBtn');
-      if (val.trim().length > 0) {
-        clearBtn.classList.remove('hidden');
-      } else {
-        clearBtn.classList.add('hidden');
-      }
-      applyFilters();
-    }
-
-    function clearSearch() {
-      const input = document.getElementById('searchInput');
-      input.value = '';
-      document.getElementById('clearSearchBtn').classList.add('hidden');
-      applyFilters();
-    }
-
-    // Master filter evaluation
-    function applyFilters() {
-      const query = document.getElementById('searchInput').value.toLowerCase().trim();
-      const items = document.querySelectorAll('.connection-item');
-      let visibleCount = 0;
-
-      items.forEach(item => {
-        const itemEnv = item.getAttribute('data-env');
-        const itemName = (item.getAttribute('data-name') || '').toLowerCase();
-        const itemHost = (item.getAttribute('data-host') || '').toLowerCase();
-
-        const matchesEnv = (currentFilter === 'ALL' || itemEnv === currentFilter);
-        const matchesQuery = (query === '' || itemName.includes(query) || itemHost.includes(query) || itemEnv.toLowerCase().includes(query));
-
-        if (matchesEnv && matchesQuery) {
-          item.classList.remove('hidden');
-          visibleCount++;
+      const nodes = document.querySelectorAll('.workspace-node');
+      nodes.forEach(node => {
+        if (wsId === 'all' || node.getAttribute('data-ws') === wsId) {
+          node.classList.remove('hidden');
         } else {
-          item.classList.add('hidden');
+          node.classList.add('hidden');
         }
       });
+    }
 
-      // Hide or show folder groups if empty
-      document.querySelectorAll('.folder-group').forEach(group => {
-        const hasVisible = group.querySelectorAll('.connection-item:not(.hidden)').length > 0;
-        if (hasVisible) {
-          group.classList.remove('hidden');
-          // If searching, auto-expand folder
-          if (query.length > 0) {
-            const folderId = group.getAttribute('data-folder');
-            const itemsDiv = document.getElementById('folder-items-' + folderId);
-            if (itemsDiv) itemsDiv.classList.remove('hidden');
-          }
-        } else {
-          group.classList.add('hidden');
-        }
+    // Select Connection Row
+    function selectTreeConnection(el, name, env, path, host, dbs, colls) {
+      document.querySelectorAll('.conn-row').forEach(row => {
+        row.classList.remove('selected-connection', 'selected-connection-light');
       });
-
-      // Empty state
-      const noRes = document.getElementById('noResults');
-      if (visibleCount === 0) {
-        noRes.classList.remove('hidden');
-      } else {
-        noRes.classList.add('hidden');
-      }
-    }
-
-    // Toggle Connection Subtree (Databases & Collections)
-    function toggleConnectionTree(connId, el, name, env, host, isConnected, isProd) {
-      selectConnection(el, name, env, host, isConnected, isProd);
-      const tree = document.getElementById('conn-tree-' + connId);
-      const chevron = document.getElementById('chevron-conn-' + connId);
-      if (tree) {
-        if (tree.classList.contains('hidden')) {
-          tree.classList.remove('hidden');
-          if (chevron) chevron.classList.add('rotate-90');
-        } else {
-          tree.classList.add('hidden');
-          if (chevron) chevron.classList.remove('rotate-90');
-        }
-      }
-    }
-
-    // Toggle Database Subtree (Collections)
-    function toggleDatabaseTree(dbId) {
-      const colls = document.getElementById('colls-' + dbId);
-      const chevron = document.getElementById('chevron-' + dbId);
-      if (colls) {
-        if (colls.classList.contains('hidden')) {
-          colls.classList.remove('hidden');
-          if (chevron) chevron.classList.add('rotate-90');
-        } else {
-          colls.classList.add('hidden');
-          if (chevron) chevron.classList.remove('rotate-90');
-        }
-      }
-    }
-
-    // Open Collection Tab Simulator
-    function openCollectionTab(connName, dbName, collName, docCount, env) {
-      const banner = document.getElementById('inspectorBanner');
-      const badge = document.getElementById('inspectBadge');
-      const nameEl = document.getElementById('inspectName');
-      const hostEl = document.getElementById('inspectHost');
-      const descEl = document.getElementById('inspectDescription');
-
-      nameEl.innerText = `${dbName}.${collName}`;
-      hostEl.innerText = `${connName} (${env})`;
-
-      if (env === 'PROD') {
-        banner.className = "p-4 rounded-xl border border-red-500/60 bg-red-950/40 shadow-lg flex flex-wrap items-center justify-between gap-4";
-        badge.className = "px-2 py-0.5 text-xs font-bold rounded bg-red-900 text-red-100 border border-red-600 font-mono";
-        badge.innerText = "🔴 PROD COLLECTION TAB";
-        descEl.className = "text-xs text-red-200 flex items-center gap-1.5";
-        descEl.innerHTML = `<span>📑</span> Opened Tab: <strong>${dbName}.${collName}</strong> (~${docCount} documents) | <span class="text-amber-300 font-semibold">⚠️ Production Safe Write Guard Active</span>`;
-      } else {
-        banner.className = "p-4 rounded-xl border border-emerald-500/50 bg-emerald-950/30 shadow-md flex flex-wrap items-center justify-between gap-4";
-        badge.className = "px-2 py-0.5 text-xs font-bold rounded bg-emerald-900 text-emerald-200 border border-emerald-600 font-mono";
-        badge.innerText = "📑 COLLECTION TAB OPENED";
-        descEl.className = "text-xs text-emerald-200 flex items-center gap-1.5";
-        descEl.innerHTML = `<span>📑</span> Target: <strong>${dbName}.${collName}</strong> (~${docCount} documents). Ready for query & edit.`;
-      }
-    }
-
-    // Connection Selection & Safety Inspector
-    function selectConnection(el, name, env, host, isConnected, isProd) {
-      document.querySelectorAll('.connection-item').forEach(c => {
-        c.classList.remove('ring-1', 'ring-emerald-400', 'bg-slate-700/80');
-      });
-      el.classList.add('ring-1', 'ring-emerald-400', 'bg-slate-700/80');
+      el.classList.add(isDark ? 'selected-connection' : 'selected-connection-light');
 
       const banner = document.getElementById('inspectorBanner');
       const badge = document.getElementById('inspectBadge');
       const nameEl = document.getElementById('inspectName');
-      const hostEl = document.getElementById('inspectHost');
+      const pathEl = document.getElementById('inspectPath');
       const descEl = document.getElementById('inspectDescription');
 
       nameEl.innerText = name;
-      hostEl.innerText = host;
+      pathEl.innerText = path;
 
       if (env === 'PROD') {
         banner.className = "p-4 rounded-xl border border-red-500/50 bg-red-950/30 shadow-md flex flex-wrap items-center justify-between gap-4";
         badge.className = "px-2 py-0.5 text-xs font-bold rounded bg-red-900 text-red-200 border border-red-600 font-mono";
         badge.innerText = "🔴 PROD SAFEGUARD";
-        descEl.className = "text-xs text-red-300 flex items-center gap-1.5";
-        descEl.innerHTML = "<span>🛡️</span> <strong>Write Safeguard Active:</strong> Destructive operations (drop, updateMany without filter, deleteMany) require explicit confirmation dialog with profile name typing.";
-      } else if (env === 'STAGING') {
+        descEl.innerHTML = `<span>🛡️</span> <strong>Production Active:</strong> Host: <code class="font-mono text-white">${host}</code> • ${dbs} dbs • ${colls} collections. Drop/Delete safeguards enabled.`;
+      } else if (env === 'TEST') {
         banner.className = "p-4 rounded-xl border border-amber-500/40 bg-amber-950/20 shadow-md flex flex-wrap items-center justify-between gap-4";
         badge.className = "px-2 py-0.5 text-xs font-bold rounded bg-amber-900 text-amber-200 border border-amber-600 font-mono";
-        badge.innerText = "🟡 STAGING ENV";
-        descEl.className = "text-xs text-amber-300 flex items-center gap-1.5";
-        descEl.innerHTML = "<span>⚠️</span> <strong>Pre-Production Environment:</strong> Shared with QA/Integration teams. Safe testing enabled.";
-      } else if (env === 'DEV') {
+        badge.innerText = "🟡 TEST ENVIRONMENT";
+        descEl.innerHTML = `<span>🛡️</span> <strong>Test Staging:</strong> Host: <code class="font-mono text-white">${host}</code> • ${dbs} dbs • ${colls} collections.`;
+      } else {
         banner.className = "p-4 rounded-xl border border-emerald-500/40 bg-emerald-950/20 shadow-md flex flex-wrap items-center justify-between gap-4";
         badge.className = "px-2 py-0.5 text-xs font-bold rounded bg-emerald-900 text-emerald-200 border border-emerald-600 font-mono";
-        badge.innerText = "🟢 DEVELOPMENT";
-        descEl.className = "text-xs text-emerald-300 flex items-center gap-1.5";
-        descEl.innerHTML = "<span>🚀</span> <strong>Development Sandbox:</strong> Full write & drop access allowed for rapid development and testing.";
-      } else {
-        banner.className = "p-4 rounded-xl border border-slate-700 bg-slate-900/60 shadow-md flex flex-wrap items-center justify-between gap-4";
-        badge.className = "px-2 py-0.5 text-xs font-bold rounded bg-slate-800 text-slate-300 border border-slate-600 font-mono";
-        badge.innerText = "⚪ LOCAL INSTANCE";
-        descEl.className = "text-xs text-slate-400 flex items-center gap-1.5";
-        descEl.innerHTML = "<span>💻</span> Local machine standalone or Docker container.";
+        badge.innerText = "🟢 DEV SANDBOX";
+        descEl.innerHTML = `<span>🚀</span> <strong>Dev Environment:</strong> Host: <code class="font-mono text-white">${host}</code> • Full rapid developer access.`;
       }
     }
 
+    // Open Collection Tab simulation
+    function openCollection(fullPath, db, coll, count) {
+      const banner = document.getElementById('inspectorBanner');
+      const badge = document.getElementById('inspectBadge');
+      const nameEl = document.getElementById('inspectName');
+      const pathEl = document.getElementById('inspectPath');
+      const descEl = document.getElementById('inspectDescription');
+
+      nameEl.innerText = `${db}.${coll}`;
+      pathEl.innerText = fullPath;
+      banner.className = "p-4 rounded-xl border border-blue-500/50 bg-blue-950/30 shadow-md flex flex-wrap items-center justify-between gap-4";
+      badge.className = "px-2 py-0.5 text-xs font-bold rounded bg-blue-900 text-blue-200 border border-blue-600 font-mono";
+      badge.innerText = "📑 TAB OPENED";
+      descEl.innerHTML = `<span>📄</span> Collection Tab loaded: <strong>${db}.${coll}</strong> (~${count.toLocaleString()} docs). Ready for Data Grid / Aggregation.`;
+    }
+
+    // Search Handler (⌘K)
+    function handleSearch(val) {
+      const q = val.toLowerCase().trim();
+      const rows = document.querySelectorAll('.conn-row');
+      rows.forEach(row => {
+        const name = (row.getAttribute('data-name') || '').toLowerCase();
+        const env = (row.getAttribute('data-env') || '').toLowerCase();
+        if (q === '' || name.includes(q) || env.includes(q)) {
+          row.classList.remove('hidden');
+        } else {
+          row.classList.add('hidden');
+        }
+      });
+    }
+
+    function filterByQuickAccess(type) {
+      alert(`Simulation: Filter by ${type}`);
+    }
+
     // Modal Helpers
-    function toggleNewWorkspaceModal(open) {
-      const modal = document.getElementById('newWorkspaceModal');
+    function toggleModal(id, open) {
+      const modal = document.getElementById(id);
       if (open) modal.classList.remove('hidden');
       else modal.classList.add('hidden');
     }
 
-    function submitNewWorkspace() {
-      const name = document.getElementById('newWsName').value.trim();
-      const icon = document.getElementById('newWsIcon').value.trim() || '💼';
-      if (!name) {
-        alert('Please enter a workspace name');
-        return;
-      }
-      selectWorkspace('custom', icon, name, '0 connections • 0 projects');
-      toggleNewWorkspaceModal(false);
+    function openNewConnectionDialog(ws, folder) {
+      document.getElementById('smartAddMenu').classList.add('hidden');
+      if (ws) document.getElementById('selectModalWs').value = ws;
+      if (folder) document.getElementById('selectModalFolder').value = folder;
+      toggleModal('newConnectionModal', true);
     }
 
-    // Folder Context Menu
-    function showFolderMenu(folderName, event) {
-      const menu = document.getElementById('folderContextMenu');
-      document.getElementById('contextFolderTitle').innerText = folderName;
-      menu.style.left = (event.clientX + 5) + 'px';
-      menu.style.top = (event.clientY + 5) + 'px';
-      menu.classList.remove('hidden');
+    function openNewFolderDialog(ws) {
+      document.getElementById('smartAddMenu').classList.add('hidden');
+      document.getElementById('targetFolderWs').value = ws || 'Customer A';
+      toggleModal('newFolderModal', true);
     }
 
-    window.addEventListener('click', function(e) {
-      const menu = document.getElementById('folderContextMenu');
-      if (!menu.contains(e.target)) {
-        menu.classList.add('hidden');
-      }
-      const wsMenu = document.getElementById('workspaceMenu');
-      const wsBtn = document.getElementById('workspaceDropdownBtn');
-      if (wsMenu && !wsMenu.contains(e.target) && !wsBtn.contains(e.target)) {
-        wsMenu.classList.add('hidden');
-      }
-    });
+    function openNewWorkspaceDialog() {
+      document.getElementById('smartAddMenu').classList.add('hidden');
+      alert('Open Create Workspace Modal (Customer / Organization name)');
+    }
+
+    function openConfigModal(initialTab) {
+      toggleModal('configModal', true);
+    }
+
+    function submitNewConnection() {
+      const name = document.getElementById('inputConnName').value.trim() || 'new-connection';
+      alert(`Connection created: ${name}`);
+      toggleModal('newConnectionModal', false);
+    }
+
+    function submitNewFolder() {
+      const name = document.getElementById('inputFolderName').value.trim() || 'New Folder';
+      alert(`Folder created: ${name}`);
+      toggleModal('newFolderModal', false);
+    }
 
     function showMockAction(msg) {
       alert("Simulator: " + msg);
-      document.getElementById('folderContextMenu').classList.add('hidden');
     }
+
+    // Global click listener to close popovers
+    window.addEventListener('click', function(e) {
+      const smartAdd = document.getElementById('smartAddMenu');
+      const smartAddBtn = document.getElementById('smartAddBtn');
+      if (smartAdd && !smartAdd.contains(e.target) && !smartAddBtn.contains(e.target)) {
+        smartAdd.classList.add('hidden');
+      }
+
+      const wsDropdown = document.getElementById('wsDropdownMenu');
+      const wsBtn = document.getElementById('wsFilterDropdownBtn');
+      if (wsDropdown && !wsDropdown.contains(e.target) && !wsBtn.contains(e.target)) {
+        wsDropdown.classList.add('hidden');
+      }
+    });
+
+    // Keyboard shortcut ⌘K
+    window.addEventListener('keydown', function(e) {
+      if ((e.metaKey || e.ctrlKey) && e.key === 'k') {
+        e.preventDefault();
+        const searchInput = document.getElementById('searchInput');
+        if (searchInput) searchInput.focus();
+      }
+    });
   </script>
 </body>
 </html>
