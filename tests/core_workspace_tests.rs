@@ -1204,3 +1204,23 @@ fn connection_config_legacy_deserialization_and_secret_free_profile_json_roundtr
         }
     ));
 }
+
+#[test]
+fn app_state_empty_clean_state_and_has_open_tabs() {
+    // Arrange: Create clean empty app state
+    let empty_state = AppState::new_empty();
+
+    // Assert: connections and tabs are completely empty
+    assert!(empty_state.connections.is_empty());
+    assert!(!empty_state.has_open_tabs());
+
+    // Act: add one collection tab to empty state
+    let mut state_with_tab = empty_state;
+    state_with_tab.open_or_focus_collection("Custom DB", "app_db", "orders");
+
+    // Assert: has_open_tabs is now true
+    assert!(state_with_tab.has_open_tabs());
+    let persisted = state_with_tab.to_persistence();
+    assert_eq!(persisted.open_tabs.len(), 1);
+    assert_eq!(persisted.open_tabs[0].collection, "orders");
+}

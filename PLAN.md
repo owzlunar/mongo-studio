@@ -14,6 +14,7 @@
 | **Phase 4** | Live Document Manager & Full CRUD / Query | ✅ เสร็จสิ้น | `596ac1c` (41/41 tests ผ่าน) |
 | **Phase 5** | Advanced Features, Export/Import & Release | ✅ เสร็จสิ้น | `2bcda74` (70/70 tests ผ่าน) |
 | **Feature+** | SSH Tunnel Connection (`ip:port`, `user/pass`, `id_ecdsa`) | ✅ เสร็จสิ้น | รองรับ `ssh ip:port` (`user/pass`, `id_ecdsa` + Keychain, 88/88 tests ผ่าน) |
+| **Feature+** | Clean State on Release Build (Exclude Mock DB) | ✅ เสร็จสิ้น | เอา mock DB และ mock tabs ออกจาก Release build เริ่มต้นแบบ clean state, 90/90 tests ผ่าน |
 
 ---
 

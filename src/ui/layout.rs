@@ -370,6 +370,40 @@ fn render_central_workspace(
     let frame = Frame::none().fill(palette.editor_bg);
 
     egui::CentralPanel::default().frame(frame).show(ctx, |ui| {
+        if !state.has_open_tabs() {
+            ui.centered_and_justified(|ui| {
+                ui.vertical_centered(|ui| {
+                    ui.label(
+                        RichText::new("Mongo Studio")
+                            .size(24.0)
+                            .strong()
+                            .color(palette.text_primary),
+                    );
+                    ui.add_space(8.0);
+                    ui.label(
+                        RichText::new(
+                            "Open a collection from the sidebar or add a new MongoDB connection to begin.",
+                        )
+                        .size(13.0)
+                        .color(palette.muted_text),
+                    );
+                    ui.add_space(16.0);
+                    if ui
+                        .button(
+                            RichText::new(format!("{} Add Connection", regular::PLUS))
+                                .size(13.0)
+                                .color(palette.text_primary),
+                        )
+                        .on_hover_cursor(CursorIcon::PointingHand)
+                        .clicked()
+                    {
+                        events.push(AppEvent::OpenNewConnectionModal);
+                    }
+                });
+            });
+            return;
+        }
+
         let mut style = Style::from_egui(ctx.style().as_ref());
         style.tab_bar.bg_fill = palette.tab_inactive_bg;
         style.tab.active.bg_fill = palette.tab_active_bg;

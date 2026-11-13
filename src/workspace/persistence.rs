@@ -21,6 +21,14 @@ pub struct WorkspacePersistence {
 
 impl Default for WorkspacePersistence {
     fn default() -> Self {
+        #[cfg(any(debug_assertions, test))]
+        let open_tabs = vec![
+            CollectionTab::new("MongoDB Local", "admin", "users"),
+            CollectionTab::new("MongoDB Local", "admin", "products"),
+        ];
+        #[cfg(not(any(debug_assertions, test)))]
+        let open_tabs = Vec::new();
+
         Self {
             theme_mode: ThemeMode::Dark,
             sidebar_visible: true,
@@ -28,10 +36,7 @@ impl Default for WorkspacePersistence {
             bottom_panel_visible: true,
             bottom_panel_height: 170.0,
             active_activity: ActivityView::Connections,
-            open_tabs: vec![
-                CollectionTab::new("MongoDB Local", "admin", "users"),
-                CollectionTab::new("MongoDB Local", "admin", "products"),
-            ],
+            open_tabs,
         }
     }
 }

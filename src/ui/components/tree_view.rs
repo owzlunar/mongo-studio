@@ -22,6 +22,30 @@ pub fn render_connection_tree(
 ) {
     let query = search_filter.trim().to_lowercase();
 
+    if connections.is_empty() {
+        ui.add_space(16.0);
+        ui.vertical_centered(|ui| {
+            ui.label(
+                RichText::new("No MongoDB connections yet")
+                    .size(12.5)
+                    .color(palette.muted_text),
+            );
+            ui.add_space(8.0);
+            if ui
+                .button(
+                    RichText::new(format!("{} Add Connection", regular::PLUS))
+                        .color(palette.text_primary),
+                )
+                .on_hover_cursor(CursorIcon::PointingHand)
+                .on_hover_text("Create a new MongoDB connection profile")
+                .clicked()
+            {
+                events.push(AppEvent::OpenNewConnectionModal);
+            }
+        });
+        return;
+    }
+
     for (conn_idx, conn) in connections.iter_mut().enumerate() {
         if !conn.status.is_connected() {
             conn.expanded = false;

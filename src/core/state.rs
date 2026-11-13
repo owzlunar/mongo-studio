@@ -121,6 +121,7 @@ impl Default for AppState {
 impl AppState {
     #[must_use]
     pub fn from_persistence(persisted: WorkspacePersistence) -> Self {
+        #[cfg(any(debug_assertions, test))]
         let initial_tabs = if persisted.open_tabs.is_empty() {
             vec![
                 CollectionTab::new("MongoDB Local", "admin", "users"),
@@ -129,6 +130,8 @@ impl AppState {
         } else {
             persisted.open_tabs
         };
+        #[cfg(not(any(debug_assertions, test)))]
+        let initial_tabs = persisted.open_tabs;
 
         let query_store = QueryStore::load();
         let mut bottom_panel = BottomPanelState {
@@ -139,11 +142,16 @@ impl AppState {
             bottom_panel.query_history = query_store.query_history;
         }
 
+        #[cfg(any(debug_assertions, test))]
+        let connections = vec![
+            ConnectionConfig::mock_local(),
+            ConnectionConfig::mock_staging(),
+        ];
+        #[cfg(not(any(debug_assertions, test)))]
+        let connections = Vec::new();
+
         Self {
-            connections: vec![
-                ConnectionConfig::mock_local(),
-                ConnectionConfig::mock_staging(),
-            ],
+            connections,
             active_connection_idx: 0,
             active_activity: persisted.active_activity,
             sidebar_visible: persisted.sidebar_visible,
@@ -337,6 +345,32 @@ impl AppState {
             active_activity: self.active_activity,
             open_tabs,
         }
+    }
+
+    /// Returns `true` if there is at least one open collection or user tab in any dock leaf.
+    #[must_use]
+    pub fn has_open_tabs(&self) -> bool {
+        for (_surface, node) in self.dock_state.iter_all_nodes() {
+            if let Some(tabs) = node.tabs() {
+                if !tabs.is_empty() {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
+    /// Creates an empty [`AppState`] with no connections or open tabs (clean state).
+    #[must_use]
+    pub fn new_empty() -> Self {
+        let persistence = WorkspacePersistence {
+            open_tabs: Vec::new(),
+            ..WorkspacePersistence::default()
+        };
+        let mut state = Self::from_persistence(persistence);
+        state.connections = Vec::new();
+        state.dock_state = DockState::new(Vec::new());
+        state
     }
 
     #[must_use]
