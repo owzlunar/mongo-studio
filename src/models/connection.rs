@@ -679,7 +679,7 @@ impl ConnectionConfig {
             ssh_tunnel: SshTunnelConfig::default(),
             workspace: Some("Default".to_string()),
             folder: None,
-            is_favorite: true,
+            is_favorite: false,
             environment: Some(EnvironmentTag::Dev),
         }
     }

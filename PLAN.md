@@ -164,20 +164,25 @@
   - ใช้ `#[serde(default)]` ทุกฟิลด์เพื่อ backward compatibility 100% กับ `connections.json` เดิม
 - [x] Export module ใน `src/models/mod.rs`
 
-### Step 2: Events & App State Management (`core-dev`) 🔄
-- [ ] เพิ่ม Events ใน `src/core/events.rs`:
+### Step 2: Events & App State Management (`core-dev`) ✅
+- [x] เพิ่ม Events ใน `src/core/events.rs`:
   - `ToggleFavoriteConnection { connection_id: Uuid }`
   - `FilterWorkspaceView { workspace_name: Option<String> }`
   - `CreateWorkspace { name: String }`
   - `CreateProjectFolder { workspace: String, folder_name: String }`
   - `MoveConnectionToFolder { connection_id: Uuid, workspace: Option<String>, folder: Option<String> }`
+  - `DeleteWorkspace { name: String }`
+  - `DeleteProjectFolder { workspace: String, folder_name: String }`
   - `OpenManageWorkspacesModal`
-- [ ] ขยาย `AppState` ใน `src/core/state.rs`:
+  - `CloseManageWorkspacesModal`
+- [x] ขยาย `AppState` ใน `src/core/state.rs`:
   - ฟิลด์ `active_workspace_filter: Option<String>`
-  - ฟิลด์ `recent_connections: Vec<Uuid>` (บันทึก ID ล่าสุด 5 รายการเมื่อ Connect)
+  - ฟิลด์ `recent_connections: Vec<Uuid>` (บันทึก ID ล่าสุด 10 รายการเมื่อ Connect สำเร็จ)
   - ฟิลด์ `show_manage_workspaces_modal: bool`
+  - Helper methods: `toggle_favorite`, `push_recent_connection`, `set_connection_workspace_folder`, `delete_workspace`, `delete_project_folder`, `favorite_count`, `recent_count`
+- [x] เชื่อมต่อ App Event loop ใน `src/app.rs` พร้อมบันทึก `connections.json` อัตโนมัติเมื่อมีการเปลี่ยนแปลง
 
-### Step 3: UI Left Panel & 3-Tier Tree View (`ui-dev`)
+### Step 3: UI Left Panel & 3-Tier Tree View (`ui-dev`) 🔄
 - [ ] ปรับปรุง `src/ui/sidebar.rs`:
   - ช่อง Search Full Width พร้อม Hint `⌘ K` (กรองทั้งชื่อและ env)
   - แถบ Quick Access: `⭐ Favorites` (พร้อม Badge จำนวน) และ `🕒 Recent`

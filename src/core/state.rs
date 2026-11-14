@@ -1,5 +1,6 @@
 use bson::Bson;
 use egui_dock::DockState;
+use uuid::Uuid;
 
 use crate::models::{
     CollectionInfo, ConnectionConfig, MongoUser, QueryStore, SavedQuery, SshAuthMethod,
@@ -113,6 +114,12 @@ pub struct AppState {
     pub shell_current_db: String,
     pub is_transferring: bool,
     pub show_about_modal: bool,
+    pub active_workspace_filter: Option<String>,
+    pub recent_connections: Vec<Uuid>,
+    pub show_manage_workspaces_modal: bool,
+    pub new_workspace_input: String,
+    pub new_folder_input: String,
+    pub new_folder_workspace_target: String,
 }
 
 impl Default for AppState {
@@ -240,6 +247,12 @@ impl AppState {
             shell_current_db: "admin".to_string(),
             is_transferring: false,
             show_about_modal: false,
+            active_workspace_filter: None,
+            recent_connections: Vec::new(),
+            show_manage_workspaces_modal: false,
+            new_workspace_input: String::new(),
+            new_folder_input: String::new(),
+            new_folder_workspace_target: String::new(),
         }
     }
 
@@ -376,6 +389,12 @@ impl AppState {
         let mut state = Self::from_persistence(persistence);
         state.connections = Vec::new();
         state.dock_state = DockState::new(Vec::new());
+        state.active_workspace_filter = None;
+        state.recent_connections.clear();
+        state.show_manage_workspaces_modal = false;
+        state.new_workspace_input.clear();
+        state.new_folder_input.clear();
+        state.new_folder_workspace_target.clear();
         state
     }
 
@@ -473,5 +492,214 @@ impl AppState {
         } else {
             self.dock_state.push_to_focused_leaf(target);
         }
+    }
+
+    /// Toggles the favorite status of a connection profile by ID.
+    pub fn toggle_favorite(&mut self, id: Uuid) {
+        if let Some(conn) = self.connections.iter_mut().find(|c| c.id == id) {
+            conn.is_favorite = !conn.is_favorite;
+        }
+    }
+
+    /// Pushes a connection ID to the front of the recent connections list,
+    /// removing any prior occurrence and capping history to 10 entries.
+    pub fn push_recent_connection(&mut self, id: Uuid) {
+        self.recent_connections
+            .retain(|&existing_id| existing_id != id);
+        self.recent_connections.insert(0, id);
+        if self.recent_connections.len() > 10 {
+            self.recent_connections.truncate(10);
+        }
+    }
+
+    /// Sets the workspace and folder names for a connection, normalizing empty or whitespace strings to `None`.
+    pub fn set_connection_workspace_folder(
+        &mut self,
+        id: Uuid,
+        workspace: Option<String>,
+        folder: Option<String>,
+    ) {
+        let clean_workspace = workspace
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
+        let clean_folder = folder
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
+
+        if let Some(conn) = self.connections.iter_mut().find(|c| c.id == id) {
+            conn.workspace = clean_workspace;
+            conn.folder = clean_folder;
+        }
+    }
+
+    /// Deletes a workspace by clearing workspace/folder fields on all matching connections.
+    /// Also resets the active workspace filter if it was set to this workspace.
+    pub fn delete_workspace(&mut self, name: &str) {
+        let trimmed = name.trim();
+        for conn in &mut self.connections {
+            if conn.workspace_name() == Some(trimmed) {
+                conn.workspace = None;
+                conn.folder = None;
+            }
+        }
+        if self.active_workspace_filter.as_deref().map(str::trim) == Some(trimmed) {
+            self.active_workspace_filter = None;
+        }
+    }
+
+    /// Deletes a folder within a workspace by clearing the folder field on all matching connections.
+    pub fn delete_project_folder(&mut self, workspace: &str, folder_name: &str) {
+        let trimmed_ws = workspace.trim();
+        let trimmed_folder = folder_name.trim();
+        for conn in &mut self.connections {
+            if conn.workspace_name() == Some(trimmed_ws)
+                && conn.folder_name() == Some(trimmed_folder)
+            {
+                conn.folder = None;
+            }
+        }
+    }
+
+    /// Returns the number of favorite connections.
+    #[must_use]
+    pub fn favorite_count(&self) -> usize {
+        self.connections.iter().filter(|c| c.is_favorite).count()
+    }
+
+    /// Returns the number of recent connection IDs that currently exist in `connections`.
+    #[must_use]
+    pub fn recent_count(&self) -> usize {
+        self.recent_connections
+            .iter()
+            .filter(|&id| self.connections.iter().any(|c| c.id == *id))
+            .count()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_toggle_favorite() {
+        let mut state = AppState::default();
+        let id = state.connections[0].id;
+        assert!(!state.connections[0].is_favorite);
+        assert_eq!(state.favorite_count(), 0);
+
+        state.toggle_favorite(id);
+        assert!(state.connections[0].is_favorite);
+        assert_eq!(state.favorite_count(), 1);
+
+        state.toggle_favorite(id);
+        assert!(!state.connections[0].is_favorite);
+        assert_eq!(state.favorite_count(), 0);
+    }
+
+    #[test]
+    fn test_push_recent_connection() {
+        let mut state = AppState::default();
+        let u1 = Uuid::new_v4();
+        let u2 = Uuid::new_v4();
+        let u3 = Uuid::new_v4();
+
+        state.push_recent_connection(u1);
+        state.push_recent_connection(u2);
+        state.push_recent_connection(u3);
+        assert_eq!(state.recent_connections, vec![u3, u2, u1]);
+
+        state.push_recent_connection(u1);
+        assert_eq!(state.recent_connections, vec![u1, u3, u2]);
+
+        for _ in 0..15 {
+            state.push_recent_connection(Uuid::new_v4());
+        }
+        assert_eq!(state.recent_connections.len(), 10);
+    }
+
+    #[test]
+    fn test_set_connection_workspace_folder() {
+        let mut state = AppState::default();
+        let id = state.connections[0].id;
+
+        state.set_connection_workspace_folder(
+            id,
+            Some("  Workspace 1  ".to_string()),
+            Some("  Folder A  ".to_string()),
+        );
+        assert_eq!(state.connections[0].workspace_name(), Some("Workspace 1"));
+        assert_eq!(state.connections[0].folder_name(), Some("Folder A"));
+
+        state.set_connection_workspace_folder(id, Some("   ".to_string()), None);
+        assert_eq!(state.connections[0].workspace_name(), None);
+        assert_eq!(state.connections[0].folder_name(), None);
+    }
+
+    #[test]
+    fn test_delete_workspace() {
+        let mut state = AppState::default();
+        let id0 = state.connections[0].id;
+        let id1 = state.connections[1].id;
+
+        state.set_connection_workspace_folder(
+            id0,
+            Some("CustomerA".to_string()),
+            Some("Folder1".to_string()),
+        );
+        state.set_connection_workspace_folder(
+            id1,
+            Some("CustomerB".to_string()),
+            Some("Folder2".to_string()),
+        );
+        state.active_workspace_filter = Some("CustomerA".to_string());
+
+        state.delete_workspace("CustomerA");
+        assert_eq!(state.connections[0].workspace, None);
+        assert_eq!(state.connections[0].folder, None);
+        assert_eq!(state.connections[1].workspace_name(), Some("CustomerB"));
+        assert_eq!(state.connections[1].folder_name(), Some("Folder2"));
+        assert_eq!(state.active_workspace_filter, None);
+    }
+
+    #[test]
+    fn test_delete_project_folder() {
+        let mut state = AppState::default();
+        let id0 = state.connections[0].id;
+
+        state.set_connection_workspace_folder(
+            id0,
+            Some("CustomerA".to_string()),
+            Some("Folder1".to_string()),
+        );
+
+        state.delete_project_folder("CustomerA", "Folder2");
+        assert_eq!(state.connections[0].folder_name(), Some("Folder1"));
+
+        state.delete_project_folder("CustomerB", "Folder1");
+        assert_eq!(state.connections[0].folder_name(), Some("Folder1"));
+
+        state.delete_project_folder("CustomerA", "Folder1");
+        assert_eq!(state.connections[0].workspace_name(), Some("CustomerA"));
+        assert_eq!(state.connections[0].folder_name(), None);
+    }
+
+    #[test]
+    fn test_favorite_and_recent_count() {
+        let mut state = AppState::default();
+        let id0 = state.connections[0].id;
+        let id1 = state.connections[1].id;
+
+        assert_eq!(state.favorite_count(), 0);
+        assert_eq!(state.recent_count(), 0);
+
+        state.toggle_favorite(id0);
+        assert_eq!(state.favorite_count(), 1);
+
+        state.push_recent_connection(id0);
+        state.push_recent_connection(Uuid::new_v4());
+        assert_eq!(state.recent_count(), 1);
+
+        state.push_recent_connection(id1);
+        assert_eq!(state.recent_count(), 2);
     }
 }

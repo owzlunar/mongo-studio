@@ -419,4 +419,31 @@ pub enum AppEvent {
     },
     ClearOutputLogs,
     ResetWorkspaceLayout,
+    ToggleFavoriteConnection {
+        connection_id: Uuid,
+    },
+    FilterWorkspaceView {
+        workspace_name: Option<String>,
+    },
+    CreateWorkspace {
+        name: String,
+    },
+    CreateProjectFolder {
+        workspace: String,
+        folder_name: String,
+    },
+    MoveConnectionToFolder {
+        connection_id: Uuid,
+        workspace: Option<String>,
+        folder: Option<String>,
+    },
+    DeleteWorkspace {
+        name: String,
+    },
+    DeleteProjectFolder {
+        workspace: String,
+        folder_name: String,
+    },
+    OpenManageWorkspacesModal,
+    CloseManageWorkspacesModal,
 }

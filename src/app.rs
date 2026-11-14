@@ -4344,9 +4344,11 @@ impl MongoStudioApp {
                         .iter_mut()
                         .find(|c| c.id == conn_id || (c.name == name && c.uri == uri));
 
+                    let mut connected_id = None;
                     if let Some(conn) = matched {
                         match result {
                             Ok((dbs, users, is_admin)) => {
+                                connected_id = Some(conn.id);
                                 let db_count = dbs.len();
                                 let user_count = users.len();
                                 conn.status = ConnectionStatus::Connected;
@@ -4385,6 +4387,9 @@ impl MongoStudioApp {
                                 );
                             }
                         }
+                    }
+                    if let Some(id) = connected_id {
+                        self.state.push_recent_connection(id);
                     }
                 }
                 AppEvent::RefreshConnections => {
@@ -4466,6 +4471,63 @@ impl MongoStudioApp {
                     self.state = AppState::default();
                     self.palette = apply_theme(ctx, self.state.theme_mode);
                     self.pending_open_user = None;
+                }
+                AppEvent::ToggleFavoriteConnection { connection_id } => {
+                    self.state.toggle_favorite(connection_id);
+                    self.spawn_save_profiles_task(ctx);
+                }
+                AppEvent::FilterWorkspaceView { workspace_name } => {
+                    self.state.active_workspace_filter = workspace_name;
+                }
+                AppEvent::CreateWorkspace { name } => {
+                    let trimmed = name.trim();
+                    if !trimmed.is_empty() {
+                        self.state.bottom_panel.push_log(
+                            LogLevel::Info,
+                            "Workspace",
+                            format!("Created workspace '{trimmed}'"),
+                        );
+                    }
+                }
+                AppEvent::CreateProjectFolder {
+                    workspace,
+                    folder_name,
+                } => {
+                    let ws_trimmed = workspace.trim();
+                    let f_trimmed = folder_name.trim();
+                    if !ws_trimmed.is_empty() && !f_trimmed.is_empty() {
+                        self.state.bottom_panel.push_log(
+                            LogLevel::Info,
+                            "Workspace",
+                            format!("Created folder '{f_trimmed}' in workspace '{ws_trimmed}'"),
+                        );
+                    }
+                }
+                AppEvent::MoveConnectionToFolder {
+                    connection_id,
+                    workspace,
+                    folder,
+                } => {
+                    self.state
+                        .set_connection_workspace_folder(connection_id, workspace, folder);
+                    self.spawn_save_profiles_task(ctx);
+                }
+                AppEvent::DeleteWorkspace { name } => {
+                    self.state.delete_workspace(&name);
+                    self.spawn_save_profiles_task(ctx);
+                }
+                AppEvent::DeleteProjectFolder {
+                    workspace,
+                    folder_name,
+                } => {
+                    self.state.delete_project_folder(&workspace, &folder_name);
+                    self.spawn_save_profiles_task(ctx);
+                }
+                AppEvent::OpenManageWorkspacesModal => {
+                    self.state.show_manage_workspaces_modal = true;
+                }
+                AppEvent::CloseManageWorkspacesModal => {
+                    self.state.show_manage_workspaces_modal = false;
                 }
             }
         }
