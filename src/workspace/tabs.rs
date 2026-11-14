@@ -80,6 +80,8 @@ pub struct CollectionTab {
     #[serde(default)]
     pub selected_user: Option<String>,
     #[serde(default)]
+    pub selected_user_db: Option<String>,
+    #[serde(default)]
     pub role_db_input: String,
     #[serde(default)]
     pub role_db_filter: String,
@@ -120,6 +122,7 @@ impl PartialEq for CollectionTab {
         if self.selected_user.is_some() || other.selected_user.is_some() {
             self.connection_name == other.connection_name
                 && self.selected_user == other.selected_user
+                && self.selected_user_db == other.selected_user_db
         } else {
             self.connection_name == other.connection_name
                 && self.database == other.database
@@ -150,6 +153,7 @@ impl CollectionTab {
             last_query_ms: None,
             cached_columns: Vec::new(),
             selected_user: None,
+            selected_user_db: None,
             role_db_input: "admin".to_string(),
             role_db_filter: String::new(),
             role_name_input: "readWrite".to_string(),
@@ -171,11 +175,16 @@ impl CollectionTab {
     }
 
     #[must_use]
-    pub fn new_user(connection_name: &str, username: &str) -> Self {
+    pub fn new_user(connection_name: &str, username: &str, user_db: &str) -> Self {
+        let db = if user_db.trim().is_empty() {
+            "admin"
+        } else {
+            user_db.trim()
+        };
         Self {
             connection_name: connection_name.to_string(),
-            database: "admin".to_string(),
-            collection: format!("user:{username}"),
+            database: db.to_string(),
+            collection: format!("{username} ({db})"),
             active_subtab: CollectionSubTab::Documents,
             view_mode: DocumentViewMode::Table,
             filter_query: "{}".to_string(),
@@ -189,7 +198,8 @@ impl CollectionTab {
             last_query_ms: None,
             cached_columns: Vec::new(),
             selected_user: Some(username.to_string()),
-            role_db_input: "admin".to_string(),
+            selected_user_db: Some(db.to_string()),
+            role_db_input: db.to_string(),
             role_db_filter: String::new(),
             role_name_input: "readWrite".to_string(),
             draft_roles: None,
@@ -223,17 +233,14 @@ impl CollectionTab {
 
     #[must_use]
     pub fn title(&self) -> &str {
-        if let Some(ref user) = self.selected_user {
-            user.as_str()
-        } else {
-            &self.collection
-        }
+        &self.collection
     }
 
     #[must_use]
     pub fn full_namespace(&self) -> String {
         if let Some(ref user) = self.selected_user {
-            format!("admin.system.users.{user}")
+            let db = self.selected_user_db.as_deref().unwrap_or(&self.database);
+            format!("{db}.system.users.{user}")
         } else {
             format!("{}.{}", self.database, self.collection)
         }

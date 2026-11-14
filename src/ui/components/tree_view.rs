@@ -280,34 +280,45 @@ pub fn render_connection_tree(
                             ui.horizontal(|ui| {
                                 let label_text = if is_protected {
                                     RichText::new(format!(
-                                        "  {} {} (Protected)",
+                                        "  {} {} ({}) (Protected)",
                                         regular::SHIELD_CHECK,
-                                        user.username
+                                        user.username,
+                                        user.db
                                     ))
                                     .color(palette.warning_color)
                                     .strong()
                                 } else {
                                     RichText::new(format!(
-                                        "  {} {}",
+                                        "  {} {} ({})",
                                         regular::USER,
-                                        user.username
+                                        user.username,
+                                        user.db
                                     ))
                                     .color(palette.text_primary)
                                 };
 
-                                let user_resp = ui
-                                    .selectable_label(false, label_text)
-                                    .on_hover_cursor(CursorIcon::PointingHand)
-                                    .on_hover_text(if is_protected {
+                                let hover_text = format!(
+                                    "User: {}\nAuth DB: {}\nRoles: {}\n{}",
+                                    user.username,
+                                    user.db,
+                                    user.roles.len(),
+                                    if is_protected {
                                         "Protected root admin user (click to inspect roles)"
                                     } else {
                                         "Click to manage user roles & password, or right-click for actions"
-                                    });
+                                    }
+                                );
+
+                                let user_resp = ui
+                                    .selectable_label(false, label_text)
+                                    .on_hover_cursor(CursorIcon::PointingHand)
+                                    .on_hover_text(hover_text);
 
                                 if user_resp.clicked() {
                                     events.push(AppEvent::OpenUserTab {
                                         connection_name: conn.name.clone(),
                                         username: user.username.clone(),
+                                        user_db: user.db.clone(),
                                     });
                                 }
 
@@ -322,6 +333,7 @@ pub fn render_connection_tree(
                                         events.push(AppEvent::OpenUserTab {
                                             connection_name: conn.name.clone(),
                                             username: user.username.clone(),
+                                            user_db: user.db.clone(),
                                         });
                                         ui.close_menu();
                                     }
@@ -335,6 +347,7 @@ pub fn render_connection_tree(
                                         events.push(AppEvent::OpenDuplicateUserModal {
                                             connection_index: conn_idx,
                                             source_username: user.username.clone(),
+                                            source_user_db: user.db.clone(),
                                         });
                                         ui.close_menu();
                                     }
@@ -361,6 +374,7 @@ pub fn render_connection_tree(
                                         events.push(AppEvent::RequestDeleteUser {
                                             connection_index: conn_idx,
                                             username: user.username.clone(),
+                                            user_db: user.db.clone(),
                                         });
                                         ui.close_menu();
                                     }

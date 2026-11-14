@@ -1826,9 +1826,10 @@ fn render_modals(
         .show(ctx, |ui| {
             ui.label(
                 RichText::new(format!(
-                    "{} User: {} ({})",
+                    "{} User: {} ({}) @ {}",
                     regular::USER_GEAR,
                     state.change_pwd_username,
+                    state.change_password_user_db,
                     state.change_pwd_conn_name
                 ))
                 .monospace()
@@ -1899,6 +1900,7 @@ fn render_modals(
                         events.push(AppEvent::ChangeUserPassword {
                             connection_name: state.change_pwd_conn_name.clone(),
                             username: state.change_pwd_username.clone(),
+                            user_db: state.change_password_user_db.clone(),
                             new_password: state.change_pwd_new.clone(),
                         });
                         state.change_pwd_new.clear();
@@ -1935,8 +1937,9 @@ fn render_modals(
         .show(ctx, |ui| {
             ui.label(
                 RichText::new(format!(
-                    "{} Permanently delete user '{username}'?",
-                    regular::WARNING
+                    "{} Permanently delete user '{username}' ({})?",
+                    regular::WARNING,
+                    state.delete_user_target_db
                 ))
                 .color(palette.error_color)
                 .strong()
@@ -1959,6 +1962,7 @@ fn render_modals(
                     events.push(AppEvent::ConfirmDeleteUser {
                         connection_index: conn_idx,
                         username,
+                        user_db: state.delete_user_target_db.clone(),
                     });
                     state.pending_delete_user = None;
                 }

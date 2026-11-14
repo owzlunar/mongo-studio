@@ -166,7 +166,7 @@ pub struct MongoStudioApp {
     runtime: Arc<tokio::runtime::Runtime>,
     bg_tx: Sender<AppEvent>,
     bg_rx: Receiver<AppEvent>,
-    pending_open_user: Option<(String, String)>,
+    pending_open_user: Option<(String, String, String)>,
     ssh_registry: SshTunnelRegistry,
     ssh_session_secrets: HashMap<Uuid, String>,
 }
@@ -1107,12 +1107,14 @@ impl MongoStudioApp {
                 AppEvent::OpenUserTab {
                     connection_name,
                     username,
+                    user_db,
                 } => {
-                    self.state.open_or_focus_user(&connection_name, &username);
+                    self.state
+                        .open_or_focus_user(&connection_name, &username, &user_db);
                     self.state.bottom_panel.push_log(
                         LogLevel::Info,
                         "UserManager",
-                        format!("Opened user permissions inspector for '{username}'"),
+                        format!("Opened user permissions inspector for '{username}' ({user_db})"),
                     );
                 }
                 AppEvent::OpenCreateDatabaseModal { connection_index } => {
@@ -2118,12 +2120,18 @@ impl MongoStudioApp {
                 AppEvent::OpenDuplicateUserModal {
                     connection_index,
                     source_username,
+                    source_user_db,
                 } => {
                     let cloned_roles = self
                         .state
                         .connections
                         .get(connection_index)
-                        .and_then(|c| c.users.iter().find(|u| u.username == source_username))
+                        .and_then(|c| {
+                            c.users.iter().find(|u| {
+                                u.username == source_username
+                                    && (source_user_db.is_empty() || u.db == source_user_db)
+                            })
+                        })
                         .map_or_else(
                             || vec![UserRole::new("readWrite", "admin")],
                             |u| u.roles.clone(),
@@ -2131,6 +2139,7 @@ impl MongoStudioApp {
 
                     self.state.create_user_conn_idx = connection_index;
                     self.state.duplicate_source_user = Some(source_username.clone());
+                    self.state.duplicate_source_user_db = Some(source_user_db.clone());
                     self.state.duplicate_source_roles = cloned_roles;
                     self.state.new_user_username = format!("{source_username}_copy");
                     self.state.new_user_password.clear();
@@ -2169,7 +2178,8 @@ impl MongoStudioApp {
                         };
                         let role_count = effective_roles.len();
 
-                        self.pending_open_user = Some((target.name.clone(), trimmed.clone()));
+                        self.pending_open_user =
+                            Some((target.name.clone(), trimmed.clone(), "admin".to_string()));
                         self.state.bottom_panel.push_log(
                             LogLevel::Info,
                             "UserManager",
@@ -2321,6 +2331,7 @@ impl MongoStudioApp {
                 AppEvent::SaveUserRoles {
                     connection_name,
                     username,
+                    user_db,
                     roles,
                 } => {
                     if username.trim().eq_ignore_ascii_case("admin") {
@@ -2332,34 +2343,34 @@ impl MongoStudioApp {
                         continue;
                     }
                     let role_count = roles.len();
+                    let effective_user_db = if user_db.trim().is_empty() {
+                        "admin".to_string()
+                    } else {
+                        user_db
+                    };
                     let task = self
                         .state
                         .connections
                         .iter()
                         .find(|c| c.name == connection_name)
-                        .and_then(|conn| {
-                            conn.users
-                                .iter()
-                                .find(|u| u.username == username)
-                                .map(|user| RoleUpdateTask {
-                                    target: self.connection_target_from_config(conn),
-                                    user_db: user.db.clone(),
-                                    username: username.clone(),
-                                    roles,
-                                    success_message: format!(
-                                        "Saved {role_count} role(s) for '{username}' on server"
-                                    ),
-                                    failure_prefix: format!(
-                                        "Failed to save roles for '{username}'"
-                                    ),
-                                })
+                        .map(|conn| RoleUpdateTask {
+                            target: self.connection_target_from_config(conn),
+                            user_db: effective_user_db.clone(),
+                            username: username.clone(),
+                            roles,
+                            success_message: format!(
+                                "Saved {role_count} role(s) for '{username}' ({effective_user_db}) on server"
+                            ),
+                            failure_prefix: format!(
+                                "Failed to save roles for '{username}' ({effective_user_db})"
+                            ),
                         });
                     if let Some(task) = task {
                         self.state.bottom_panel.push_log(
                             LogLevel::Info,
                             "UserManager",
                             format!(
-                                "Saving {role_count} database role(s) for user '{username}'..."
+                                "Saving {role_count} database role(s) for user '{username}' ({effective_user_db})..."
                             ),
                         );
                         self.spawn_update_user_roles_task(ctx, task);
@@ -2368,6 +2379,7 @@ impl MongoStudioApp {
                 AppEvent::OpenChangePasswordModal {
                     connection_name,
                     username,
+                    user_db,
                 } => {
                     if username.trim().eq_ignore_ascii_case("admin") {
                         self.state.bottom_panel.push_log(
@@ -2379,6 +2391,11 @@ impl MongoStudioApp {
                     }
                     self.state.change_pwd_conn_name = connection_name;
                     self.state.change_pwd_username = username;
+                    self.state.change_password_user_db = if user_db.trim().is_empty() {
+                        "admin".to_string()
+                    } else {
+                        user_db
+                    };
                     self.state.change_pwd_new.clear();
                     self.state.change_pwd_confirm.clear();
                     self.state.change_pwd_show = false;
@@ -2387,6 +2404,7 @@ impl MongoStudioApp {
                 AppEvent::ChangeUserPassword {
                     connection_name,
                     username,
+                    user_db,
                     new_password,
                 } => {
                     if username.trim().eq_ignore_ascii_case("admin") {
@@ -2397,26 +2415,29 @@ impl MongoStudioApp {
                         );
                         continue;
                     }
+                    let effective_user_db = if user_db.trim().is_empty() {
+                        "admin".to_string()
+                    } else {
+                        user_db
+                    };
                     let change_ctx = self
                         .state
                         .connections
                         .iter()
                         .find(|c| c.name == connection_name)
                         .map(|conn| {
-                            let user_db = conn
-                                .users
-                                .iter()
-                                .find(|u| u.username == username)
-                                .map_or_else(|| "admin".to_string(), |u| u.db.clone());
-                            (self.connection_target_from_config(conn), user_db)
+                            (
+                                self.connection_target_from_config(conn),
+                                effective_user_db.clone(),
+                            )
                         });
-                    if let Some((target, user_db)) = change_ctx {
+                    if let Some((target, u_db)) = change_ctx {
                         let uname = username.clone();
 
                         self.state.bottom_panel.push_log(
                             LogLevel::Info,
                             "UserManager",
-                            format!("Updating password for user '{username}'..."),
+                            format!("Updating password for user '{username}' ({u_db})..."),
                         );
 
                         let ssh_registry = self.ssh_registry.clone();
@@ -2426,7 +2447,7 @@ impl MongoStudioApp {
                             let result = match resolve_target_uri(&ssh_registry, &target).await {
                                 Ok(effective_uri) => UserService::change_user_password(
                                     &effective_uri,
-                                    &user_db,
+                                    &u_db,
                                     &uname,
                                     &new_password,
                                     DEFAULT_CONNECT_TIMEOUT,
@@ -2473,6 +2494,7 @@ impl MongoStudioApp {
                 AppEvent::RequestDeleteUser {
                     connection_index,
                     username,
+                    user_db,
                 } => {
                     if username.trim().eq_ignore_ascii_case("admin") {
                         self.state.bottom_panel.push_log(
@@ -2482,11 +2504,17 @@ impl MongoStudioApp {
                         );
                     } else {
                         self.state.pending_delete_user = Some((connection_index, username));
+                        self.state.delete_user_target_db = if user_db.trim().is_empty() {
+                            "admin".to_string()
+                        } else {
+                            user_db
+                        };
                     }
                 }
                 AppEvent::ConfirmDeleteUser {
                     connection_index,
                     username,
+                    user_db,
                 } => {
                     if username.trim().eq_ignore_ascii_case("admin") {
                         self.state.bottom_panel.push_log(
@@ -2496,21 +2524,24 @@ impl MongoStudioApp {
                         );
                         continue;
                     }
+                    let effective_user_db = if user_db.trim().is_empty() {
+                        "admin".to_string()
+                    } else {
+                        user_db
+                    };
                     let delete_ctx = self.state.connections.get(connection_index).map(|conn| {
-                        let user_db = conn
-                            .users
-                            .iter()
-                            .find(|u| u.username == username)
-                            .map_or_else(|| "admin".to_string(), |u| u.db.clone());
-                        (self.connection_target_from_config(conn), user_db)
+                        (
+                            self.connection_target_from_config(conn),
+                            effective_user_db.clone(),
+                        )
                     });
-                    if let Some((target, user_db)) = delete_ctx {
+                    if let Some((target, u_db)) = delete_ctx {
                         let uname = username.clone();
 
                         self.state.bottom_panel.push_log(
                             LogLevel::Info,
                             "UserManager",
-                            format!("Deleting MongoDB user '{username}'..."),
+                            format!("Deleting MongoDB user '{username}' ({u_db})..."),
                         );
 
                         let ssh_registry = self.ssh_registry.clone();
@@ -2520,7 +2551,7 @@ impl MongoStudioApp {
                             let res = match resolve_target_uri(&ssh_registry, &target).await {
                                 Ok(effective_uri) => UserService::drop_user_and_list(
                                     &effective_uri,
-                                    &user_db,
+                                    &u_db,
                                     &uname,
                                     DEFAULT_CONNECT_TIMEOUT,
                                 )
@@ -2530,10 +2561,14 @@ impl MongoStudioApp {
                             };
 
                             let (message, result) = match res {
-                                Ok(users) => (format!("Deleted MongoDB user '{uname}'"), Ok(users)),
-                                Err(err) => {
-                                    (format!("Failed to delete MongoDB user '{uname}'"), Err(err))
-                                }
+                                Ok(users) => (
+                                    format!("Deleted MongoDB user '{uname}' ({u_db})"),
+                                    Ok(users),
+                                ),
+                                Err(err) => (
+                                    format!("Failed to delete MongoDB user '{uname}' ({u_db})"),
+                                    Err(err),
+                                ),
                             };
                             // INTENTIONAL: receiver is dropped only on application shutdown.
                             let _ = tx.send(AppEvent::UserOperationResult {
@@ -2560,7 +2595,7 @@ impl MongoStudioApp {
                             conn.users = users;
                             conn.users_expanded = true;
                         }
-                        if self.pending_open_user.as_ref().is_some_and(|(c, u)| {
+                        if self.pending_open_user.as_ref().is_some_and(|(c, u, db)| {
                             *c == connection_name
                                 && self
                                     .state
@@ -2568,11 +2603,13 @@ impl MongoStudioApp {
                                     .iter()
                                     .find(|conn| conn.name == connection_name)
                                     .is_some_and(|conn| {
-                                        conn.users.iter().any(|usr| usr.username == *u)
+                                        conn.users
+                                            .iter()
+                                            .any(|usr| usr.username == *u && usr.db == *db)
                                     })
                         }) {
-                            if let Some((c, u)) = self.pending_open_user.take() {
-                                self.state.open_or_focus_user(&c, &u);
+                            if let Some((c, u, db)) = self.pending_open_user.take() {
+                                self.state.open_or_focus_user(&c, &u, &db);
                             }
                         }
                         self.state
@@ -2583,7 +2620,7 @@ impl MongoStudioApp {
                         if self
                             .pending_open_user
                             .as_ref()
-                            .is_some_and(|(c, _)| *c == connection_name)
+                            .is_some_and(|(c, _, _)| *c == connection_name)
                         {
                             self.pending_open_user = None;
                         }

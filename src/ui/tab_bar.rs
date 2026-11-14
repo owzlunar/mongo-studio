@@ -237,16 +237,25 @@ impl<'a> CollectionTabViewer<'a> {
         &self,
         connection_name: &str,
         username: &str,
+        user_db: &str,
     ) -> Option<(usize, &'a ConnectionConfig, &'a MongoUser)> {
         for (idx, conn) in self.connections.iter().enumerate() {
             if conn.name == connection_name {
-                if let Some(u) = conn.users.iter().find(|u| u.username == username) {
+                if let Some(u) = conn
+                    .users
+                    .iter()
+                    .find(|u| u.username == username && (user_db.is_empty() || u.db == user_db))
+                {
                     return Some((idx, conn, u));
                 }
             }
         }
         for (idx, conn) in self.connections.iter().enumerate() {
-            if let Some(u) = conn.users.iter().find(|u| u.username == username) {
+            if let Some(u) = conn
+                .users
+                .iter()
+                .find(|u| u.username == username && (user_db.is_empty() || u.db == user_db))
+            {
                 return Some((idx, conn, u));
             }
         }
@@ -267,10 +276,11 @@ impl<'a> CollectionTabViewer<'a> {
     }
 
     fn render_user_inspector(&mut self, ui: &mut Ui, tab: &mut CollectionTab) {
+        let user_db = tab.selected_user_db.as_deref().unwrap_or(&tab.database);
         let Some((conn_idx, conn, user)) = tab
             .selected_user
             .as_deref()
-            .and_then(|username| self.find_user_and_conn(&tab.connection_name, username))
+            .and_then(|username| self.find_user_and_conn(&tab.connection_name, username, user_db))
         else {
             let username = tab.selected_user.as_deref().unwrap_or("");
             ui.centered_and_justified(|ui| {
@@ -348,7 +358,7 @@ impl<'a> CollectionTabViewer<'a> {
                 .color(self.palette.text_primary),
             );
             ui.label(
-                RichText::new(username)
+                RichText::new(format!("{username} ({})", user.db))
                     .monospace()
                     .strong()
                     .color(self.palette.text_primary),
@@ -393,6 +403,7 @@ impl<'a> CollectionTabViewer<'a> {
                 self.events.push(AppEvent::OpenDuplicateUserModal {
                     connection_index: conn_idx,
                     source_username: username.to_string(),
+                    source_user_db: user.db.clone(),
                 });
             }
 
@@ -407,6 +418,7 @@ impl<'a> CollectionTabViewer<'a> {
                 self.events.push(AppEvent::OpenChangePasswordModal {
                     connection_name: conn_name.to_string(),
                     username: username.to_string(),
+                    user_db: user.db.clone(),
                 });
             }
 
@@ -421,6 +433,7 @@ impl<'a> CollectionTabViewer<'a> {
                 self.events.push(AppEvent::RequestDeleteUser {
                     connection_index: conn_idx,
                     username: username.to_string(),
+                    user_db: user.db.clone(),
                 });
             }
         });
@@ -510,6 +523,7 @@ impl<'a> CollectionTabViewer<'a> {
                                         self.events.push(AppEvent::SaveUserRoles {
                                             connection_name: conn_name.to_string(),
                                             username: username.to_string(),
+                                            user_db: user.db.clone(),
                                             roles: draft.clone(),
                                         });
                                     }

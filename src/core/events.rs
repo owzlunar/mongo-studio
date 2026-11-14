@@ -94,6 +94,7 @@ pub enum AppEvent {
     OpenUserTab {
         connection_name: String,
         username: String,
+        user_db: String,
     },
     OpenCreateDatabaseModal {
         connection_index: usize,
@@ -234,6 +235,7 @@ pub enum AppEvent {
     OpenDuplicateUserModal {
         connection_index: usize,
         source_username: String,
+        source_user_db: String,
     },
     CreateUser {
         connection_index: usize,
@@ -256,15 +258,18 @@ pub enum AppEvent {
     SaveUserRoles {
         connection_name: String,
         username: String,
+        user_db: String,
         roles: Vec<UserRole>,
     },
     OpenChangePasswordModal {
         connection_name: String,
         username: String,
+        user_db: String,
     },
     ChangeUserPassword {
         connection_name: String,
         username: String,
+        user_db: String,
         new_password: String,
     },
     UserPasswordChanged {
@@ -275,10 +280,12 @@ pub enum AppEvent {
     RequestDeleteUser {
         connection_index: usize,
         username: String,
+        user_db: String,
     },
     ConfirmDeleteUser {
         connection_index: usize,
         username: String,
+        user_db: String,
     },
     UserOperationResult {
         connection_name: String,

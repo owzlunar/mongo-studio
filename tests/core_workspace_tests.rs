@@ -178,16 +178,17 @@ fn app_state_open_or_focus_collection_deduplicates_existing_tabs_and_roundtrips_
 fn collection_tab_user_inspector_and_app_state_user_management() {
     // Arrange
     let mut state = AppState::default();
-    let user_tab_a = CollectionTab::new_user("MongoDB Local", "app_service");
-    let mut user_tab_b = CollectionTab::new_user("MongoDB Local", "app_service");
+    let user_tab_a = CollectionTab::new_user("MongoDB Local", "app_service", "admin");
+    let mut user_tab_b = CollectionTab::new_user("MongoDB Local", "app_service", "admin");
     user_tab_b.role_db_input = "shop_db".to_string();
     user_tab_b.role_name_input = "dbAdmin".to_string();
-    let admin_user_tab = CollectionTab::new_user("MongoDB Local", "admin");
+    let admin_user_tab = CollectionTab::new_user("MongoDB Local", "admin", "admin");
     let regular_coll_tab = CollectionTab::new("MongoDB Local", "admin", "user:app_service");
 
     // Assert: CollectionTab::new_user properties & equality semantics
     assert_eq!(user_tab_a.selected_user.as_deref(), Some("app_service"));
-    assert_eq!(user_tab_a.title(), "app_service");
+    assert_eq!(user_tab_a.selected_user_db.as_deref(), Some("admin"));
+    assert_eq!(user_tab_a.title(), "app_service (admin)");
     assert_eq!(
         user_tab_a.full_namespace(),
         "admin.system.users.app_service"
@@ -198,9 +199,9 @@ fn collection_tab_user_inspector_and_app_state_user_management() {
 
     // Act: open_or_focus_user deduplicates existing user inspector tabs
     let before_tabs = state.to_persistence().open_tabs.len();
-    state.open_or_focus_user("MongoDB Local", "app_service");
+    state.open_or_focus_user("MongoDB Local", "app_service", "admin");
     let after_first_open = state.to_persistence().open_tabs.len();
-    state.open_or_focus_user("MongoDB Local", "app_service");
+    state.open_or_focus_user("MongoDB Local", "app_service", "admin");
     let after_second_open = state.to_persistence().open_tabs.len();
 
     // Assert
@@ -213,16 +214,18 @@ fn collection_tab_user_inspector_and_app_state_user_management() {
     assert_eq!(local_conn.users.len(), 2);
 
     let admin_user = state
-        .find_user("MongoDB Local", "admin")
+        .find_user("MongoDB Local", "admin", "admin")
         .expect("admin user should exist");
     assert!(admin_user.is_protected_admin());
     assert_eq!(admin_user.db, "admin");
 
     let service_user = state
-        .find_user("MongoDB Local", "app_service")
+        .find_user("MongoDB Local", "app_service", "admin")
         .expect("app_service user should exist");
     assert!(!service_user.is_protected_admin());
-    assert!(state.find_user("MongoDB Local", "non_existent").is_none());
+    assert!(state
+        .find_user("MongoDB Local", "non_existent", "admin")
+        .is_none());
 
     // Assert: MongoUser::mock_users and UserRole descriptions
     let mocks = MongoUser::mock_users();
@@ -239,7 +242,7 @@ fn collection_tab_user_inspector_and_app_state_user_management() {
 #[test]
 fn collection_tab_new_user_initializes_phase3_draft_and_cache_fields() {
     // Arrange / Act
-    let tab = CollectionTab::new_user("LAN Mongo", "analyst");
+    let tab = CollectionTab::new_user("LAN Mongo", "analyst", "admin");
 
     // Assert
     assert_eq!(tab.draft_roles, None);
@@ -262,6 +265,7 @@ fn app_event_phase3_polish_variants_construct_and_compare_correctly() {
     let duplicate_modal = AppEvent::OpenDuplicateUserModal {
         connection_index: 1,
         source_username: "app_service".to_string(),
+        source_user_db: "admin".to_string(),
     };
     let create_user = AppEvent::CreateUser {
         connection_index: 1,
@@ -272,11 +276,13 @@ fn app_event_phase3_polish_variants_construct_and_compare_correctly() {
     let save_roles = AppEvent::SaveUserRoles {
         connection_name: "LAN Mongo".to_string(),
         username: "app_service".to_string(),
+        user_db: "admin".to_string(),
         roles: multi_roles.clone(),
     };
     let open_pwd_modal = AppEvent::OpenChangePasswordModal {
         connection_name: "LAN Mongo".to_string(),
         username: "app_service".to_string(),
+        user_db: "admin".to_string(),
     };
     let pwd_ok = AppEvent::UserPasswordChanged {
         connection_name: "LAN Mongo".to_string(),
@@ -347,7 +353,8 @@ fn app_event_phase3_polish_variants_construct_and_compare_correctly() {
         AppEvent::OpenChangePasswordModal {
             ref connection_name,
             ref username,
-        } if connection_name == "LAN Mongo" && username == "app_service"
+            ref user_db,
+        } if connection_name == "LAN Mongo" && username == "app_service" && user_db == "admin"
     ));
     assert!(matches!(
         bg_err,
@@ -1223,4 +1230,61 @@ fn app_state_empty_clean_state_and_has_open_tabs() {
     let persisted = state_with_tab.to_persistence();
     assert_eq!(persisted.open_tabs.len(), 1);
     assert_eq!(persisted.open_tabs[0].collection, "orders");
+}
+
+#[test]
+fn test_distinct_users_same_username_different_auth_db() {
+    // Arrange: Verify tabs for users sharing the same username on different auth databases
+    let tab_account = CollectionTab::new_user("ncert-dev", "ncert", "ncert-account");
+    let tab_ims = CollectionTab::new_user("ncert-dev", "ncert", "ncert-ims");
+
+    assert_eq!(tab_account.title(), "ncert (ncert-account)");
+    assert_eq!(tab_ims.title(), "ncert (ncert-ims)");
+    assert_eq!(
+        tab_account.full_namespace(),
+        "ncert-account.system.users.ncert"
+    );
+    assert_eq!(tab_ims.full_namespace(), "ncert-ims.system.users.ncert");
+    assert_ne!(tab_account, tab_ims);
+
+    // Arrange: State with 2 users sharing username "ncert" across different databases
+    let mut state = AppState::new_empty();
+    let mut conn = ConnectionConfig::from_uri("ncert-dev", "mongodb://localhost:27017")
+        .expect("valid connection config");
+    let user_account = MongoUser {
+        id: "ncert-account.ncert".to_string(),
+        username: "ncert".to_string(),
+        db: "ncert-account".to_string(),
+        roles: vec![UserRole::new("readWrite", "ncert-account")],
+    };
+    let user_ims = MongoUser {
+        id: "ncert-ims.ncert".to_string(),
+        username: "ncert".to_string(),
+        db: "ncert-ims".to_string(),
+        roles: vec![UserRole::new("readWrite", "ncert-ims")],
+    };
+    conn.users = vec![user_account, user_ims];
+    state.connections.push(conn);
+
+    // Act: Open both users in state
+    state.open_or_focus_user("ncert-dev", "ncert", "ncert-account");
+    assert_eq!(state.to_persistence().open_tabs.len(), 1);
+
+    state.open_or_focus_user("ncert-dev", "ncert", "ncert-ims");
+    assert_eq!(state.to_persistence().open_tabs.len(), 2);
+
+    // Re-focusing existing user does not duplicate tab
+    state.open_or_focus_user("ncert-dev", "ncert", "ncert-account");
+    assert_eq!(state.to_persistence().open_tabs.len(), 2);
+
+    // Act: Lookup users by (username, user_db)
+    let found_account = state
+        .find_user("ncert-dev", "ncert", "ncert-account")
+        .expect("account user found");
+    assert_eq!(found_account.db, "ncert-account");
+
+    let found_ims = state
+        .find_user("ncert-dev", "ncert", "ncert-ims")
+        .expect("ims user found");
+    assert_eq!(found_ims.db, "ncert-ims");
 }

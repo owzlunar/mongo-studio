@@ -73,6 +73,7 @@ pub struct AppState {
     pub show_create_user_modal: bool,
     pub create_user_conn_idx: usize,
     pub duplicate_source_user: Option<String>,
+    pub duplicate_source_user_db: Option<String>,
     pub duplicate_source_roles: Vec<UserRole>,
     pub new_user_username: String,
     pub new_user_password: String,
@@ -83,10 +84,12 @@ pub struct AppState {
     pub show_change_password_modal: bool,
     pub change_pwd_conn_name: String,
     pub change_pwd_username: String,
+    pub change_password_user_db: String,
     pub change_pwd_new: String,
     pub change_pwd_confirm: String,
     pub change_pwd_show: bool,
     pub pending_delete_user: Option<(usize, String)>,
+    pub delete_user_target_db: String,
     pub saved_queries: Vec<SavedQuery>,
     pub show_create_index_modal: bool,
     pub create_index_conn_name: String,
@@ -197,6 +200,7 @@ impl AppState {
             show_create_user_modal: false,
             create_user_conn_idx: 0,
             duplicate_source_user: None,
+            duplicate_source_user_db: None,
             duplicate_source_roles: Vec::new(),
             new_user_username: String::new(),
             new_user_password: String::new(),
@@ -207,10 +211,12 @@ impl AppState {
             show_change_password_modal: false,
             change_pwd_conn_name: String::new(),
             change_pwd_username: String::new(),
+            change_password_user_db: "admin".to_string(),
             change_pwd_new: String::new(),
             change_pwd_confirm: String::new(),
             change_pwd_show: false,
             pending_delete_user: None,
+            delete_user_target_db: "admin".to_string(),
             saved_queries: query_store.saved_queries,
             show_create_index_modal: false,
             create_index_conn_name: String::new(),
@@ -433,12 +439,17 @@ impl AppState {
     }
 
     #[must_use]
-    pub fn find_user(&self, connection_name: &str, username: &str) -> Option<&MongoUser> {
+    pub fn find_user(
+        &self,
+        connection_name: &str,
+        username: &str,
+        user_db: &str,
+    ) -> Option<&MongoUser> {
         self.connections
             .iter()
             .filter(|conn| conn.name == connection_name)
             .flat_map(|conn| &conn.users)
-            .find(|u| u.username == username)
+            .find(|u| u.username == username && (user_db.is_empty() || u.db == user_db))
     }
 
     pub fn open_or_focus_collection(
@@ -455,8 +466,8 @@ impl AppState {
         }
     }
 
-    pub fn open_or_focus_user(&mut self, connection_name: &str, username: &str) {
-        let target = CollectionTab::new_user(connection_name, username);
+    pub fn open_or_focus_user(&mut self, connection_name: &str, username: &str, user_db: &str) {
+        let target = CollectionTab::new_user(connection_name, username, user_db);
         if let Some(location) = self.dock_state.find_tab(&target) {
             self.dock_state.set_active_tab(location);
         } else {
