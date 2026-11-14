@@ -7,7 +7,7 @@ use egui_phosphor::regular;
 use crate::core::events::AppEvent;
 use crate::core::state::AppState;
 use crate::database::ConnectionManager;
-use crate::models::QueryStore;
+use crate::models::{QueryStore, QuickAccessFilter, WorkspaceTree};
 use crate::query::AggregationStage;
 use crate::theme::{ThemeMode, ThemePalette};
 use crate::ui::activity_bar::ActivityView;
@@ -562,6 +562,256 @@ fn render_settings_sidebar(
         });
 }
 
+fn render_connection_sidebar(
+    ui: &mut egui::Ui,
+    state: &mut AppState,
+    palette: &ThemePalette,
+    events: &mut Vec<AppEvent>,
+) {
+    // 1. Sidebar Top Header
+    ui.horizontal(|ui| {
+        ui.label(
+            RichText::new(format!("{} MongoDB Client", regular::DATABASE))
+                .size(12.5)
+                .strong()
+                .color(palette.text_primary),
+        );
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            let refresh_btn =
+                egui::Button::new(RichText::new(regular::ARROWS_CLOCKWISE).size(13.0))
+                    .min_size(Vec2::new(20.0, 20.0));
+            if ui
+                .add(refresh_btn)
+                .on_hover_cursor(CursorIcon::PointingHand)
+                .on_hover_text("Refresh Explorer")
+                .clicked()
+            {
+                events.push(AppEvent::RefreshConnections);
+            }
+        });
+    });
+
+    ui.add_space(6.0);
+
+    // 2. Full-Width Search Bar with ⌘ K Shortcut
+    let search_id = ui.make_persistent_id("sidebar_search_input");
+    let k_pressed =
+        ui.input(|i| (i.modifiers.command || i.modifiers.ctrl) && i.key_pressed(egui::Key::K));
+
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 4.0;
+        let response = ui.add(
+            TextEdit::singleline(&mut state.sidebar_search)
+                .id(search_id)
+                .hint_text("Search connections...")
+                .margin(Margin::symmetric(6.0, 4.0))
+                .min_size(Vec2::new(120.0, 24.0))
+                .desired_width(ui.available_width() - 32.0),
+        );
+        if k_pressed {
+            response.request_focus();
+        }
+        ui.label(
+            RichText::new("⌘ K")
+                .monospace()
+                .size(10.0)
+                .color(palette.muted_text),
+        );
+    });
+
+    ui.add_space(6.0);
+
+    // 3. Quick Access: Favorites & Recent
+    let fav_active = state.quick_access_filter == QuickAccessFilter::Favorites;
+    let recent_active = state.quick_access_filter == QuickAccessFilter::Recent;
+    let fav_count = state.favorite_count();
+    let recent_count = state.recent_count();
+
+    ui.horizontal(|ui| {
+        let fav_label = RichText::new(format!("{} Favorites", regular::STAR))
+            .size(12.0)
+            .color(if fav_active {
+                palette.accent_color
+            } else {
+                palette.text_primary
+            });
+        let fav_btn = ui
+            .selectable_label(fav_active, fav_label)
+            .on_hover_cursor(CursorIcon::PointingHand)
+            .on_hover_text(if fav_active {
+                "Showing Favorites only (click to clear)"
+            } else {
+                "Filter connections by Favorites"
+            });
+        if fav_btn.clicked() {
+            events.push(AppEvent::ToggleQuickAccessFilter {
+                filter: QuickAccessFilter::Favorites,
+            });
+        }
+
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            if fav_count > 0 {
+                ui.label(
+                    RichText::new(fav_count.to_string())
+                        .monospace()
+                        .size(11.0)
+                        .color(palette.muted_text),
+                );
+            }
+        });
+    });
+
+    ui.horizontal(|ui| {
+        let recent_label = RichText::new(format!("{} Recent", regular::CLOCK))
+            .size(12.0)
+            .color(if recent_active {
+                palette.accent_color
+            } else {
+                palette.text_primary
+            });
+        let recent_btn = ui
+            .selectable_label(recent_active, recent_label)
+            .on_hover_cursor(CursorIcon::PointingHand)
+            .on_hover_text(if recent_active {
+                "Showing Recent connections only (click to clear)"
+            } else {
+                "Filter to recent connections"
+            });
+        if recent_btn.clicked() {
+            events.push(AppEvent::ToggleQuickAccessFilter {
+                filter: QuickAccessFilter::Recent,
+            });
+        }
+
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            if recent_count > 0 {
+                ui.label(
+                    RichText::new(recent_count.to_string())
+                        .monospace()
+                        .size(11.0)
+                        .color(palette.muted_text),
+                );
+            }
+        });
+    });
+
+    ui.add_space(4.0);
+    ui.separator();
+    ui.add_space(4.0);
+
+    // 4. WORKSPACES Header with Dropdown & Smart '+' Button
+    ui.horizontal(|ui| {
+        let current_ws_label = match &state.active_workspace_filter {
+            Some(ws) => format!("WORKSPACE: {ws}"),
+            None => "WORKSPACES".to_string(),
+        };
+
+        ComboBox::from_id_source("sidebar_workspace_filter_dropdown")
+            .selected_text(
+                RichText::new(current_ws_label)
+                    .size(11.0)
+                    .strong()
+                    .color(palette.muted_text),
+            )
+            .show_ui(ui, |ui| {
+                let is_all = state.active_workspace_filter.is_none();
+                if ui.selectable_label(is_all, "🌐 All Workspaces").clicked() {
+                    events.push(AppEvent::FilterWorkspaceView {
+                        workspace_name: None,
+                    });
+                }
+                let all_workspaces = WorkspaceTree::extract_all_workspaces(&state.connections);
+                for ws_name in all_workspaces {
+                    let is_sel = state.active_workspace_filter.as_deref() == Some(&ws_name);
+                    if ui
+                        .selectable_label(is_sel, format!("🏢 {ws_name}"))
+                        .clicked()
+                    {
+                        events.push(AppEvent::FilterWorkspaceView {
+                            workspace_name: Some(ws_name),
+                        });
+                    }
+                }
+                ui.separator();
+                if ui
+                    .selectable_label(false, "⚙ Manage Workspaces...")
+                    .clicked()
+                {
+                    events.push(AppEvent::OpenManageWorkspacesModal);
+                }
+            });
+
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            ui.menu_button(
+                RichText::new(regular::PLUS)
+                    .size(13.0)
+                    .strong()
+                    .color(palette.text_primary),
+                |ui| {
+                    if ui
+                        .button(format!("{} New Connection...", regular::PLUS))
+                        .clicked()
+                    {
+                        events.push(AppEvent::OpenNewConnectionModal);
+                        ui.close_menu();
+                    }
+                    if ui
+                        .button(format!("{} New Project / Folder...", regular::FOLDER_PLUS))
+                        .clicked()
+                    {
+                        events.push(AppEvent::OpenManageWorkspacesModal);
+                        ui.close_menu();
+                    }
+                    ui.separator();
+                    if ui
+                        .button(format!("{} New Workspace...", regular::BUILDINGS))
+                        .clicked()
+                    {
+                        events.push(AppEvent::OpenManageWorkspacesModal);
+                        ui.close_menu();
+                    }
+                },
+            )
+            .response
+            .on_hover_text("Add Connection, Folder, or Workspace");
+        });
+    });
+
+    ui.add_space(4.0);
+
+    // 5. Scrollable Tree Area & Pinned Bottom Footer
+    ui.with_layout(egui::Layout::bottom_up(egui::Align::LEFT), |ui| {
+        // Bottom Footer: Manage Workspaces
+        ui.add_space(2.0);
+        ui.horizontal(|ui| {
+            ui.add_space(2.0);
+            let footer_btn = ui
+                .selectable_label(
+                    false,
+                    RichText::new(format!("{} Manage Workspaces", regular::GEAR))
+                        .size(12.0)
+                        .color(palette.muted_text),
+                )
+                .on_hover_cursor(CursorIcon::PointingHand)
+                .on_hover_text("Organize connections into workspaces and folders");
+            if footer_btn.clicked() {
+                events.push(AppEvent::OpenManageWorkspacesModal);
+            }
+        });
+        ui.separator();
+        ui.add_space(2.0);
+
+        // Center / Main Scrollable Connection Tree Area
+        ui.with_layout(egui::Layout::top_down(egui::Align::LEFT), |ui| {
+            ScrollArea::vertical()
+                .auto_shrink([false, false])
+                .show(ui, |ui| {
+                    render_connection_tree(ui, state, palette, events);
+                });
+        });
+    });
+}
+
 pub fn render_sidebar(
     ctx: &Context,
     state: &mut AppState,
@@ -584,64 +834,7 @@ pub fn render_sidebar(
         .frame(frame)
         .show(ctx, |ui| match state.active_activity {
             ActivityView::Connections => {
-                ui.horizontal(|ui| {
-                    ui.label(
-                        RichText::new("CONNECTIONS")
-                            .size(11.5)
-                            .strong()
-                            .color(palette.muted_text),
-                    );
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        let refresh_btn =
-                            egui::Button::new(RichText::new(regular::ARROWS_CLOCKWISE).size(13.0))
-                                .min_size(Vec2::new(22.0, 22.0));
-                        if ui
-                            .add(refresh_btn)
-                            .on_hover_cursor(CursorIcon::PointingHand)
-                            .on_hover_text("Refresh Explorer")
-                            .clicked()
-                        {
-                            events.push(AppEvent::RefreshConnections);
-                        }
-
-                        if primary_button(
-                            ui,
-                            &format!("{} Add Connection", regular::PLUS),
-                            palette.accent_color,
-                        )
-                        .on_hover_text("Add MongoDB Connection")
-                        .clicked()
-                        {
-                            events.push(AppEvent::OpenNewConnectionModal);
-                        }
-                    });
-                });
-
-                ui.add_space(6.0);
-
-                ui.add(
-                    TextEdit::singleline(&mut state.sidebar_search)
-                        .hint_text("Filter databases / collections...")
-                        .margin(Margin::symmetric(6.0, 4.0))
-                        .min_size(Vec2::new(120.0, 24.0))
-                        .desired_width(f32::INFINITY),
-                );
-
-                ui.add_space(8.0);
-                ui.separator();
-                ui.add_space(4.0);
-
-                ScrollArea::vertical()
-                    .auto_shrink([false, false])
-                    .show(ui, |ui| {
-                        render_connection_tree(
-                            ui,
-                            &mut state.connections,
-                            &state.sidebar_search,
-                            palette,
-                            events,
-                        );
-                    });
+                render_connection_sidebar(ui, state, palette, events);
             }
             ActivityView::SavedQueries => {
                 render_saved_queries_sidebar(ui, state, palette, events);

@@ -665,7 +665,10 @@ mod tests {
         assert_eq!(fav_tree.total_connections(), 1);
         assert_eq!(fav_tree.workspaces.len(), 1);
         assert_eq!(fav_tree.workspaces[0].name, "Finance");
-        assert_eq!(fav_tree.workspaces[0].folders[0].connection_ids, vec![c1.id]);
+        assert_eq!(
+            fav_tree.workspaces[0].folders[0].connection_ids,
+            vec![c1.id]
+        );
 
         // 2. Filter recent
         let recent_ids = vec![c2.id, c3.id];
@@ -680,6 +683,9 @@ mod tests {
         assert_eq!(recent_tree.workspaces.len(), 2);
         assert_eq!(recent_tree.workspaces[0].name, "Data");
         assert_eq!(recent_tree.workspaces[1].name, "Finance");
-        assert_eq!(recent_tree.workspaces[1].standalone_connections, vec![c2.id]);
+        assert_eq!(
+            recent_tree.workspaces[1].standalone_connections,
+            vec![c2.id]
+        );
     }
 }

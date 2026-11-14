@@ -38,6 +38,14 @@ pub struct ThemePalette {
     pub muted_text: Color32,
 }
 
+impl ThemePalette {
+    /// Returns `true` if this is a dark theme palette.
+    #[must_use]
+    pub fn is_dark(&self) -> bool {
+        self.editor_bg.r() < 128
+    }
+}
+
 pub(crate) fn configure_common_style(ctx: &Context) {
     ctx.style_mut(|style| {
         // Ensure uniform height (24px) and alignment across buttons, singleline inputs, and combo boxes
