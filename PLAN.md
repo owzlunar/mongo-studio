@@ -16,7 +16,7 @@
 | **Feature+** | SSH Tunnel Connection (`ip:port`, `user/pass`, `id_ecdsa`) | ✅ เสร็จสิ้น | รองรับ `ssh ip:port` (`user/pass`, `id_ecdsa` + Keychain, 88/88 tests ผ่าน) |
 | **Feature+** | Clean State on Release Build (Exclude Mock DB) | ✅ เสร็จสิ้น | เอา mock DB และ mock tabs ออกจาก Release build เริ่มต้นแบบ clean state, 90/90 tests ผ่าน |
 | **Feature+** | User Auth DB Identity & Multi-DB Disambiguation | ✅ เสร็จสิ้น | แยก user ตาม `(username, auth_db)` แก้ปัญหา collision 9 ตัว, 98/98 tests ผ่าน |
-| **Feature+** | Workspace & Project Organization (Left Panel) | 🔄 กำลังดำเนินการ | ปรับ UI ซ้ายมือเป็น Customer 🏢 -> Folder 📁 -> Connection (Tag) ตามภาพอ้างอิง |
+| **Feature+** | Workspace & Project Organization (Left Panel) | ✅ เสร็จสิ้น | Customer 🏢 -> Folder 📁 -> Connection (Tag) ตามภาพอ้างอิง, 115/115 tests ผ่าน |
 
 ---
 
@@ -182,29 +182,29 @@
   - Helper methods: `toggle_favorite`, `push_recent_connection`, `set_connection_workspace_folder`, `delete_workspace`, `delete_project_folder`, `favorite_count`, `recent_count`
 - [x] เชื่อมต่อ App Event loop ใน `src/app.rs` พร้อมบันทึก `connections.json` อัตโนมัติเมื่อมีการเปลี่ยนแปลง
 
-### Step 3: UI Left Panel & 3-Tier Tree View (`ui-dev`) 🔄
-- [ ] ปรับปรุง `src/ui/sidebar.rs`:
+### Step 3: UI Left Panel & 3-Tier Tree View (`ui-dev`) ✅
+- [x] ปรับปรุง `src/ui/sidebar.rs`:
   - ช่อง Search Full Width พร้อม Hint `⌘ K` (กรองทั้งชื่อและ env)
   - แถบ Quick Access: `⭐ Favorites` (พร้อม Badge จำนวน) และ `🕒 Recent`
   - หัวข้อ `WORKSPACES` พร้อม Dropdown สลับดู All Workspaces หรือเฉพาะ Workspace
   - ปุ่ม `+` รวม (Smart Add Popover) เลือกว่าจะเพิ่ม Connection, Folder หรือ Workspace
   - Empty State: แสดง Icon Folder + "No workspaces yet" + ปุ่ม "Manage Workspaces" เมื่อยังไม่มีการจัดกลุ่ม
-- [ ] ปรับปรุง `src/ui/components/tree_view.rs`:
+- [x] ปรับปรุง `src/ui/components/tree_view.rs`:
   - โครงสร้าง Tree 3 ระดับ: `Customer 🏢` $\rightarrow$ `Project 📁` $\rightarrow$ `Connection`
   - แสดง Environment Tag กะทัดรัด (`DEV`, `TEST`, `PROD`) นำหน้าชื่อ Connection
   - รองรับการคลิกเลือก Connection (Highlight แถวแบบโค้งมน) และขยายดู Databases / Collections ได้เหมือนเดิม
   - ปุ่ม `+` ปรากฏขึ้นบนแถวเมื่อ Hover เพื่อเพิ่ม Folder หรือ Connection ภายใต้ Node นั้นได้โดยตรง
 
-### Step 4: Manage Workspaces Modal & Import/Export (`ui-dev`)
-- [ ] ปุ่ม `⚙️ Manage Workspaces` ที่ Footer ด้านล่างสุดของ Left Panel
-- [ ] Modal จัดการ Workspaces: สร้าง/เปลี่ยนชื่อ/ลบ Workspace และย้าย Connection
-- [ ] รองรับการ Export / Import โครงสร้าง Workspace เป็น JSON
+### Step 4: Manage Workspaces Modal & Import/Export (`ui-dev`) ✅
+- [x] ปุ่ม `⚙️ Manage Workspaces` ที่ Footer ด้านล่างสุดของ Left Panel
+- [x] Modal จัดการ Workspaces: สร้าง/เปลี่ยนชื่อ/ลบ Workspace และย้าย Connection
+- [x] รองรับการ Export / Import โครงสร้าง Workspace เป็น JSON
 
-### Step 5: QA Testing & Polish (`qa-tester`)
-- [ ] เขียน Unit Tests ใน `tests/core_workspace_tests.rs`:
+### Step 5: QA Testing & Polish (`qa-tester`) ✅
+- [x] เขียน Unit Tests ใน `tests/core_workspace_tests.rs`:
   - ทดสอบ Serde Backward Compatibility ของ `ConnectionConfig`
   - ทดสอบการตรวจจับ `EnvironmentTag::detect_from_name`
   - ทดสอบการจัดกลุ่มโครงสร้าง Tree และการค้นหากรอง
-- [ ] ตรวจสอบ Contrast และขนาด Component ทั้ง Light Mode & Dark Mode
-- [ ] รัน `cargo test`, `cargo clippy --all-targets -- -D warnings` และ `cargo fmt --check`
+- [x] ตรวจสอบ Contrast และขนาด Component ทั้ง Light Mode & Dark Mode
+- [x] รัน `cargo test` (115/115 tests ผ่าน), `cargo clippy --all-targets -- -D warnings` (0 warnings) และ `cargo fmt --check`
 

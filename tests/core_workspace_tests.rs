@@ -10,8 +10,9 @@ use mongo_studio::database::{
     ConnectionManager, CreateIndexRequest, DocumentPageResult, TransferFormat,
 };
 use mongo_studio::models::{
-    CollectionInfo, ConnectionConfig, ConnectionStatus, DocumentRow, MongoUser, QueryStore,
-    SavedQuery, SshAuthMethod, SshTunnelConfig, UserRole, COMMON_ROLES, MAX_QUERY_HISTORY,
+    CollectionInfo, ConnectionConfig, ConnectionStatus, DocumentRow, EnvironmentTag, MongoUser,
+    QueryStore, QuickAccessFilter, SavedQuery, SshAuthMethod, SshTunnelConfig, UserRole,
+    WorkspaceTree, COMMON_ROLES, MAX_QUERY_HISTORY,
 };
 use mongo_studio::query::AggregationStage;
 use mongo_studio::theme::{palette, ThemeMode};
@@ -1287,4 +1288,201 @@ fn test_distinct_users_same_username_different_auth_db() {
         .find_user("ncert-dev", "ncert", "ncert-ims")
         .expect("ims user found");
     assert_eq!(found_ims.db, "ncert-ims");
+}
+
+#[test]
+fn test_workspace_organization_backward_compatibility_and_defaults() {
+    // 1. Deserializing legacy connections.json (without workspace fields)
+    let legacy_json = json!({
+        "id": "11111111-1111-1111-1111-111111111111",
+        "name": "Legacy Localhost",
+        "uri": "mongodb://localhost:27017",
+        "host": "localhost:27017",
+        "status": "Disconnected",
+        "expanded": false,
+        "databases": []
+    })
+    .to_string();
+
+    let config: ConnectionConfig =
+        serde_json::from_str(&legacy_json).expect("deserialize legacy json");
+    assert_eq!(config.name, "Legacy Localhost");
+    assert_eq!(config.workspace, None);
+    assert_eq!(config.folder, None);
+    assert_eq!(config.environment, None);
+    assert!(!config.is_favorite);
+    assert_eq!(config.effective_environment(), None);
+    assert_eq!(config.workspace_name(), None);
+    assert_eq!(config.folder_name(), None);
+
+    // 2. Serializing and deserializing modern connection with workspace fields
+    let mut modern = ConnectionConfig::new_profile("app-prod", "mongodb://10.0.0.1:27017")
+        .expect("new profile app-prod");
+    modern.workspace = Some("Customer Alpha".to_string());
+    modern.folder = Some("Backend Services".to_string());
+    modern.is_favorite = true;
+    modern.environment = Some(EnvironmentTag::Prod);
+
+    let serialized = serde_json::to_string(&modern).expect("serialize modern");
+    assert!(serialized.contains("\"workspace\":\"Customer Alpha\""));
+    assert!(serialized.contains("\"folder\":\"Backend Services\""));
+    assert!(serialized.contains("\"is_favorite\":true"));
+    assert!(serialized.contains("\"environment\":\"PROD\""));
+
+    let deserialized: ConnectionConfig =
+        serde_json::from_str(&serialized).expect("deserialize modern");
+    assert_eq!(deserialized.workspace_name(), Some("Customer Alpha"));
+    assert_eq!(deserialized.folder_name(), Some("Backend Services"));
+    assert!(deserialized.is_favorite);
+    assert_eq!(
+        deserialized.effective_environment(),
+        Some(EnvironmentTag::Prod)
+    );
+}
+
+#[test]
+fn test_workspace_environment_tag_detection_and_badge_colors() {
+    // 1. Detection patterns
+    assert_eq!(
+        EnvironmentTag::detect_from_name("billing-prod"),
+        Some(EnvironmentTag::Prod)
+    );
+    assert_eq!(
+        EnvironmentTag::detect_from_name("auth_production"),
+        Some(EnvironmentTag::Prod)
+    );
+    assert_eq!(
+        EnvironmentTag::detect_from_name("api-staging"),
+        Some(EnvironmentTag::Test)
+    );
+    assert_eq!(
+        EnvironmentTag::detect_from_name("gateway-uat"),
+        Some(EnvironmentTag::Test)
+    );
+    assert_eq!(
+        EnvironmentTag::detect_from_name("users-test"),
+        Some(EnvironmentTag::Test)
+    );
+    assert_eq!(
+        EnvironmentTag::detect_from_name("erp-dev"),
+        Some(EnvironmentTag::Dev)
+    );
+    assert_eq!(
+        EnvironmentTag::detect_from_name("local_development"),
+        Some(EnvironmentTag::Dev)
+    );
+    assert_eq!(
+        EnvironmentTag::detect_from_name("sandbox-local"),
+        Some(EnvironmentTag::Dev)
+    );
+    assert_eq!(EnvironmentTag::detect_from_name("unnamed_mongo"), None);
+
+    // 2. Badge colors in dark and light modes
+    for is_dark in [true, false] {
+        let (bg_dev, text_dev, border_dev) = EnvironmentTag::Dev.badge_colors(is_dark);
+        assert!(bg_dev.a() > 0);
+        assert!(text_dev.a() > 0);
+        assert!(border_dev.a() > 0);
+
+        let (bg_prod, text_prod, border_prod) = EnvironmentTag::Prod.badge_colors(is_dark);
+        assert!(bg_prod.a() > 0);
+        assert!(text_prod.a() > 0);
+        assert!(border_prod.a() > 0);
+
+        let (bg_test, text_test, border_test) = EnvironmentTag::Test.badge_colors(is_dark);
+        assert!(bg_test.a() > 0);
+        assert!(text_test.a() > 0);
+        assert!(border_test.a() > 0);
+    }
+}
+
+#[test]
+fn test_workspace_tree_grouping_and_filtering_lifecycle() {
+    let mut c1 = ConnectionConfig::new_profile("erp-dev", "mongodb://localhost:27017")
+        .expect("erp-dev profile");
+    c1.workspace = Some("Customer A".to_string());
+    c1.folder = Some("ERP".to_string());
+    c1.is_favorite = true;
+
+    let mut c2 = ConnectionConfig::new_profile("erp-prod", "mongodb://10.0.0.2:27017")
+        .expect("erp-prod profile");
+    c2.workspace = Some("Customer A".to_string());
+    c2.folder = Some("ERP".to_string());
+    c2.is_favorite = false;
+
+    let mut c3 = ConnectionConfig::new_profile("ecom-stage", "mongodb://10.0.0.3:27017")
+        .expect("ecom-stage profile");
+    c3.workspace = Some("Customer A".to_string());
+    c3.folder = Some("E-Commerce".to_string());
+    c3.is_favorite = false;
+
+    let mut c4 = ConnectionConfig::new_profile("analytics-prod", "mongodb://10.0.0.4:27017")
+        .expect("analytics-prod profile");
+    c4.workspace = Some("Customer B".to_string());
+    c4.folder = None; // Standalone connection under Customer B
+    c4.is_favorite = true;
+
+    let mut c5 = ConnectionConfig::new_profile("sandbox-raw", "mongodb://127.0.0.1:27019")
+        .expect("sandbox-raw profile");
+    c5.workspace = None; // Unassigned
+    c5.folder = None;
+    c5.is_favorite = false;
+
+    let connections = vec![c1.clone(), c2.clone(), c3.clone(), c4.clone(), c5.clone()];
+
+    // 1. Build full tree
+    let full_tree = WorkspaceTree::build(&connections, "", None);
+    assert_eq!(full_tree.workspaces.len(), 2);
+    assert_eq!(full_tree.workspaces[0].name, "Customer A");
+    assert_eq!(full_tree.workspaces[0].folders.len(), 2);
+    assert_eq!(full_tree.workspaces[0].folders[0].name, "E-Commerce");
+    assert_eq!(
+        full_tree.workspaces[0].folders[0].connection_ids,
+        vec![c3.id]
+    );
+    assert_eq!(full_tree.workspaces[0].folders[1].name, "ERP");
+    assert_eq!(
+        full_tree.workspaces[0].folders[1].connection_ids,
+        vec![c1.id, c2.id]
+    );
+
+    assert_eq!(full_tree.workspaces[1].name, "Customer B");
+    assert_eq!(full_tree.workspaces[1].standalone_connections, vec![c4.id]);
+    assert_eq!(full_tree.unassigned_connections, vec![c5.id]);
+    assert_eq!(full_tree.total_connections(), 5);
+
+    // 2. Extract helpers
+    let workspaces = WorkspaceTree::extract_all_workspaces(&connections);
+    assert_eq!(workspaces, vec!["Customer A", "Customer B"]);
+
+    let cust_a_folders = WorkspaceTree::extract_folders_for_workspace(&connections, "Customer A");
+    assert_eq!(cust_a_folders, vec!["E-Commerce", "ERP"]);
+
+    // 3. Search filtering by environment tag
+    let prod_tree = WorkspaceTree::build(&connections, "PROD", None);
+    assert_eq!(prod_tree.total_connections(), 2); // erp-prod, analytics-prod
+    assert_eq!(prod_tree.workspaces.len(), 2);
+
+    // 4. Filter by active workspace
+    let filtered_tree = WorkspaceTree::build(&connections, "", Some("Customer A"));
+    assert_eq!(filtered_tree.workspaces.len(), 1);
+    assert_eq!(filtered_tree.workspaces[0].name, "Customer A");
+    assert_eq!(filtered_tree.total_connections(), 3);
+    assert!(filtered_tree.unassigned_connections.is_empty());
+
+    // 5. Quick Access filter: Favorites
+    let fav_tree =
+        WorkspaceTree::build_filtered(&connections, "", None, QuickAccessFilter::Favorites, &[]);
+    assert_eq!(fav_tree.total_connections(), 2); // c1 (erp-dev), c4 (analytics-prod)
+
+    // 6. Quick Access filter: Recent
+    let recent_ids = vec![c2.id, c5.id];
+    let recent_tree = WorkspaceTree::build_filtered(
+        &connections,
+        "",
+        None,
+        QuickAccessFilter::Recent,
+        &recent_ids,
+    );
+    assert_eq!(recent_tree.total_connections(), 2); // c2, c5
 }
