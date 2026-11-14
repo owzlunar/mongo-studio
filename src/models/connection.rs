@@ -9,6 +9,7 @@ use crate::core::{AppError, AppResult};
 
 use super::database::DatabaseInfo;
 use super::user::MongoUser;
+use super::workspace::EnvironmentTag;
 
 const fn default_true() -> bool {
     true
@@ -333,6 +334,14 @@ pub struct ConnectionConfig {
     pub users: Vec<MongoUser>,
     #[serde(default)]
     pub ssh_tunnel: SshTunnelConfig,
+    #[serde(default)]
+    pub workspace: Option<String>,
+    #[serde(default)]
+    pub folder: Option<String>,
+    #[serde(default)]
+    pub is_favorite: bool,
+    #[serde(default)]
+    pub environment: Option<EnvironmentTag>,
 }
 
 impl ConnectionConfig {
@@ -349,6 +358,32 @@ impl ConnectionConfig {
             .chars()
             .take(Self::MAX_PROFILE_NAME_LEN)
             .collect()
+    }
+
+    /// Returns the explicit environment tag if set, or attempts to infer one from the connection name.
+    #[must_use]
+    pub fn effective_environment(&self) -> Option<EnvironmentTag> {
+        self.environment
+            .clone()
+            .or_else(|| EnvironmentTag::detect_from_name(&self.name))
+    }
+
+    /// Returns the trimmed workspace name, or `None` if empty or whitespace.
+    #[must_use]
+    pub fn workspace_name(&self) -> Option<&str> {
+        self.workspace
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+    }
+
+    /// Returns the trimmed folder name, or `None` if empty or whitespace.
+    #[must_use]
+    pub fn folder_name(&self) -> Option<&str> {
+        self.folder
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
     }
 
     /// Extracts the display host from a MongoDB URI, stripping any `mongodb://` or
@@ -608,6 +643,10 @@ impl ConnectionConfig {
             users_expanded: false,
             users: Vec::new(),
             ssh_tunnel: SshTunnelConfig::default(),
+            workspace: None,
+            folder: None,
+            is_favorite: false,
+            environment: None,
         })
     }
 
@@ -638,6 +677,10 @@ impl ConnectionConfig {
             users_expanded: true,
             users: MongoUser::mock_users(),
             ssh_tunnel: SshTunnelConfig::default(),
+            workspace: Some("Default".to_string()),
+            folder: None,
+            is_favorite: true,
+            environment: Some(EnvironmentTag::Dev),
         }
     }
 
@@ -663,6 +706,10 @@ impl ConnectionConfig {
             users_expanded: false,
             users: Vec::new(),
             ssh_tunnel: SshTunnelConfig::default(),
+            workspace: Some("Staging".to_string()),
+            folder: None,
+            is_favorite: false,
+            environment: Some(EnvironmentTag::Test),
         }
     }
 }
@@ -842,5 +889,27 @@ mod tests {
             serde_json::from_str(legacy_json).expect("legacy profile should deserialize");
         assert!(!parsed.ssh_tunnel.enabled);
         assert_eq!(parsed.ssh_tunnel.auth_method, SshAuthMethod::Password);
+        assert_eq!(parsed.workspace, None);
+        assert_eq!(parsed.folder, None);
+        assert!(!parsed.is_favorite);
+        assert_eq!(parsed.environment, None);
+    }
+
+    #[test]
+    fn connection_config_workspace_and_environment_helpers() {
+        let mut conn =
+            ConnectionConfig::new_profile("billing-prod", "mongodb://localhost:27017").unwrap();
+        assert_eq!(conn.effective_environment(), Some(EnvironmentTag::Prod));
+        assert_eq!(conn.workspace_name(), None);
+        assert_eq!(conn.folder_name(), None);
+
+        conn.workspace = Some("  Finance  ".to_string());
+        conn.folder = Some("  Payments  ".to_string());
+        conn.environment = Some(EnvironmentTag::Dev);
+
+        assert_eq!(conn.workspace_name(), Some("Finance"));
+        assert_eq!(conn.folder_name(), Some("Payments"));
+        assert_eq!(conn.effective_environment(), Some(EnvironmentTag::Dev));
+        assert!(!conn.is_favorite);
     }
 }

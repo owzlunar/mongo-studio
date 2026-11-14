@@ -15,6 +15,8 @@
 | **Phase 5** | Advanced Features, Export/Import & Release | ✅ เสร็จสิ้น | `2bcda74` (70/70 tests ผ่าน) |
 | **Feature+** | SSH Tunnel Connection (`ip:port`, `user/pass`, `id_ecdsa`) | ✅ เสร็จสิ้น | รองรับ `ssh ip:port` (`user/pass`, `id_ecdsa` + Keychain, 88/88 tests ผ่าน) |
 | **Feature+** | Clean State on Release Build (Exclude Mock DB) | ✅ เสร็จสิ้น | เอา mock DB และ mock tabs ออกจาก Release build เริ่มต้นแบบ clean state, 90/90 tests ผ่าน |
+| **Feature+** | User Auth DB Identity & Multi-DB Disambiguation | ✅ เสร็จสิ้น | แยก user ตาม `(username, auth_db)` แก้ปัญหา collision 9 ตัว, 98/98 tests ผ่าน |
+| **Feature+** | Workspace & Project Organization (Left Panel) | 🔄 กำลังดำเนินการ | ปรับ UI ซ้ายมือเป็น Customer 🏢 -> Folder 📁 -> Connection (Tag) ตามภาพอ้างอิง |
 
 ---
 
@@ -142,4 +144,62 @@
 - [x] `core-dev`: เพิ่ม `SshTunnelConfig`, `SshAuthMethod` (`Password` / `PrivateKey` เริ่มต้น `~/.ssh/id_ecdsa`), `SshTunnelRegistry` (`src/database/ssh_tunnel.rs`) จัดการ `ssh -N -T` port forwarding แบบ async บน Tokio พร้อม OS Keychain (`{conn_id}:ssh`), `AskpassTempDir` (`0o700`) และ URI rewriting (`directConnection=true`)
 - [x] `ui-dev`: เพิ่มส่วนตั้งค่า SSH Tunnel (`Connect via SSH Tunnel (ip:port)`, `SSH Host (ip:port)`, `SSH Username`, Auth: `Password` / `SSH Key (id_ecdsa)` + Browse key / Passphrase, Save in Keychain) ใน Modal เพิ่ม/แก้ไข Connection, `[SSH]` badge ใน sidebar tree และปิด Tunnel อัตโนมัติเมื่อ Disconnect/Remove/Drop
 - [x] `qa-tester`: ตรวจสอบความปลอดภัย (0 `.unwrap()` ใน `src/`, ล้าง secrets เมื่อสลับ Auth mode/ปิด modal, `redact_uri` IPv4/Query `@` fix) และเพิ่ม Tests ผ่านครบ 88/88 (31 lib + 16 `core_workspace_tests` + 30 `database_tests` + 11 `query_tests`)
+
+---
+
+## Feature+ — Workspace & Project Organization (Left Panel) 🔄
+
+เป้าหมาย: ปรับโครงสร้างเมนู Connection ที่ Left Panel ให้รองรับการจัดกลุ่มตาม Workspace (Customer / Client), Project Folder และ Environment พร้อม Quick Access (Favorites / Recent) และ Empty State ตามแบบร่าง [design/WORKSPACE_DESIGN.md](./design/WORKSPACE_DESIGN.md)
+
+### Step 1: Data Model & Storage Backward Compatibility (`core-dev`) ✅
+- [x] สร้างโมเดล `src/models/workspace.rs`:
+  - `EnvironmentTag` (Auto-detection จากชื่อ เช่น `-dev`, `-test`, `-staging`, `-uat`, `-prod` และฟังก์ชันสี/สไตล์)
+  - `WorkspaceItem` และ `ProjectFolder` สำหรับจัดกลุ่มโครงสร้าง Customer -> Folder -> Connection
+  - Helper functions สำหรับจัดกลุ่ม `Vec<ConnectionConfig>` เป็นโครงสร้าง Tree และฟิลเตอร์ตาม Search / Workspace
+- [x] ปรับปรุง `ConnectionConfig` ใน `src/models/connection.rs`:
+  - เพิ่มฟิลด์ `workspace: Option<String>`
+  - เพิ่มฟิลด์ `folder: Option<String>`
+  - เพิ่มฟิลด์ `is_favorite: bool`
+  - เพิ่มฟิลด์ `environment: Option<EnvironmentTag>`
+  - ใช้ `#[serde(default)]` ทุกฟิลด์เพื่อ backward compatibility 100% กับ `connections.json` เดิม
+- [x] Export module ใน `src/models/mod.rs`
+
+### Step 2: Events & App State Management (`core-dev`) 🔄
+- [ ] เพิ่ม Events ใน `src/core/events.rs`:
+  - `ToggleFavoriteConnection { connection_id: Uuid }`
+  - `FilterWorkspaceView { workspace_name: Option<String> }`
+  - `CreateWorkspace { name: String }`
+  - `CreateProjectFolder { workspace: String, folder_name: String }`
+  - `MoveConnectionToFolder { connection_id: Uuid, workspace: Option<String>, folder: Option<String> }`
+  - `OpenManageWorkspacesModal`
+- [ ] ขยาย `AppState` ใน `src/core/state.rs`:
+  - ฟิลด์ `active_workspace_filter: Option<String>`
+  - ฟิลด์ `recent_connections: Vec<Uuid>` (บันทึก ID ล่าสุด 5 รายการเมื่อ Connect)
+  - ฟิลด์ `show_manage_workspaces_modal: bool`
+
+### Step 3: UI Left Panel & 3-Tier Tree View (`ui-dev`)
+- [ ] ปรับปรุง `src/ui/sidebar.rs`:
+  - ช่อง Search Full Width พร้อม Hint `⌘ K` (กรองทั้งชื่อและ env)
+  - แถบ Quick Access: `⭐ Favorites` (พร้อม Badge จำนวน) และ `🕒 Recent`
+  - หัวข้อ `WORKSPACES` พร้อม Dropdown สลับดู All Workspaces หรือเฉพาะ Workspace
+  - ปุ่ม `+` รวม (Smart Add Popover) เลือกว่าจะเพิ่ม Connection, Folder หรือ Workspace
+  - Empty State: แสดง Icon Folder + "No workspaces yet" + ปุ่ม "Manage Workspaces" เมื่อยังไม่มีการจัดกลุ่ม
+- [ ] ปรับปรุง `src/ui/components/tree_view.rs`:
+  - โครงสร้าง Tree 3 ระดับ: `Customer 🏢` $\rightarrow$ `Project 📁` $\rightarrow$ `Connection`
+  - แสดง Environment Tag กะทัดรัด (`DEV`, `TEST`, `PROD`) นำหน้าชื่อ Connection
+  - รองรับการคลิกเลือก Connection (Highlight แถวแบบโค้งมน) และขยายดู Databases / Collections ได้เหมือนเดิม
+  - ปุ่ม `+` ปรากฏขึ้นบนแถวเมื่อ Hover เพื่อเพิ่ม Folder หรือ Connection ภายใต้ Node นั้นได้โดยตรง
+
+### Step 4: Manage Workspaces Modal & Import/Export (`ui-dev`)
+- [ ] ปุ่ม `⚙️ Manage Workspaces` ที่ Footer ด้านล่างสุดของ Left Panel
+- [ ] Modal จัดการ Workspaces: สร้าง/เปลี่ยนชื่อ/ลบ Workspace และย้าย Connection
+- [ ] รองรับการ Export / Import โครงสร้าง Workspace เป็น JSON
+
+### Step 5: QA Testing & Polish (`qa-tester`)
+- [ ] เขียน Unit Tests ใน `tests/core_workspace_tests.rs`:
+  - ทดสอบ Serde Backward Compatibility ของ `ConnectionConfig`
+  - ทดสอบการตรวจจับ `EnvironmentTag::detect_from_name`
+  - ทดสอบการจัดกลุ่มโครงสร้าง Tree และการค้นหากรอง
+- [ ] ตรวจสอบ Contrast และขนาด Component ทั้ง Light Mode & Dark Mode
+- [ ] รัน `cargo test`, `cargo clippy --all-targets -- -D warnings` และ `cargo fmt --check`
 

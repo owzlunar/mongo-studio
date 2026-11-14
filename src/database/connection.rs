@@ -93,6 +93,10 @@ impl ConnectionClient {
                 users_expanded: true,
                 users: MongoUser::mock_users(),
                 ssh_tunnel: SshTunnelConfig::default(),
+                workspace: None,
+                folder: None,
+                is_favorite: false,
+                environment: None,
             },
         })
     }
