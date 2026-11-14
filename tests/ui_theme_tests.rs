@@ -266,6 +266,7 @@ fn test_modal_dialog_bounds_fit_within_minimum_window() {
         ("Confirm Delete User", 400.0, 155.0),
         ("About Modal", 390.0, 185.0),
         ("Command Palette", 520.0, 320.0),
+        ("Manage Workspaces", 620.0, 520.0),
     ];
 
     for (name, w, h) in modal_sizes {

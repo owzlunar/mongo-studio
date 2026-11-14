@@ -1,6 +1,6 @@
 use egui::{
-    ComboBox, Context, CursorIcon, Frame, Image, Margin, RichText, ScrollArea, Stroke, TextEdit,
-    Vec2, Window,
+    ComboBox, Context, CursorIcon, Frame, Image, Margin, RichText, Rounding, ScrollArea, Stroke,
+    TextEdit, Vec2, Window,
 };
 use egui_dock::{DockArea, Style};
 use egui_phosphor::regular;
@@ -10,6 +10,7 @@ use crate::core::state::AppState;
 use crate::database::{CreateIndexRequest, IndexService};
 use crate::models::{
     ConnectionConfig, DocumentRow, SavedQuery, SshAuthMethod, SshTunnelConfig, UserRole,
+    WorkspaceTree,
 };
 use crate::theme::{ThemeMode, ThemePalette};
 use crate::ui::activity_bar::render_activity_bar;
@@ -2008,4 +2009,418 @@ fn render_modals(
             }
         });
     }
+
+    render_manage_workspaces_modal(ctx, state, palette, events);
+}
+
+fn render_manage_workspaces_modal(
+    ctx: &Context,
+    state: &mut AppState,
+    palette: &ThemePalette,
+    events: &mut Vec<AppEvent>,
+) {
+    if !state.show_manage_workspaces_modal {
+        return;
+    }
+
+    let modal_frame = Frame::window(&ctx.style())
+        .fill(palette.popup_bg)
+        .stroke(Stroke::new(1.5_f32, palette.popup_border))
+        .inner_margin(Margin::same(14.0));
+
+    Window::new(
+        RichText::new("Manage Workspaces & Project Folders")
+            .strong()
+            .color(palette.text_primary),
+    )
+    .collapsible(false)
+    .resizable(false)
+    .frame(modal_frame)
+    .fixed_size([620.0, 520.0])
+    .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+    .show(ctx, |ui| {
+        ScrollArea::vertical()
+            .id_source("manage_workspaces_scroll")
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                ui.label(
+                    RichText::new("Organize your MongoDB connections into client workspaces and project folders.")
+                        .size(11.5)
+                        .color(palette.muted_text),
+                );
+                ui.add_space(8.0);
+
+                // --- Section 1: Create Workspace & Folder ---
+                ui.label(
+                    RichText::new("1. CREATE WORKSPACE OR FOLDER")
+                        .size(11.0)
+                        .strong()
+                        .color(palette.accent_color),
+                );
+                ui.add_space(4.0);
+
+                // Create Workspace row
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new("🏢 Workspace:").size(12.0).color(palette.text_primary));
+                    ui.add(
+                        TextEdit::singleline(&mut state.new_workspace_input)
+                            .hint_text("e.g. Customer A, Internal...")
+                            .desired_width(220.0),
+                    );
+                    if primary_button(ui, "+ Create Workspace", palette.accent_color).clicked() {
+                        let name = state.new_workspace_input.trim().to_string();
+                        if !name.is_empty() {
+                            events.push(AppEvent::CreateWorkspace { name });
+                            state.new_workspace_input.clear();
+                        }
+                    }
+                });
+
+                ui.add_space(6.0);
+
+                // Create Folder row
+                let all_workspaces = WorkspaceTree::extract_all_workspaces(&state.connections);
+                if state.new_folder_workspace_target.is_empty() {
+                    if let Some(first) = all_workspaces.first() {
+                        state.new_folder_workspace_target = first.clone();
+                    }
+                }
+
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new("📁 Folder in:").size(12.0).color(palette.text_primary));
+                    ComboBox::from_id_source("manage_new_folder_ws_target")
+                        .selected_text(
+                            if state.new_folder_workspace_target.is_empty() {
+                                "Select workspace...".to_string()
+                            } else {
+                                state.new_folder_workspace_target.clone()
+                            },
+                        )
+                        .width(130.0)
+                        .show_ui(ui, |ui| {
+                            for ws in &all_workspaces {
+                                ui.selectable_value(
+                                    &mut state.new_folder_workspace_target,
+                                    ws.clone(),
+                                    ws,
+                                );
+                            }
+                        });
+
+                    ui.add(
+                        TextEdit::singleline(&mut state.new_folder_input)
+                            .hint_text("e.g. ERP, Payments...")
+                            .desired_width(140.0),
+                    );
+
+                    if primary_button(ui, "+ Create Folder", palette.accent_color).clicked() {
+                        let ws = state.new_folder_workspace_target.trim().to_string();
+                        let folder = state.new_folder_input.trim().to_string();
+                        if !ws.is_empty() && !folder.is_empty() {
+                            events.push(AppEvent::CreateProjectFolder {
+                                workspace: ws,
+                                folder_name: folder,
+                            });
+                            state.new_folder_input.clear();
+                        }
+                    }
+                });
+
+                ui.add_space(10.0);
+                ui.separator();
+                ui.add_space(8.0);
+
+                // --- Section 2: Reassign Connections ---
+                ui.label(
+                    RichText::new("2. ASSIGN CONNECTIONS TO WORKSPACE & FOLDER")
+                        .size(11.0)
+                        .strong()
+                        .color(palette.accent_color),
+                );
+                ui.add_space(4.0);
+
+                if state.connections.is_empty() {
+                    ui.label(
+                        RichText::new("No connection profiles available. Add a connection first.")
+                            .size(11.5)
+                            .color(palette.muted_text),
+                    );
+                } else {
+                    for i in 0..state.connections.len() {
+                        let conn_id = state.connections[i].id;
+                        let conn_name = state.connections[i].name.clone();
+                        let current_ws = state.connections[i].workspace.clone().unwrap_or_default();
+                        let current_folder = state.connections[i].folder.clone().unwrap_or_default();
+                        let is_fav = state.connections[i].is_favorite;
+
+                        Frame::none()
+                            .fill(palette.panel_bg)
+                            .inner_margin(Margin::symmetric(8.0, 4.0))
+                            .rounding(Rounding::same(4.0))
+                            .stroke(Stroke::new(1.0_f32, palette.border_color))
+                            .show(ui, |ui| {
+                                ui.horizontal(|ui| {
+                                    // Star favorite button
+                                    let star_icon = if is_fav { "⭐" } else { "☆" };
+                                    if ui
+                                        .button(RichText::new(star_icon).color(palette.warning_color))
+                                        .on_hover_cursor(CursorIcon::PointingHand)
+                                        .on_hover_text("Toggle Favorite")
+                                        .clicked()
+                                    {
+                                        events.push(AppEvent::ToggleFavoriteConnection {
+                                            connection_id: conn_id,
+                                        });
+                                    }
+
+                                    // Connection Name
+                                    ui.label(
+                                        RichText::new(&conn_name)
+                                            .strong()
+                                            .size(12.0)
+                                            .color(palette.text_primary),
+                                    );
+
+                                    ui.with_layout(
+                                        egui::Layout::right_to_left(egui::Align::Center),
+                                        |ui| {
+                                            // Folder dropdown
+                                            let folders_for_ws = if current_ws.is_empty() {
+                                                Vec::new()
+                                            } else {
+                                                WorkspaceTree::extract_folders_for_workspace(
+                                                    &state.connections,
+                                                    &current_ws,
+                                                )
+                                            };
+
+                                            let mut sel_folder = current_folder.clone();
+                                            let folder_display = if sel_folder.is_empty() {
+                                                "(No Folder)".to_string()
+                                            } else {
+                                                format!("📁 {sel_folder}")
+                                            };
+
+                                            let folder_combo = ComboBox::from_id_source((
+                                                "assign_folder_combo",
+                                                conn_id,
+                                            ))
+                                            .selected_text(folder_display)
+                                            .width(110.0);
+
+                                            let folder_resp = folder_combo.show_ui(ui, |ui| {
+                                                ui.selectable_value(
+                                                    &mut sel_folder,
+                                                    String::new(),
+                                                    "(None / Standalone)",
+                                                );
+                                                for f in &folders_for_ws {
+                                                    ui.selectable_value(
+                                                        &mut sel_folder,
+                                                        f.clone(),
+                                                        format!("📁 {f}"),
+                                                    );
+                                                }
+                                            });
+
+                                            if folder_resp.response.changed()
+                                                || sel_folder != current_folder
+                                            {
+                                                events.push(AppEvent::MoveConnectionToFolder {
+                                                    connection_id: conn_id,
+                                                    workspace: if current_ws.is_empty() {
+                                                        None
+                                                    } else {
+                                                        Some(current_ws.clone())
+                                                    },
+                                                    folder: if sel_folder.is_empty() {
+                                                        None
+                                                    } else {
+                                                        Some(sel_folder)
+                                                    },
+                                                });
+                                            }
+
+                                            // Workspace dropdown
+                                            let mut sel_ws = current_ws.clone();
+                                            let ws_display = if sel_ws.is_empty() {
+                                                "(Ungrouped)".to_string()
+                                            } else {
+                                                format!("🏢 {sel_ws}")
+                                            };
+
+                                            let ws_combo = ComboBox::from_id_source((
+                                                "assign_ws_combo",
+                                                conn_id,
+                                            ))
+                                            .selected_text(ws_display)
+                                            .width(120.0);
+
+                                            let ws_resp = ws_combo.show_ui(ui, |ui| {
+                                                ui.selectable_value(
+                                                    &mut sel_ws,
+                                                    String::new(),
+                                                    "(None / Ungrouped)",
+                                                );
+                                                for ws in &all_workspaces {
+                                                    ui.selectable_value(
+                                                        &mut sel_ws,
+                                                        ws.clone(),
+                                                        format!("🏢 {ws}"),
+                                                    );
+                                                }
+                                            });
+
+                                            if ws_resp.response.changed()
+                                                || sel_ws != current_ws
+                                            {
+                                                events.push(AppEvent::MoveConnectionToFolder {
+                                                    connection_id: conn_id,
+                                                    workspace: if sel_ws.is_empty() {
+                                                        None
+                                                    } else {
+                                                        Some(sel_ws)
+                                                    },
+                                                    folder: None,
+                                                });
+                                            }
+                                        },
+                                    );
+                                });
+                            });
+                        ui.add_space(2.0);
+                    }
+                }
+
+                ui.add_space(10.0);
+                ui.separator();
+                ui.add_space(8.0);
+
+                // --- Section 3: Import & Export Workspaces Configuration ---
+                ui.label(
+                    RichText::new("3. IMPORT / EXPORT WORKSPACE STRUCTURE")
+                        .size(11.0)
+                        .strong()
+                        .color(palette.accent_color),
+                );
+                ui.add_space(4.0);
+
+                ui.horizontal(|ui| {
+                    if secondary_button(
+                        ui,
+                        &format!("{} Export Workspaces JSON...", regular::EXPORT),
+                        palette.border_color,
+                    )
+                    .on_hover_cursor(CursorIcon::PointingHand)
+                    .on_hover_text("Export current workspace and folder mappings to a JSON file")
+                    .clicked()
+                    {
+                        if let Some(path) = rfd::FileDialog::new()
+                            .set_file_name("mongo_studio_workspaces.json")
+                            .add_filter("JSON", &["json"])
+                            .save_file()
+                        {
+                            #[derive(serde::Serialize)]
+                            struct WorkspaceExportEntry {
+                                connection_name: String,
+                                workspace: Option<String>,
+                                folder: Option<String>,
+                                is_favorite: bool,
+                            }
+
+                            let entries: Vec<WorkspaceExportEntry> = state
+                                .connections
+                                .iter()
+                                .map(|c| WorkspaceExportEntry {
+                                    connection_name: c.name.clone(),
+                                    workspace: c.workspace.clone(),
+                                    folder: c.folder.clone(),
+                                    is_favorite: c.is_favorite,
+                                })
+                                .collect();
+
+                            if let Ok(json_str) = serde_json::to_string_pretty(&entries) {
+                                if let Err(e) = std::fs::write(&path, json_str) {
+                                    state.bottom_panel.push_log(
+                                        LogLevel::Error,
+                                        "Workspace",
+                                        format!("Failed to export workspaces: {e}"),
+                                    );
+                                } else {
+                                    state.bottom_panel.push_log(
+                                        LogLevel::Info,
+                                        "Workspace",
+                                        format!(
+                                            "Exported workspaces configuration to {}",
+                                            path.display()
+                                        ),
+                                    );
+                                }
+                            }
+                        }
+                    }
+
+                    if secondary_button(
+                        ui,
+                        &format!("{} Import Workspaces JSON...", regular::SIGN_IN),
+                        palette.border_color,
+                    )
+                    .on_hover_cursor(CursorIcon::PointingHand)
+                    .on_hover_text("Import workspace and folder mappings from a JSON file")
+                    .clicked()
+                    {
+                        if let Some(path) = rfd::FileDialog::new()
+                            .add_filter("JSON", &["json"])
+                            .pick_file()
+                        {
+                            #[derive(serde::Deserialize)]
+                            struct WorkspaceImportEntry {
+                                connection_name: String,
+                                workspace: Option<String>,
+                                folder: Option<String>,
+                                #[serde(default)]
+                                is_favorite: bool,
+                            }
+
+                            if let Ok(content) = std::fs::read_to_string(&path) {
+                                if let Ok(entries) =
+                                    serde_json::from_str::<Vec<WorkspaceImportEntry>>(&content)
+                                {
+                                    let mut updated = 0;
+                                    for entry in entries {
+                                        if let Some(conn) = state
+                                            .connections
+                                            .iter_mut()
+                                            .find(|c| {
+                                                c.name.eq_ignore_ascii_case(&entry.connection_name)
+                                            })
+                                        {
+                                            conn.workspace = entry.workspace;
+                                            conn.folder = entry.folder;
+                                            conn.is_favorite = entry.is_favorite;
+                                            updated += 1;
+                                        }
+                                    }
+                                    state.bottom_panel.push_log(
+                                        LogLevel::Info,
+                                        "Workspace",
+                                        format!(
+                                            "Imported workspace settings for {updated} connections from {}",
+                                            path.display()
+                                        ),
+                                    );
+                                    events.push(AppEvent::RefreshConnections);
+                                }
+                            }
+                        }
+                    }
+
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if primary_button(ui, "Close", palette.accent_color).clicked() {
+                            state.show_manage_workspaces_modal = false;
+                        }
+                    });
+                });
+            });
+    });
 }
