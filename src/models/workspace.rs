@@ -211,6 +211,33 @@ impl WorkspaceItem {
     }
 }
 
+/// Filter mode for quick access in the workspace tree.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum QuickAccessFilter {
+    #[default]
+    All,
+    Favorites,
+    Recent,
+}
+
+impl QuickAccessFilter {
+    /// Returns the user-facing label for the filter option.
+    #[must_use]
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::All => "All",
+            Self::Favorites => "Favorites",
+            Self::Recent => "Recent",
+        }
+    }
+}
+
+impl fmt::Display for QuickAccessFilter {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.label())
+    }
+}
+
 type FolderConnectionMap = BTreeMap<String, Vec<Uuid>>;
 type WorkspaceGrouping = (Vec<Uuid>, FolderConnectionMap);
 type WorkspaceGroupMap = BTreeMap<String, WorkspaceGrouping>;
@@ -233,6 +260,30 @@ impl WorkspaceTree {
         search_filter: &str,
         active_workspace: Option<&str>,
     ) -> Self {
+        Self::build_filtered(
+            connections,
+            search_filter,
+            active_workspace,
+            QuickAccessFilter::All,
+            &[],
+        )
+    }
+
+    /// Builds an organized `WorkspaceTree` from a slice of connections with quick filter and recent connections.
+    ///
+    /// - Groups connections by workspace and folder.
+    /// - Filters connections by `search_filter` (case-insensitive name or environment tag).
+    /// - Filters by `active_workspace` (if `Some` and not empty / "All").
+    /// - Filters by `quick_filter` (`Favorites` or `Recent`).
+    /// - Workspaces and folders are sorted alphabetically for deterministic ordering.
+    #[must_use]
+    pub fn build_filtered(
+        connections: &[ConnectionConfig],
+        search_filter: &str,
+        active_workspace: Option<&str>,
+        quick_filter: QuickAccessFilter,
+        recent_ids: &[Uuid],
+    ) -> Self {
         let filter = search_filter.trim().to_lowercase();
         let active_filter = active_workspace
             .map(str::trim)
@@ -243,6 +294,13 @@ impl WorkspaceTree {
         let mut unassigned = Vec::new();
 
         for conn in connections {
+            if quick_filter == QuickAccessFilter::Favorites && !conn.is_favorite {
+                continue;
+            }
+            if quick_filter == QuickAccessFilter::Recent && !recent_ids.contains(&conn.id) {
+                continue;
+            }
+
             let matches_search = if filter.is_empty() {
                 true
             } else {
@@ -556,5 +614,72 @@ mod tests {
         let empty_folders =
             WorkspaceTree::extract_folders_for_workspace(&connections, "NonExistent");
         assert!(empty_folders.is_empty());
+    }
+
+    #[test]
+    fn quick_access_filter_label_and_display() {
+        assert_eq!(QuickAccessFilter::All.label(), "All");
+        assert_eq!(QuickAccessFilter::Favorites.label(), "Favorites");
+        assert_eq!(QuickAccessFilter::Recent.label(), "Recent");
+
+        assert_eq!(format!("{}", QuickAccessFilter::All), "All");
+        assert_eq!(format!("{}", QuickAccessFilter::Favorites), "Favorites");
+        assert_eq!(format!("{}", QuickAccessFilter::Recent), "Recent");
+
+        let ser = serde_json::to_string(&QuickAccessFilter::Favorites).expect("serialize");
+        assert_eq!(ser, "\"Favorites\"");
+        let de: QuickAccessFilter = serde_json::from_str(&ser).expect("deserialize");
+        assert_eq!(de, QuickAccessFilter::Favorites);
+    }
+
+    #[test]
+    fn workspace_tree_build_filtered_favorites_and_recent() {
+        let mut c1 = ConnectionConfig::new_profile("app-prod", "mongodb://localhost:27017")
+            .expect("profile c1");
+        c1.workspace = Some("Finance".to_string());
+        c1.folder = Some("Backend".to_string());
+        c1.is_favorite = true;
+
+        let mut c2 = ConnectionConfig::new_profile("app-dev", "mongodb://localhost:27018")
+            .expect("profile c2");
+        c2.workspace = Some("Finance".to_string());
+        c2.folder = None;
+        c2.is_favorite = false;
+
+        let mut c3 =
+            ConnectionConfig::new_profile("analytics-staging", "mongodb://localhost:27019")
+                .expect("profile c3");
+        c3.workspace = Some("Data".to_string());
+        c3.is_favorite = false;
+
+        let connections = vec![c1.clone(), c2.clone(), c3.clone()];
+
+        // 1. Filter favorites
+        let fav_tree = WorkspaceTree::build_filtered(
+            &connections,
+            "",
+            None,
+            QuickAccessFilter::Favorites,
+            &[],
+        );
+        assert_eq!(fav_tree.total_connections(), 1);
+        assert_eq!(fav_tree.workspaces.len(), 1);
+        assert_eq!(fav_tree.workspaces[0].name, "Finance");
+        assert_eq!(fav_tree.workspaces[0].folders[0].connection_ids, vec![c1.id]);
+
+        // 2. Filter recent
+        let recent_ids = vec![c2.id, c3.id];
+        let recent_tree = WorkspaceTree::build_filtered(
+            &connections,
+            "",
+            None,
+            QuickAccessFilter::Recent,
+            &recent_ids,
+        );
+        assert_eq!(recent_tree.total_connections(), 2);
+        assert_eq!(recent_tree.workspaces.len(), 2);
+        assert_eq!(recent_tree.workspaces[0].name, "Data");
+        assert_eq!(recent_tree.workspaces[1].name, "Finance");
+        assert_eq!(recent_tree.workspaces[1].standalone_connections, vec![c2.id]);
     }
 }

@@ -8,8 +8,8 @@ use crate::database::{
     TransferFormat,
 };
 use crate::models::{
-    CollectionInfo, DatabaseInfo, DocumentRow, IndexInfo, MongoUser, SavedQuery, SchemaField,
-    SshTunnelConfig, UserRole,
+    CollectionInfo, DatabaseInfo, DocumentRow, IndexInfo, MongoUser, QuickAccessFilter, SavedQuery,
+    SchemaField, SshTunnelConfig, UserRole,
 };
 use crate::query::AggregationStage;
 use crate::theme::ThemeMode;
@@ -421,6 +421,12 @@ pub enum AppEvent {
     ResetWorkspaceLayout,
     ToggleFavoriteConnection {
         connection_id: Uuid,
+    },
+    SetQuickAccessFilter {
+        filter: QuickAccessFilter,
+    },
+    ToggleQuickAccessFilter {
+        filter: QuickAccessFilter,
     },
     FilterWorkspaceView {
         workspace_name: Option<String>,

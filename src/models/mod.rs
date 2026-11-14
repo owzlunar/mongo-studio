@@ -12,4 +12,6 @@ pub use database::DatabaseInfo;
 pub use document::DocumentRow;
 pub use saved_query::{QueryStore, SavedQuery, MAX_QUERY_HISTORY};
 pub use user::{MongoUser, UserRole, COMMON_ROLES};
-pub use workspace::{EnvironmentTag, ProjectFolder, WorkspaceItem, WorkspaceTree};
+pub use workspace::{
+    EnvironmentTag, ProjectFolder, QuickAccessFilter, WorkspaceItem, WorkspaceTree,
+};

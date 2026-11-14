@@ -4476,6 +4476,12 @@ impl MongoStudioApp {
                     self.state.toggle_favorite(connection_id);
                     self.spawn_save_profiles_task(ctx);
                 }
+                AppEvent::SetQuickAccessFilter { filter } => {
+                    self.state.quick_access_filter = filter;
+                }
+                AppEvent::ToggleQuickAccessFilter { filter } => {
+                    self.state.toggle_quick_access_filter(filter);
+                }
                 AppEvent::FilterWorkspaceView { workspace_name } => {
                     self.state.active_workspace_filter = workspace_name;
                 }

@@ -3,8 +3,8 @@ use egui_dock::DockState;
 use uuid::Uuid;
 
 use crate::models::{
-    CollectionInfo, ConnectionConfig, MongoUser, QueryStore, SavedQuery, SshAuthMethod,
-    SshTunnelConfig, UserRole,
+    CollectionInfo, ConnectionConfig, MongoUser, QueryStore, QuickAccessFilter, SavedQuery,
+    SshAuthMethod, SshTunnelConfig, UserRole,
 };
 use crate::theme::ThemeMode;
 use crate::ui::activity_bar::ActivityView;
@@ -115,6 +115,7 @@ pub struct AppState {
     pub is_transferring: bool,
     pub show_about_modal: bool,
     pub active_workspace_filter: Option<String>,
+    pub quick_access_filter: QuickAccessFilter,
     pub recent_connections: Vec<Uuid>,
     pub show_manage_workspaces_modal: bool,
     pub new_workspace_input: String,
@@ -248,6 +249,7 @@ impl AppState {
             is_transferring: false,
             show_about_modal: false,
             active_workspace_filter: None,
+            quick_access_filter: QuickAccessFilter::All,
             recent_connections: Vec::new(),
             show_manage_workspaces_modal: false,
             new_workspace_input: String::new(),
@@ -390,6 +392,7 @@ impl AppState {
         state.connections = Vec::new();
         state.dock_state = DockState::new(Vec::new());
         state.active_workspace_filter = None;
+        state.quick_access_filter = QuickAccessFilter::All;
         state.recent_connections.clear();
         state.show_manage_workspaces_modal = false;
         state.new_workspace_input.clear();
@@ -574,6 +577,15 @@ impl AppState {
             .filter(|&id| self.connections.iter().any(|c| c.id == *id))
             .count()
     }
+
+    /// Toggles the quick access filter. If already selected, resets to [`QuickAccessFilter::All`].
+    pub fn toggle_quick_access_filter(&mut self, filter: QuickAccessFilter) {
+        if self.quick_access_filter == filter {
+            self.quick_access_filter = QuickAccessFilter::All;
+        } else {
+            self.quick_access_filter = filter;
+        }
+    }
 }
 
 #[cfg(test)]
@@ -701,5 +713,24 @@ mod tests {
 
         state.push_recent_connection(id1);
         assert_eq!(state.recent_count(), 2);
+    }
+
+    #[test]
+    fn test_toggle_quick_access_filter() {
+        let mut state = AppState::default();
+        assert_eq!(state.quick_access_filter, QuickAccessFilter::All);
+
+        state.toggle_quick_access_filter(QuickAccessFilter::Favorites);
+        assert_eq!(state.quick_access_filter, QuickAccessFilter::Favorites);
+
+        // Clicking Favorites again toggles back to All
+        state.toggle_quick_access_filter(QuickAccessFilter::Favorites);
+        assert_eq!(state.quick_access_filter, QuickAccessFilter::All);
+
+        // Switching from Recent to Favorites
+        state.toggle_quick_access_filter(QuickAccessFilter::Recent);
+        assert_eq!(state.quick_access_filter, QuickAccessFilter::Recent);
+        state.toggle_quick_access_filter(QuickAccessFilter::Favorites);
+        assert_eq!(state.quick_access_filter, QuickAccessFilter::Favorites);
     }
 }
