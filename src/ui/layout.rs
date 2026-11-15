@@ -1329,6 +1329,59 @@ fn render_modals(
         });
     }
 
+    if let Some((conn_idx, db_name, coll_name)) = state.pending_truncate_coll.clone() {
+        let modal_frame = Frame::window(&ctx.style())
+            .fill(palette.popup_bg)
+            .stroke(Stroke::new(1.5_f32, palette.warning_color))
+            .inner_margin(Margin::same(14.0));
+
+        Window::new(
+            RichText::new("Confirm Truncate Collection")
+                .strong()
+                .color(palette.warning_color),
+        )
+        .collapsible(false)
+        .resizable(false)
+        .frame(modal_frame)
+        .fixed_size([440.0, 160.0])
+        .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+        .show(ctx, |ui| {
+            ui.label(
+                RichText::new(format!(
+                    "{} Truncate all documents in '{db_name}.{coll_name}'?",
+                    regular::WARNING
+                ))
+                .color(palette.warning_color)
+                .strong()
+                .size(13.5),
+            );
+            ui.add_space(6.0);
+            ui.label("All documents in this collection will be permanently deleted. The collection schema and indexes will be preserved.");
+            ui.add_space(12.0);
+
+            ui.horizontal(|ui| {
+                if primary_button(
+                    ui,
+                    &format!("{} Truncate Data", regular::BROOM),
+                    palette.warning_color,
+                )
+                .clicked()
+                {
+                    events.push(AppEvent::ConfirmTruncateCollection {
+                        connection_index: conn_idx,
+                        db_name,
+                        collection_name: coll_name,
+                    });
+                    state.pending_truncate_coll = None;
+                }
+
+                if secondary_button(ui, "Cancel", palette.border_color).clicked() {
+                    state.pending_truncate_coll = None;
+                }
+            });
+        });
+    }
+
     if state.show_doc_editor_modal {
         let modal_frame = Frame::window(&ctx.style())
             .fill(palette.popup_bg)

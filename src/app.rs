@@ -1489,6 +1489,140 @@ impl MongoStudioApp {
                         );
                     }
                 },
+                AppEvent::RequestTruncateCollection {
+                    connection_index,
+                    db_name,
+                    collection_name,
+                } => {
+                    if collection_name.trim().starts_with("system.") {
+                        self.state.bottom_panel.push_log(
+                            LogLevel::Error,
+                            "CollectionService",
+                            format!(
+                                "Cannot truncate protected system collection '{collection_name}'."
+                            ),
+                        );
+                    } else {
+                        self.state.pending_truncate_coll =
+                            Some((connection_index, db_name, collection_name));
+                    }
+                }
+                AppEvent::ConfirmTruncateCollection {
+                    connection_index,
+                    db_name,
+                    collection_name,
+                } => {
+                    if collection_name.trim().starts_with("system.") {
+                        self.state.bottom_panel.push_log(
+                            LogLevel::Error,
+                            "CollectionService",
+                            format!(
+                                "Cannot truncate protected system collection '{collection_name}'."
+                            ),
+                        );
+                        continue;
+                    }
+
+                    let Some(target) = self.connection_target_by_index(connection_index) else {
+                        self.state.bottom_panel.push_log(
+                            LogLevel::Error,
+                            "CollectionService",
+                            "Connection profile not found.",
+                        );
+                        continue;
+                    };
+
+                    self.state.bottom_panel.push_log(
+                        LogLevel::Info,
+                        "CollectionService",
+                        format!("Truncating collection '{db_name}.{collection_name}'..."),
+                    );
+
+                    let ssh_registry = self.ssh_registry.clone();
+                    let tx = self.bg_tx.clone();
+                    let ctx_clone = ctx.clone();
+                    self.runtime.spawn(async move {
+                        let result = match resolve_target_uri(&ssh_registry, &target).await {
+                            Ok(effective_uri) => CollectionService::truncate_collection(
+                                &effective_uri,
+                                &db_name,
+                                &collection_name,
+                                DEFAULT_CONNECT_TIMEOUT,
+                            )
+                            .await
+                            .map_err(|err| err.to_string()),
+                            Err(err) => Err(err),
+                        };
+
+                        // INTENTIONAL: receiver is dropped only on application shutdown.
+                        let _ = tx.send(AppEvent::CollectionTruncated {
+                            connection_name: target.name,
+                            db_name,
+                            collection_name,
+                            result,
+                        });
+                        ctx_clone.request_repaint();
+                    });
+                }
+                AppEvent::CollectionTruncated {
+                    connection_name,
+                    db_name,
+                    collection_name,
+                    result,
+                } => match result {
+                    Ok(deleted_count) => {
+                        if let Some(conn) = self
+                            .state
+                            .connections
+                            .iter_mut()
+                            .find(|c| c.name == connection_name)
+                        {
+                            if let Some(db) = conn.databases.iter_mut().find(|d| d.name == db_name)
+                            {
+                                if let Some(coll) = db
+                                    .collections
+                                    .iter_mut()
+                                    .find(|c| c.name == collection_name)
+                                {
+                                    coll.documents.clear();
+                                    coll.stats.document_count = 0;
+                                    coll.stats.storage_size_kb = 0.0;
+                                    coll.schema_fields.clear();
+                                }
+                            }
+                        }
+
+                        for (_, tab) in self.state.dock_state.iter_all_tabs_mut() {
+                            if tab.connection_name == connection_name
+                                && tab.database == db_name
+                                && tab.collection == collection_name
+                            {
+                                tab.total_matched = Some(0);
+                                tab.cached_columns.clear();
+                                tab.selected_row = None;
+                                tab.skip = 0;
+                            }
+                        }
+
+                        self.spawn_save_profiles_task(ctx);
+                        self.state.bottom_panel.push_log(
+                            LogLevel::Success,
+                            "CollectionService",
+                            format!(
+                                "Truncated collection '{db_name}.{collection_name}' (deleted {deleted_count} documents)"
+                            ),
+                        );
+                    }
+                    Err(err) => {
+                        self.state.bottom_panel.push_log(
+                            LogLevel::Error,
+                            "CollectionService",
+                            format!(
+                                "Failed to truncate collection '{db_name}.{collection_name}': {err}"
+                            ),
+                        );
+                    }
+                },
                 AppEvent::RequestDropDatabase {
                     connection_index,
                     db_name,

@@ -490,6 +490,23 @@ fn database_and_collection_services_enforce_phase4_offline_guards_before_network
             "collection name must not be empty".to_string()
         ))
     );
+    assert_eq!(
+        runtime.block_on(CollectionService::truncate_collection(
+            unreachable_uri,
+            "",
+            "orders",
+            timeout
+        )),
+        Err(AppError::Connection(
+            "database name must not be empty".to_string()
+        ))
+    );
+    assert_eq!(
+        CollectionService::truncate_collection_blocking(unreachable_uri, "app_db", "   ", timeout),
+        Err(AppError::Connection(
+            "collection name must not be empty".to_string()
+        ))
+    );
 
     for sys_coll in ["system.indexes", "system.users", "  system.profile  "] {
         let create_err = runtime
@@ -519,6 +536,20 @@ fn database_and_collection_services_enforce_phase4_offline_guards_before_network
                 .to_string()
                 .contains("cannot modify protected system collection"),
             "unexpected drop error for `{sys_coll}`: {drop_err}"
+        );
+
+        let truncate_err = CollectionService::truncate_collection_blocking(
+            unreachable_uri,
+            "app_db",
+            sys_coll,
+            timeout,
+        )
+        .expect_err("system.* collection truncate must be rejected");
+        assert!(
+            truncate_err
+                .to_string()
+                .contains("cannot modify protected system collection"),
+            "unexpected truncate error for `{sys_coll}`: {truncate_err}"
         );
     }
 

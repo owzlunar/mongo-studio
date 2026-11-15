@@ -402,6 +402,23 @@ fn render_databases_and_collections(
                                 if ui
                                     .button(
                                         RichText::new(format!(
+                                            "{} Truncate Data...",
+                                            regular::BROOM
+                                        ))
+                                        .color(palette.warning_color),
+                                    )
+                                    .clicked()
+                                {
+                                    events.push(AppEvent::RequestTruncateCollection {
+                                        connection_index: conn_idx,
+                                        db_name: db.name.clone(),
+                                        collection_name: coll.name.clone(),
+                                    });
+                                    ui.close_menu();
+                                }
+                                if ui
+                                    .button(
+                                        RichText::new(format!(
                                             "{} Drop Collection...",
                                             regular::TRASH
                                         ))

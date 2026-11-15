@@ -150,6 +150,22 @@ pub enum AppEvent {
         collection_name: String,
         result: Result<(), String>,
     },
+    RequestTruncateCollection {
+        connection_index: usize,
+        db_name: String,
+        collection_name: String,
+    },
+    ConfirmTruncateCollection {
+        connection_index: usize,
+        db_name: String,
+        collection_name: String,
+    },
+    CollectionTruncated {
+        connection_name: String,
+        db_name: String,
+        collection_name: String,
+        result: Result<u64, String>,
+    },
     RequestDropDatabase {
         connection_index: usize,
         db_name: String,

@@ -1773,3 +1773,47 @@ fn test_connection_modal_environment_prepopulation_and_reset() {
     assert_eq!(state.new_conn_environment, None);
     assert!(state.new_conn_custom_env.is_empty());
 }
+
+#[test]
+fn test_truncate_collection_events_and_state() {
+    let mut state = AppState::new_empty();
+    assert_eq!(state.pending_truncate_coll, None);
+
+    // Request truncate sets pending dialog
+    state.pending_truncate_coll = Some((0, "sales_db".to_string(), "invoices".to_string()));
+    assert_eq!(
+        state.pending_truncate_coll,
+        Some((0, "sales_db".to_string(), "invoices".to_string()))
+    );
+
+    let req_evt = AppEvent::RequestTruncateCollection {
+        connection_index: 0,
+        db_name: "sales_db".to_string(),
+        collection_name: "invoices".to_string(),
+    };
+    assert!(matches!(
+        req_evt,
+        AppEvent::RequestTruncateCollection { .. }
+    ));
+
+    let confirm_evt = AppEvent::ConfirmTruncateCollection {
+        connection_index: 0,
+        db_name: "sales_db".to_string(),
+        collection_name: "invoices".to_string(),
+    };
+    assert!(matches!(
+        confirm_evt,
+        AppEvent::ConfirmTruncateCollection { .. }
+    ));
+
+    let truncated_evt = AppEvent::CollectionTruncated {
+        connection_name: "Cluster-A".to_string(),
+        db_name: "sales_db".to_string(),
+        collection_name: "invoices".to_string(),
+        result: Ok(42),
+    };
+    assert!(matches!(
+        truncated_evt,
+        AppEvent::CollectionTruncated { result: Ok(42), .. }
+    ));
+}

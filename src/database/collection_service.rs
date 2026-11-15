@@ -128,6 +128,51 @@ impl CollectionService {
         let runtime = Self::build_single_thread_runtime()?;
         runtime.block_on(Self::drop_collection(uri, db_name, coll_name, timeout))
     }
+
+    /// Truncates a collection by deleting all documents (`deleteMany({})`).
+    /// Preserves the collection itself, its schema, and all existing indexes.
+    /// Returns the number of documents deleted.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AppError::Connection`] if validation, connection, or `delete_many` fails.
+    pub async fn truncate_collection(
+        uri: &str,
+        db_name: &str,
+        coll_name: &str,
+        timeout: Duration,
+    ) -> AppResult<u64> {
+        let (trimmed_db, trimmed_coll) = Self::validate_names(db_name, coll_name)?;
+        let client = Self::connect_client(uri, timeout).await?;
+
+        let res = tokio::time::timeout(
+            timeout,
+            client
+                .database(trimmed_db)
+                .collection::<Document>(trimmed_coll)
+                .delete_many(bson::doc! {}, None),
+        )
+        .await
+        .map_err(|_| AppError::Connection("truncateCollection timed out".to_string()))?
+        .map_err(|err| AppError::Connection(format!("failed to truncate collection: {err}")))?;
+
+        Ok(res.deleted_count)
+    }
+
+    /// Synchronously truncates a collection by deleting all documents (`deleteMany({})`).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AppError::Connection`] if validation or truncating the collection fails.
+    pub fn truncate_collection_blocking(
+        uri: &str,
+        db_name: &str,
+        coll_name: &str,
+        timeout: Duration,
+    ) -> AppResult<u64> {
+        let runtime = Self::build_single_thread_runtime()?;
+        runtime.block_on(Self::truncate_collection(uri, db_name, coll_name, timeout))
+    }
 }
 
 #[cfg(test)]
