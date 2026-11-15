@@ -12,6 +12,20 @@ use crate::models::{ConnectionConfig, ConnectionStatus, WorkspaceTree};
 use crate::theme::ThemePalette;
 use crate::ui::components::buttons::primary_button;
 
+fn format_doc_count(n: usize) -> String {
+    if n < 1000 {
+        n.to_string()
+    } else if n < 1_000_000 {
+        if n % 1000 >= 100 {
+            format!("{:.1}k", n as f64 / 1000.0)
+        } else {
+            format!("{}k", n / 1000)
+        }
+    } else {
+        format!("{:.1}M", n as f64 / 1_000_000.0)
+    }
+}
+
 fn is_system_database(name: &str) -> bool {
     name.eq_ignore_ascii_case("admin")
         || name.eq_ignore_ascii_case("local")
@@ -440,7 +454,7 @@ fn render_databases_and_collections(
                             ui.add_space(4.0);
                             if coll.loaded {
                                 ui.label(
-                                    RichText::new(format!("{}", coll.stats.document_count))
+                                    RichText::new(format_doc_count(coll.stats.document_count))
                                         .size(11.0)
                                         .color(palette.muted_text),
                                 );

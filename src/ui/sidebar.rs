@@ -598,26 +598,47 @@ fn render_connection_sidebar(
     let k_pressed =
         ui.input(|i| (i.modifiers.command || i.modifiers.ctrl) && i.key_pressed(egui::Key::K));
 
-    ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing.x = 4.0;
-        let response = ui.add(
-            TextEdit::singleline(&mut state.sidebar_search)
-                .id(search_id)
-                .hint_text("Search connections...")
-                .margin(Margin::symmetric(6.0, 4.0))
-                .min_size(Vec2::new(120.0, 24.0))
-                .desired_width(ui.available_width() - 32.0),
-        );
-        if k_pressed {
-            response.request_focus();
-        }
-        ui.label(
-            RichText::new("⌘ K")
-                .monospace()
-                .size(10.0)
-                .color(palette.muted_text),
-        );
-    });
+    Frame::none()
+        .fill(palette.editor_bg)
+        .rounding(Rounding::same(4.0))
+        .stroke(Stroke::new(1.0_f32, palette.border_color))
+        .inner_margin(Margin::symmetric(6.0, 3.0))
+        .show(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.label(
+                    RichText::new(regular::MAGNIFYING_GLASS)
+                        .size(12.0)
+                        .color(palette.muted_text),
+                );
+                let edit_resp = ui.add(
+                    TextEdit::singleline(&mut state.sidebar_search)
+                        .id(search_id)
+                        .hint_text("Search connections...")
+                        .frame(false)
+                        .desired_width(ui.available_width() - 36.0),
+                );
+                if k_pressed {
+                    edit_resp.request_focus();
+                }
+                if !state.sidebar_search.is_empty() {
+                    if ui
+                        .small_button(regular::X)
+                        .on_hover_cursor(CursorIcon::PointingHand)
+                        .on_hover_text("Clear search")
+                        .clicked()
+                    {
+                        state.sidebar_search.clear();
+                    }
+                } else {
+                    ui.label(
+                        RichText::new("⌘ K")
+                            .monospace()
+                            .size(10.0)
+                            .color(palette.muted_text),
+                    );
+                }
+            });
+        });
 
     ui.add_space(6.0);
 

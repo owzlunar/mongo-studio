@@ -1776,186 +1776,152 @@ impl TabViewer for CollectionTabViewer<'_> {
 
                 let mut trigger_query = false;
 
-                ui.horizontal_wrapped(|ui| {
-                    if query_field_input(
-                        ui,
-                        "Filter",
-                        &mut tab.filter_query,
-                        "{}",
-                        210.0,
-                        filter_valid,
-                        self.palette.error_color,
-                    ) {
-                        trigger_query = true;
-                    }
-
-                    if query_field_input(
-                        ui,
-                        "Projection",
-                        &mut tab.projection_query,
-                        "{}",
-                        140.0,
-                        proj_valid,
-                        self.palette.error_color,
-                    ) {
-                        trigger_query = true;
-                    }
-
-                    if query_field_input(
-                        ui,
-                        "Sort",
-                        &mut tab.sort_query,
-                        "{\"_id\": 1}",
-                        140.0,
-                        sort_valid,
-                        self.palette.error_color,
-                    ) {
-                        trigger_query = true;
-                    }
-                });
-
-                ui.add_space(4.0);
-
-                ui.horizontal_wrapped(|ui| {
-                    ui.label(
-                        RichText::new("Limit")
-                            .strong()
-                            .size(12.0)
-                            .color(self.palette.text_primary),
-                    );
-                    ComboBox::from_id_source((
-                        "doc_limit_combo",
-                        &tab.connection_name,
-                        &tab.database,
-                        &tab.collection,
-                    ))
-                    .selected_text(RichText::new(tab.limit.to_string()).monospace())
-                    .width(68.0)
-                    .show_ui(ui, |ui| {
-                        for limit_opt in [20_usize, 50, 100, 250] {
-                            if ui
-                                .selectable_label(tab.limit == limit_opt, limit_opt.to_string())
-                                .clicked()
-                                && tab.limit != limit_opt
-                            {
-                                tab.limit = limit_opt;
-                                tab.skip = 0;
+                Frame::none()
+                    .fill(self.palette.panel_bg)
+                    .rounding(Rounding::same(4.0))
+                    .stroke(Stroke::new(1.0_f32, self.palette.border_color))
+                    .inner_margin(Margin::symmetric(8.0, 6.0))
+                    .show(ui, |ui| {
+                        ui.horizontal_wrapped(|ui| {
+                            if query_field_input(
+                                ui,
+                                "Filter",
+                                &mut tab.filter_query,
+                                "{}",
+                                210.0,
+                                filter_valid,
+                                self.palette.error_color,
+                            ) {
                                 trigger_query = true;
                             }
-                        }
-                    });
 
-                    ui.add_enabled_ui(all_valid && !tab.is_loading, |ui| {
-                        if primary_button(
-                            ui,
-                            &format!("{} Find", regular::MAGNIFYING_GLASS),
-                            self.palette.accent_color,
-                        )
-                        .clicked()
-                        {
-                            trigger_query = true;
-                        }
-                    });
+                            if query_field_input(
+                                ui,
+                                "Projection",
+                                &mut tab.projection_query,
+                                "{}",
+                                140.0,
+                                proj_valid,
+                                self.palette.error_color,
+                            ) {
+                                trigger_query = true;
+                            }
 
-                    ui.add_enabled_ui(!tab.is_loading, |ui| {
-                        if secondary_button(
-                            ui,
-                            &format!("{} Reset", regular::ARROW_COUNTER_CLOCKWISE),
-                            self.palette.border_color,
-                        )
-                        .clicked()
-                        {
-                            tab.filter_query.clear();
-                            tab.filter_query.push_str("{}");
-                            tab.projection_query.clear();
-                            tab.projection_query.push_str("{}");
-                            tab.sort_query.clear();
-                            tab.sort_query.push_str("{\"_id\": 1}");
-                            tab.skip = 0;
-                            tab.limit = 20;
-                            self.emit_live_query(tab);
-                        }
-                    });
-
-                    if secondary_button(
-                        ui,
-                        &format!("{} Insert Doc", regular::PLUS),
-                        self.palette.border_color,
-                    )
-                    .clicked()
-                    {
-                        self.events.push(AppEvent::OpenInsertDocumentModal {
-                            connection_name: tab.connection_name.clone(),
-                            database: tab.database.clone(),
-                            collection: tab.collection.clone(),
+                            if query_field_input(
+                                ui,
+                                "Sort",
+                                &mut tab.sort_query,
+                                "{\"_id\": 1}",
+                                140.0,
+                                sort_valid,
+                                self.palette.error_color,
+                            ) {
+                                trigger_query = true;
+                            }
                         });
-                    }
 
-                    if secondary_button(
-                        ui,
-                        &format!("{} Save Query", regular::FLOPPY_DISK),
-                        self.palette.border_color,
-                    )
-                    .on_hover_text("Save current filter, projection, sort, and limit")
-                    .clicked()
-                    {
-                        self.events.push(AppEvent::OpenSaveQueryModal {
-                            connection_name: tab.connection_name.clone(),
-                            database: tab.database.clone(),
-                            collection: tab.collection.clone(),
-                            filter: tab.filter_query.clone(),
-                            projection: tab.projection_query.clone(),
-                            sort: tab.sort_query.clone(),
-                            limit: tab.limit,
-                        });
-                    }
+                        ui.add_space(4.0);
 
-                    ui.menu_button(
-                        RichText::new(format!("{} Export", regular::CLOUD_ARROW_DOWN)).size(12.0),
-                        |ui| {
-                            for fmt in [
-                                TransferFormat::Json,
-                                TransferFormat::JsonLines,
-                                TransferFormat::Csv,
-                            ] {
-                                if ui
-                                    .button(fmt.label())
-                                    .on_hover_cursor(CursorIcon::PointingHand)
-                                    .clicked()
-                                {
-                                    ui.close_menu();
-                                    if let Some(path) = rfd::FileDialog::new()
-                                        .set_file_name(format!(
-                                            "{}.{}.{}",
-                                            tab.database,
-                                            tab.collection,
-                                            fmt.extension()
-                                        ))
-                                        .add_filter(fmt.label(), &[fmt.extension()])
-                                        .save_file()
+                        ui.horizontal_wrapped(|ui| {
+                            ui.label(
+                                RichText::new("Limit")
+                                    .strong()
+                                    .size(12.0)
+                                    .color(self.palette.text_primary),
+                            );
+                            ComboBox::from_id_source((
+                                "doc_limit_combo",
+                                &tab.connection_name,
+                                &tab.database,
+                                &tab.collection,
+                            ))
+                            .selected_text(RichText::new(tab.limit.to_string()).monospace())
+                            .width(68.0)
+                            .show_ui(ui, |ui| {
+                                for limit_opt in [20_usize, 50, 100, 250] {
+                                    if ui
+                                        .selectable_label(
+                                            tab.limit == limit_opt,
+                                            limit_opt.to_string(),
+                                        )
+                                        .clicked()
+                                        && tab.limit != limit_opt
                                     {
-                                        self.events.push(AppEvent::ExportCollectionData {
-                                            connection_name: tab.connection_name.clone(),
-                                            database: tab.database.clone(),
-                                            collection: tab.collection.clone(),
-                                            filter: tab.filter_query.clone(),
-                                            format: fmt,
-                                            path,
-                                        });
+                                        tab.limit = limit_opt;
+                                        tab.skip = 0;
+                                        trigger_query = true;
                                     }
                                 }
-                            }
-                        },
-                    )
-                    .response
-                    .on_hover_cursor(CursorIcon::PointingHand)
-                    .on_hover_text("Export collection documents using current filter");
+                            });
 
-                    let is_system_coll = tab.collection.starts_with("system.");
-                    ui.add_enabled_ui(!is_system_coll, |ui| {
-                        let resp = ui
-                            .menu_button(
-                                RichText::new(format!("{} Import", regular::FILES)).size(12.0),
+                            ui.add_enabled_ui(all_valid && !tab.is_loading, |ui| {
+                                if primary_button(
+                                    ui,
+                                    &format!("{} Find", regular::MAGNIFYING_GLASS),
+                                    self.palette.accent_color,
+                                )
+                                .clicked()
+                                {
+                                    trigger_query = true;
+                                }
+                            });
+
+                            ui.add_enabled_ui(!tab.is_loading, |ui| {
+                                if secondary_button(
+                                    ui,
+                                    &format!("{} Reset", regular::ARROW_COUNTER_CLOCKWISE),
+                                    self.palette.border_color,
+                                )
+                                .clicked()
+                                {
+                                    tab.filter_query.clear();
+                                    tab.filter_query.push_str("{}");
+                                    tab.projection_query.clear();
+                                    tab.projection_query.push_str("{}");
+                                    tab.sort_query.clear();
+                                    tab.sort_query.push_str("{\"_id\": 1}");
+                                    tab.skip = 0;
+                                    tab.limit = 20;
+                                    self.emit_live_query(tab);
+                                }
+                            });
+
+                            if secondary_button(
+                                ui,
+                                &format!("{} Insert Doc", regular::PLUS),
+                                self.palette.border_color,
+                            )
+                            .clicked()
+                            {
+                                self.events.push(AppEvent::OpenInsertDocumentModal {
+                                    connection_name: tab.connection_name.clone(),
+                                    database: tab.database.clone(),
+                                    collection: tab.collection.clone(),
+                                });
+                            }
+
+                            if secondary_button(
+                                ui,
+                                &format!("{} Save Query", regular::FLOPPY_DISK),
+                                self.palette.border_color,
+                            )
+                            .on_hover_text("Save current filter, projection, sort, and limit")
+                            .clicked()
+                            {
+                                self.events.push(AppEvent::OpenSaveQueryModal {
+                                    connection_name: tab.connection_name.clone(),
+                                    database: tab.database.clone(),
+                                    collection: tab.collection.clone(),
+                                    filter: tab.filter_query.clone(),
+                                    projection: tab.projection_query.clone(),
+                                    sort: tab.sort_query.clone(),
+                                    limit: tab.limit,
+                                });
+                            }
+
+                            ui.menu_button(
+                                RichText::new(format!("{} Export", regular::CLOUD_ARROW_DOWN))
+                                    .size(12.0),
                                 |ui| {
                                     for fmt in [
                                         TransferFormat::Json,
@@ -1969,13 +1935,20 @@ impl TabViewer for CollectionTabViewer<'_> {
                                         {
                                             ui.close_menu();
                                             if let Some(path) = rfd::FileDialog::new()
+                                                .set_file_name(format!(
+                                                    "{}.{}.{}",
+                                                    tab.database,
+                                                    tab.collection,
+                                                    fmt.extension()
+                                                ))
                                                 .add_filter(fmt.label(), &[fmt.extension()])
-                                                .pick_file()
+                                                .save_file()
                                             {
-                                                self.events.push(AppEvent::ImportCollectionData {
+                                                self.events.push(AppEvent::ExportCollectionData {
                                                     connection_name: tab.connection_name.clone(),
                                                     database: tab.database.clone(),
                                                     collection: tab.collection.clone(),
+                                                    filter: tab.filter_query.clone(),
                                                     format: fmt,
                                                     path,
                                                 });
@@ -1985,35 +1958,78 @@ impl TabViewer for CollectionTabViewer<'_> {
                                 },
                             )
                             .response
-                            .on_hover_cursor(CursorIcon::PointingHand);
+                            .on_hover_cursor(CursorIcon::PointingHand)
+                            .on_hover_text("Export collection documents using current filter");
 
-                        if is_system_coll {
-                            resp.on_disabled_hover_text(
-                                "Cannot import into protected system.* collections",
-                            );
-                        } else {
-                            resp.on_hover_text("Import documents from JSON, JSONL, or CSV");
-                        }
+                            let is_system_coll = tab.collection.starts_with("system.");
+                            ui.add_enabled_ui(!is_system_coll, |ui| {
+                                let resp = ui
+                                    .menu_button(
+                                        RichText::new(format!("{} Import", regular::FILES))
+                                            .size(12.0),
+                                        |ui| {
+                                            for fmt in [
+                                                TransferFormat::Json,
+                                                TransferFormat::JsonLines,
+                                                TransferFormat::Csv,
+                                            ] {
+                                                if ui
+                                                    .button(fmt.label())
+                                                    .on_hover_cursor(CursorIcon::PointingHand)
+                                                    .clicked()
+                                                {
+                                                    ui.close_menu();
+                                                    if let Some(path) = rfd::FileDialog::new()
+                                                        .add_filter(fmt.label(), &[fmt.extension()])
+                                                        .pick_file()
+                                                    {
+                                                        self.events.push(
+                                                            AppEvent::ImportCollectionData {
+                                                                connection_name: tab
+                                                                    .connection_name
+                                                                    .clone(),
+                                                                database: tab.database.clone(),
+                                                                collection: tab.collection.clone(),
+                                                                format: fmt,
+                                                                path,
+                                                            },
+                                                        );
+                                                    }
+                                                }
+                                            }
+                                        },
+                                    )
+                                    .response
+                                    .on_hover_cursor(CursorIcon::PointingHand);
+
+                                if is_system_coll {
+                                    resp.on_disabled_hover_text(
+                                        "Cannot import into protected system.* collections",
+                                    );
+                                } else {
+                                    resp.on_hover_text("Import documents from JSON, JSONL, or CSV");
+                                }
+                            });
+
+                            if tab.is_loading {
+                                ui.spinner();
+                                ui.label(
+                                    RichText::new("Querying MongoDB...")
+                                        .size(11.5)
+                                        .color(self.palette.warning_color),
+                                );
+                            } else if !all_valid {
+                                ui.label(
+                                    RichText::new(format!(
+                                        "{} Invalid JSON in query parameters",
+                                        regular::WARNING
+                                    ))
+                                    .color(self.palette.error_color)
+                                    .size(11.5),
+                                );
+                            }
+                        });
                     });
-
-                    if tab.is_loading {
-                        ui.spinner();
-                        ui.label(
-                            RichText::new("Querying MongoDB...")
-                                .size(11.5)
-                                .color(self.palette.warning_color),
-                        );
-                    } else if !all_valid {
-                        ui.label(
-                            RichText::new(format!(
-                                "{} Invalid JSON in query parameters",
-                                regular::WARNING
-                            ))
-                            .color(self.palette.error_color)
-                            .size(11.5),
-                        );
-                    }
-                });
 
                 if trigger_query && all_valid && !tab.is_loading {
                     tab.skip = 0;

@@ -405,32 +405,86 @@ fn render_central_workspace(
         if !state.has_open_tabs() {
             ui.centered_and_justified(|ui| {
                 ui.vertical_centered(|ui| {
+                    ui.add_space(20.0);
+                    ui.add(
+                        Image::new(egui::include_image!("../../assets/logo.svg"))
+                            .max_size(Vec2::new(48.0, 48.0)),
+                    );
+                    ui.add_space(10.0);
                     ui.label(
                         RichText::new("Mongo Studio")
-                            .size(24.0)
+                            .size(22.0)
                             .strong()
                             .color(palette.text_primary),
                     );
-                    ui.add_space(8.0);
+                    ui.add_space(4.0);
                     ui.label(
-                        RichText::new(
-                            "Open a collection from the sidebar or add a new MongoDB connection to begin.",
-                        )
-                        .size(13.0)
-                        .color(palette.muted_text),
+                        RichText::new("Fast, modern MongoDB administration tool for developers")
+                            .size(12.5)
+                            .color(palette.muted_text),
                     );
-                    ui.add_space(16.0);
-                    if ui
-                        .button(
-                            RichText::new(format!("{} Add Connection", regular::PLUS))
-                                .size(13.0)
-                                .color(palette.text_primary),
-                        )
-                        .on_hover_cursor(CursorIcon::PointingHand)
-                        .clicked()
-                    {
-                        events.push(AppEvent::OpenNewConnectionModal);
-                    }
+                    ui.add_space(20.0);
+
+                    Frame::none()
+                        .fill(palette.panel_bg)
+                        .rounding(Rounding::same(6.0))
+                        .stroke(Stroke::new(1.0_f32, palette.border_color))
+                        .inner_margin(Margin::symmetric(24.0, 16.0))
+                        .show(ui, |ui| {
+                            ui.set_max_width(340.0);
+
+                            let action_row = |ui: &mut egui::Ui,
+                                              icon: &str,
+                                              title: &str,
+                                              shortcut: &str|
+                             -> bool {
+                                let mut clicked = false;
+                                ui.horizontal(|ui| {
+                                    if ui
+                                        .selectable_label(
+                                            false,
+                                            RichText::new(format!("{icon}  {title}"))
+                                                .size(12.5)
+                                                .color(palette.text_primary),
+                                        )
+                                        .on_hover_cursor(CursorIcon::PointingHand)
+                                        .clicked()
+                                    {
+                                        clicked = true;
+                                    }
+                                    ui.with_layout(
+                                        egui::Layout::right_to_left(egui::Align::Center),
+                                        |ui| {
+                                            ui.label(
+                                                RichText::new(shortcut)
+                                                    .monospace()
+                                                    .size(11.0)
+                                                    .color(palette.muted_text),
+                                            );
+                                        },
+                                    );
+                                });
+                                clicked
+                            };
+
+                            if action_row(ui, regular::PLUS, "New Connection...", "") {
+                                events.push(AppEvent::OpenNewConnectionModal);
+                            }
+                            ui.add_space(6.0);
+                            if action_row(ui, regular::TERMINAL_WINDOW, "Command Palette", "Ctrl+P")
+                            {
+                                events.push(AppEvent::ToggleCommandPalette);
+                            }
+                            ui.add_space(6.0);
+                            if action_row(ui, regular::SIDEBAR_SIMPLE, "Toggle Explorer", "Ctrl+B")
+                            {
+                                events.push(AppEvent::ToggleSidebar);
+                            }
+                            ui.add_space(6.0);
+                            if action_row(ui, regular::TERMINAL, "Toggle Panel", "Ctrl+J") {
+                                events.push(AppEvent::ToggleBottomPanel);
+                            }
+                        });
                 });
             });
             return;

@@ -4,7 +4,7 @@ use egui_phosphor::regular;
 use crate::core::events::AppEvent;
 use crate::core::state::AppState;
 use crate::models::ConnectionStatus;
-use crate::theme::ThemePalette;
+use crate::theme::{ThemeMode, ThemePalette};
 
 pub fn render_status_bar(
     ctx: &Context,
@@ -75,8 +75,12 @@ pub fn render_status_bar(
                             .size(12.0),
                     );
                     ui.separator();
+                    let mode_str = match state.theme_mode {
+                        ThemeMode::Dark => "Dark",
+                        ThemeMode::Light => "Light",
+                    };
                     ui.label(
-                        RichText::new(format!("Theme: {:?}", state.theme_mode))
+                        RichText::new(format!("Theme: {mode_str}"))
                             .color(palette.status_bar_fg)
                             .size(11.5),
                     );
