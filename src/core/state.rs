@@ -1,10 +1,12 @@
+use std::collections::HashSet;
+
 use bson::Bson;
 use egui_dock::DockState;
 use uuid::Uuid;
 
 use crate::models::{
-    CollectionInfo, ConnectionConfig, MongoUser, QueryStore, QuickAccessFilter, SavedQuery,
-    SshAuthMethod, SshTunnelConfig, UserRole, WorkspaceTree,
+    CollectionInfo, ConnectionConfig, EnvironmentTag, MongoUser, QueryStore, QuickAccessFilter,
+    SavedQuery, SshAuthMethod, SshTunnelConfig, UserRole, WorkspaceTree,
 };
 use crate::theme::ThemeMode;
 use crate::ui::activity_bar::ActivityView;
@@ -123,8 +125,13 @@ pub struct AppState {
     pub new_folder_workspace_target: String,
     pub custom_workspaces: Vec<String>,
     pub custom_folders: Vec<(String, String)>,
+    pub collapsed_workspaces: HashSet<String>,
+    pub collapsed_folders: HashSet<(String, String)>,
+    pub collapsed_unassigned: bool,
     pub new_conn_workspace: Option<String>,
     pub new_conn_folder: Option<String>,
+    pub new_conn_environment: Option<EnvironmentTag>,
+    pub new_conn_custom_env: String,
     pub rename_workspace_dialog: Option<String>,
     pub rename_workspace_input: String,
     pub rename_folder_dialog: Option<(String, String)>,
@@ -269,8 +276,13 @@ impl AppState {
             new_folder_workspace_target: String::new(),
             custom_workspaces: persisted.custom_workspaces,
             custom_folders: persisted.custom_folders,
+            collapsed_workspaces: HashSet::new(),
+            collapsed_folders: HashSet::new(),
+            collapsed_unassigned: false,
             new_conn_workspace: None,
             new_conn_folder: None,
+            new_conn_environment: None,
+            new_conn_custom_env: String::new(),
             rename_workspace_dialog: None,
             rename_workspace_input: String::new(),
             rename_folder_dialog: None,
@@ -299,6 +311,8 @@ impl AppState {
         self.new_conn_ssh_save_secret = false;
         self.new_conn_workspace = None;
         self.new_conn_folder = None;
+        self.new_conn_environment = None;
+        self.new_conn_custom_env.clear();
         self.test_conn_status = None;
         self.is_testing_connection = false;
     }
@@ -319,6 +333,12 @@ impl AppState {
 
         self.new_conn_workspace = conn.workspace.clone();
         self.new_conn_folder = conn.folder.clone();
+        self.new_conn_environment = conn.environment.clone();
+        if let Some(EnvironmentTag::Other(s)) = &conn.environment {
+            self.new_conn_custom_env = s.clone();
+        } else {
+            self.new_conn_custom_env.clear();
+        }
 
         self.new_conn_ssh_enabled = conn.ssh_tunnel.enabled;
         self.new_conn_ssh_endpoint = conn.ssh_tunnel.endpoint.clone();
@@ -667,6 +687,24 @@ impl AppState {
         {
             self.active_workspace_filter = Some(new_trimmed.to_string());
         }
+
+        let was_collapsed = self.collapsed_workspaces.remove(old_trimmed);
+        if was_collapsed {
+            self.collapsed_workspaces.insert(new_trimmed.to_string());
+        }
+        let updated_folders: Vec<(String, String)> = self
+            .collapsed_folders
+            .drain()
+            .map(|(w, f)| {
+                if w.eq_ignore_ascii_case(old_trimmed) {
+                    (new_trimmed.to_string(), f)
+                } else {
+                    (w, f)
+                }
+            })
+            .collect();
+        self.collapsed_folders.extend(updated_folders);
+
         true
     }
 
@@ -703,6 +741,15 @@ impl AppState {
                 *f = new_trimmed.to_string();
             }
         }
+
+        let was_collapsed = self
+            .collapsed_folders
+            .remove(&(ws_trimmed.to_string(), old_trimmed.to_string()));
+        if was_collapsed {
+            self.collapsed_folders
+                .insert((ws_trimmed.to_string(), new_trimmed.to_string()));
+        }
+
         true
     }
 
@@ -732,6 +779,10 @@ impl AppState {
         {
             self.active_workspace_filter = None;
         }
+        self.collapsed_workspaces
+            .retain(|w| !w.trim().eq_ignore_ascii_case(trimmed));
+        self.collapsed_folders
+            .retain(|(w, _)| !w.trim().eq_ignore_ascii_case(trimmed));
     }
 
     /// Deletes a folder within a workspace by clearing the folder field on all matching connections
@@ -754,6 +805,53 @@ impl AppState {
             !(w.trim().eq_ignore_ascii_case(trimmed_ws)
                 && f.trim().eq_ignore_ascii_case(trimmed_folder))
         });
+        self.collapsed_folders.retain(|(w, f)| {
+            !(w.trim().eq_ignore_ascii_case(trimmed_ws)
+                && f.trim().eq_ignore_ascii_case(trimmed_folder))
+        });
+    }
+
+    /// Automatically ensures the destination workspace/folder or "Other Connections" is expanded,
+    /// visible, and not hidden by active workspace filters, quick filters, or search filters.
+    pub fn auto_expand_connection_target(&mut self, workspace: Option<&str>, folder: Option<&str>) {
+        // Clear search and reset quick filter so the connection is not filtered out
+        self.sidebar_search.clear();
+        self.quick_access_filter = QuickAccessFilter::All;
+        self.sidebar_visible = true;
+        self.active_activity = ActivityView::Connections;
+
+        match workspace {
+            Some(ws) if !ws.trim().is_empty() => {
+                let ws_trimmed = ws.trim();
+                // Ensure this workspace is expanded
+                self.collapsed_workspaces
+                    .retain(|w| !w.eq_ignore_ascii_case(ws_trimmed));
+
+                // If a folder was specified, ensure it is expanded
+                if let Some(f) = folder.map(str::trim).filter(|s| !s.is_empty()) {
+                    self.collapsed_folders.retain(|(w, fold)| {
+                        !(w.eq_ignore_ascii_case(ws_trimmed) && fold.eq_ignore_ascii_case(f))
+                    });
+                }
+
+                // If there's an active workspace filter set to a different workspace,
+                // switch to this workspace so the new connection is immediately visible.
+                if let Some(active) = &self.active_workspace_filter {
+                    if !active.eq_ignore_ascii_case(ws_trimmed) {
+                        self.active_workspace_filter = Some(ws_trimmed.to_string());
+                    }
+                }
+            }
+            _ => {
+                // No workspace specified (belongs to "Other Connections"):
+                // 1. Ensure "Other Connections" group is expanded
+                self.collapsed_unassigned = false;
+
+                // 2. Clear active workspace filter if one is active, because unassigned
+                // connections are hidden when any workspace filter is active.
+                self.active_workspace_filter = None;
+            }
+        }
     }
 
     /// Returns the number of favorite connections.

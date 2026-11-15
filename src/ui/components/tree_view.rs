@@ -742,7 +742,7 @@ pub fn render_connection_tree(
     // 1. Workspaces & Projects Hierarchy
     for ws in &tree.workspaces {
         let ws_id = ui.make_persistent_id(("workspace_expanded", &ws.name));
-        let mut ws_expanded = ui.data_mut(|d| *d.get_temp_mut_or(ws_id, true));
+        let ws_expanded = !state.collapsed_workspaces.contains(&ws.name);
 
         let ws_arrow = if ws_expanded {
             regular::CARET_DOWN
@@ -764,8 +764,11 @@ pub fn render_connection_tree(
                     ws.name
                 ));
             if resp.clicked() {
-                ws_expanded = !ws_expanded;
-                ui.data_mut(|d| d.insert_temp(ws_id, ws_expanded));
+                if ws_expanded {
+                    state.collapsed_workspaces.insert(ws.name.clone());
+                } else {
+                    state.collapsed_workspaces.remove(&ws.name);
+                }
             }
 
             resp.context_menu(|ui| {
@@ -834,7 +837,8 @@ pub fn render_connection_tree(
                 for folder in &ws.folders {
                     let folder_id =
                         ui.make_persistent_id(("folder_expanded", &ws.name, &folder.name));
-                    let mut folder_expanded = ui.data_mut(|d| *d.get_temp_mut_or(folder_id, true));
+                    let folder_key = (ws.name.clone(), folder.name.clone());
+                    let folder_expanded = !state.collapsed_folders.contains(&folder_key);
                     let folder_arrow = if folder_expanded {
                         regular::CARET_DOWN
                     } else {
@@ -858,8 +862,11 @@ pub fn render_connection_tree(
                                 folder.name
                             ));
                         if resp.clicked() {
-                            folder_expanded = !folder_expanded;
-                            ui.data_mut(|d| d.insert_temp(folder_id, folder_expanded));
+                            if folder_expanded {
+                                state.collapsed_folders.insert(folder_key.clone());
+                            } else {
+                                state.collapsed_folders.remove(&folder_key);
+                            }
                         }
 
                         resp.context_menu(|ui| {
@@ -937,7 +944,7 @@ pub fn render_connection_tree(
     // 2. Unassigned Connections Group
     if !tree.unassigned_connections.is_empty() {
         let unassigned_id = ui.make_persistent_id("unassigned_connections_group");
-        let mut unassigned_expanded = ui.data_mut(|d| *d.get_temp_mut_or(unassigned_id, true));
+        let unassigned_expanded = !state.collapsed_unassigned;
         let arrow = if unassigned_expanded {
             regular::CARET_DOWN
         } else {
@@ -956,8 +963,7 @@ pub fn render_connection_tree(
                 .on_hover_cursor(CursorIcon::PointingHand)
                 .on_hover_text("Connections not yet assigned to a workspace");
             if resp.clicked() {
-                unassigned_expanded = !unassigned_expanded;
-                ui.data_mut(|d| d.insert_temp(unassigned_id, unassigned_expanded));
+                state.collapsed_unassigned = !state.collapsed_unassigned;
             }
 
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {

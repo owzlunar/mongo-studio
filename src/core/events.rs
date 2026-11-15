@@ -8,8 +8,8 @@ use crate::database::{
     TransferFormat,
 };
 use crate::models::{
-    CollectionInfo, DatabaseInfo, DocumentRow, IndexInfo, MongoUser, QuickAccessFilter, SavedQuery,
-    SchemaField, SshTunnelConfig, UserRole,
+    CollectionInfo, DatabaseInfo, DocumentRow, EnvironmentTag, IndexInfo, MongoUser,
+    QuickAccessFilter, SavedQuery, SchemaField, SshTunnelConfig, UserRole,
 };
 use crate::query::AggregationStage;
 use crate::theme::ThemeMode;
@@ -52,6 +52,7 @@ pub enum AppEvent {
         ssh_secret: String,
         workspace: Option<String>,
         folder: Option<String>,
+        environment: Option<EnvironmentTag>,
     },
     UpdateConnection {
         index: usize,
@@ -61,6 +62,7 @@ pub enum AppEvent {
         ssh_secret: String,
         workspace: Option<String>,
         folder: Option<String>,
+        environment: Option<EnvironmentTag>,
     },
     TestConnection {
         name: String,

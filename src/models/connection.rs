@@ -361,11 +361,14 @@ impl ConnectionConfig {
     }
 
     /// Returns the explicit environment tag if set, or attempts to infer one from the connection name.
+    /// If explicitly set to `Some(EnvironmentTag::None)`, returns `None` without auto-detecting.
     #[must_use]
     pub fn effective_environment(&self) -> Option<EnvironmentTag> {
-        self.environment
-            .clone()
-            .or_else(|| EnvironmentTag::detect_from_name(&self.name))
+        match &self.environment {
+            Some(EnvironmentTag::None) => None,
+            Some(env) => Some(env.clone()),
+            None => EnvironmentTag::detect_from_name(&self.name),
+        }
     }
 
     /// Returns the trimmed workspace name, or `None` if empty or whitespace.

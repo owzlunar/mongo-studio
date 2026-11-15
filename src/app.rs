@@ -3769,7 +3769,9 @@ impl MongoStudioApp {
                     );
                 }
                 AppEvent::OpenNewConnectionModal => {
+                    let default_ws = self.state.active_workspace_filter.clone();
                     self.state.reset_connection_modal_fields();
+                    self.state.new_conn_workspace = default_ws;
                     self.state.show_new_connection_modal = true;
                 }
                 AppEvent::OpenNewConnectionModalForTarget { workspace, folder } => {
@@ -4060,6 +4062,7 @@ impl MongoStudioApp {
                     ssh_secret,
                     workspace,
                     folder,
+                    environment,
                 } => match ConnectionConfig::new_profile(&name, &uri) {
                     Ok(mut conn) => {
                         conn.workspace = workspace
@@ -4068,6 +4071,7 @@ impl MongoStudioApp {
                         conn.folder = folder
                             .map(|s| s.trim().to_string())
                             .filter(|s| !s.is_empty());
+                        conn.environment = environment;
 
                         let password_to_save = if self.state.new_conn_save_password
                             && !self.state.new_conn_password.is_empty()
@@ -4105,6 +4109,13 @@ impl MongoStudioApp {
                         self.state.connections.push(conn);
                         let new_idx = self.state.connections.len().saturating_sub(1);
                         self.state.active_connection_idx = new_idx;
+
+                        let target_ws = self.state.connections[new_idx].workspace.clone();
+                        let target_folder = self.state.connections[new_idx].folder.clone();
+                        self.state.auto_expand_connection_target(
+                            target_ws.as_deref(),
+                            target_folder.as_deref(),
+                        );
 
                         if let Some(password) = password_to_save {
                             self.spawn_keyring_save_task(ctx, conn_id, password);
@@ -4152,6 +4163,7 @@ impl MongoStudioApp {
                     ssh_secret,
                     workspace,
                     folder,
+                    environment,
                 } => {
                     let clamped_name = ConnectionConfig::clamp_profile_name(&name);
                     let trimmed_uri = uri.trim();
@@ -4181,6 +4193,7 @@ impl MongoStudioApp {
                         conn.folder = folder
                             .map(|s| s.trim().to_string())
                             .filter(|s| !s.is_empty());
+                        conn.environment = environment;
 
                         let keyring_op = if self.state.new_conn_save_password
                             && !self.state.new_conn_password.is_empty()
@@ -4276,6 +4289,13 @@ impl MongoStudioApp {
                         if let Some(target) = self.connection_target_by_index(index) {
                             self.spawn_connect_task(ctx, target);
                         }
+
+                        let target_ws = self.state.connections[index].workspace.clone();
+                        let target_folder = self.state.connections[index].folder.clone();
+                        self.state.auto_expand_connection_target(
+                            target_ws.as_deref(),
+                            target_folder.as_deref(),
+                        );
                     }
                     self.state.new_conn_password.clear();
                     self.state.new_conn_ssh_secret.clear();

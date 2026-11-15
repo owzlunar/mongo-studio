@@ -12,6 +12,7 @@ pub enum EnvironmentTag {
     Dev,
     Test,
     Prod,
+    None,
     Other(String),
 }
 
@@ -23,6 +24,7 @@ impl EnvironmentTag {
             Self::Dev => "DEV",
             Self::Test => "TEST",
             Self::Prod => "PROD",
+            Self::None => "NONE",
             Self::Other(custom) => custom.as_str(),
         }
     }
@@ -30,7 +32,10 @@ impl EnvironmentTag {
     /// User-facing label for badges and dropdowns.
     #[must_use]
     pub fn label(&self) -> &str {
-        self.as_str()
+        match self {
+            Self::None => "None",
+            _ => self.as_str(),
+        }
     }
 
     /// Returns the text color for the environment tag.
@@ -84,6 +89,11 @@ impl EnvironmentTag {
     pub fn badge_colors(&self, is_dark: bool) -> (egui::Color32, egui::Color32, egui::Color32) {
         if is_dark {
             match self {
+                Self::None => (
+                    egui::Color32::TRANSPARENT,
+                    egui::Color32::TRANSPARENT,
+                    egui::Color32::TRANSPARENT,
+                ),
                 Self::Dev => (
                     egui::Color32::from_rgba_unmultiplied(6, 78, 59, 200),
                     egui::Color32::from_rgb(52, 211, 153), // #34d399
@@ -107,6 +117,11 @@ impl EnvironmentTag {
             }
         } else {
             match self {
+                Self::None => (
+                    egui::Color32::TRANSPARENT,
+                    egui::Color32::TRANSPARENT,
+                    egui::Color32::TRANSPARENT,
+                ),
                 Self::Dev => (
                     egui::Color32::from_rgba_unmultiplied(209, 250, 229, 220), // emerald-100
                     egui::Color32::from_rgb(6, 95, 70),                        // emerald-800
@@ -158,6 +173,7 @@ impl<'de> Deserialize<'de> for EnvironmentTag {
             "DEV" => Ok(Self::Dev),
             "TEST" => Ok(Self::Test),
             "PROD" => Ok(Self::Prod),
+            "NONE" => Ok(Self::None),
             _ => Ok(Self::Other(trimmed.to_string())),
         }
     }

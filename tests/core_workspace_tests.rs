@@ -1198,6 +1198,7 @@ fn connection_config_legacy_deserialization_and_secret_free_profile_json_roundtr
         ssh_secret: "ephemeral-passphrase".to_string(),
         workspace: Some("Infra".to_string()),
         folder: Some("Bastion".to_string()),
+        environment: Some(EnvironmentTag::Dev),
     };
     let secret_evt = AppEvent::SshSecretLoaded {
         index: 0,
@@ -1675,4 +1676,100 @@ fn test_app_event_workspace_variants() {
         new_name: "F2".to_string(),
     };
     assert!(matches!(rename_f, AppEvent::RenameProjectFolder { .. }));
+}
+
+#[test]
+fn test_environment_tag_none_and_custom_options() {
+    // 1. None tag serialization and display
+    assert_eq!(EnvironmentTag::None.as_str(), "NONE");
+    assert_eq!(EnvironmentTag::None.label(), "None");
+    let ser = serde_json::to_string(&EnvironmentTag::None).expect("serialize None");
+    assert_eq!(ser, "\"NONE\"");
+    let de: EnvironmentTag = serde_json::from_str("\"NONE\"").expect("deserialize None");
+    assert_eq!(de, EnvironmentTag::None);
+
+    // 2. Explicit None in connection overrides name-based auto-detection
+    let mut conn = ConnectionConfig::new_profile("my-production-db", "mongodb://localhost:27017")
+        .expect("profile");
+    // With environment = None (not set), effective_environment auto-detects Prod
+    assert_eq!(conn.effective_environment(), Some(EnvironmentTag::Prod));
+    // Explicitly set environment to Some(EnvironmentTag::None)
+    conn.environment = Some(EnvironmentTag::None);
+    // Should now return None (no tag), suppressing auto-detection
+    assert_eq!(conn.effective_environment(), None);
+
+    // 3. Explicit Custom tag
+    conn.environment = Some(EnvironmentTag::Other("STAGING".to_string()));
+    assert_eq!(
+        conn.effective_environment(),
+        Some(EnvironmentTag::Other("STAGING".to_string()))
+    );
+}
+
+#[test]
+fn test_auto_expand_connection_target_workspace_and_folder() {
+    let mut state = AppState::new_empty();
+    // Simulate user previously collapsing workspace and folder
+    state.collapsed_workspaces.insert("Enterprise".to_string());
+    state
+        .collapsed_folders
+        .insert(("Enterprise".to_string(), "CoreServices".to_string()));
+    // Active filter set to a different workspace
+    state.active_workspace_filter = Some("OtherWorkspace".to_string());
+    state.sidebar_search = "search-term".to_string();
+    state.quick_access_filter = QuickAccessFilter::Favorites;
+
+    // Call auto-expand for Enterprise / CoreServices
+    state.auto_expand_connection_target(Some("Enterprise"), Some("CoreServices"));
+
+    // Assert: workspace & folder are expanded (not in collapsed sets)
+    assert!(!state.collapsed_workspaces.contains("Enterprise"));
+    assert!(!state
+        .collapsed_folders
+        .contains(&("Enterprise".to_string(), "CoreServices".to_string())));
+    // Assert: active filter automatically switched to Enterprise so it's not hidden
+    assert_eq!(state.active_workspace_filter.as_deref(), Some("Enterprise"));
+    // Assert: search and quick filter cleared
+    assert!(state.sidebar_search.is_empty());
+    assert_eq!(state.quick_access_filter, QuickAccessFilter::All);
+}
+
+#[test]
+fn test_auto_expand_connection_target_unassigned_other() {
+    let mut state = AppState::new_empty();
+    // Simulate user previously collapsed Other Connections
+    state.collapsed_unassigned = true;
+    // User had filtered by a specific workspace
+    state.active_workspace_filter = Some("Enterprise".to_string());
+    state.sidebar_search = "old-query".to_string();
+
+    // Call auto-expand when no workspace is specified (belongs to Other)
+    state.auto_expand_connection_target(None, None);
+
+    // Assert: Other Connections is uncollapsed
+    assert!(!state.collapsed_unassigned);
+    // Assert: Active workspace filter is cleared (otherwise Other Connections is hidden!)
+    assert_eq!(state.active_workspace_filter, None);
+    // Assert: Search cleared
+    assert!(state.sidebar_search.is_empty());
+}
+
+#[test]
+fn test_connection_modal_environment_prepopulation_and_reset() {
+    let mut state = AppState::new_empty();
+
+    let mut conn = ConnectionConfig::new_profile("app-db", "mongodb://localhost:27017")
+        .expect("valid profile");
+    conn.environment = Some(EnvironmentTag::Other("SANDBOX".to_string()));
+
+    state.populate_connection_modal(0, &conn);
+    assert_eq!(
+        state.new_conn_environment,
+        Some(EnvironmentTag::Other("SANDBOX".to_string()))
+    );
+    assert_eq!(state.new_conn_custom_env, "SANDBOX");
+
+    state.reset_connection_modal_fields();
+    assert_eq!(state.new_conn_environment, None);
+    assert!(state.new_conn_custom_env.is_empty());
 }

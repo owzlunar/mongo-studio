@@ -9,7 +9,8 @@ use crate::core::events::AppEvent;
 use crate::core::state::AppState;
 use crate::database::{CreateIndexRequest, IndexService};
 use crate::models::{
-    ConnectionConfig, DocumentRow, SavedQuery, SshAuthMethod, SshTunnelConfig, UserRole,
+    ConnectionConfig, DocumentRow, EnvironmentTag, SavedQuery, SshAuthMethod, SshTunnelConfig,
+    UserRole,
 };
 use crate::theme::{ThemeMode, ThemePalette};
 use crate::ui::activity_bar::render_activity_bar;
@@ -753,6 +754,137 @@ fn render_modals(
                     });
                     ui.add_space(6.0);
 
+                    // Environment Tag Selection
+                    ui.columns(2, |columns| {
+                        columns[0].label(
+                            RichText::new("🏷 Environment Tag")
+                                .strong()
+                                .size(11.5)
+                                .color(palette.text_primary),
+                        );
+                        let env_display = match &state.new_conn_environment {
+                            None => "✨ Auto-detect (from name)".to_string(),
+                            Some(EnvironmentTag::Dev) => "🟢 DEV".to_string(),
+                            Some(EnvironmentTag::Test) => "🟡 TEST".to_string(),
+                            Some(EnvironmentTag::Prod) => "🔴 PROD".to_string(),
+                            Some(EnvironmentTag::None) => "⚪ None (No Tag)".to_string(),
+                            Some(EnvironmentTag::Other(s)) => format!("✏️ Custom ({s})"),
+                        };
+
+                        ComboBox::from_id_source("modal_conn_env_select")
+                            .selected_text(env_display)
+                            .width(columns[0].available_width().max(180.0))
+                            .show_ui(&mut columns[0], |ui| {
+                                if ui
+                                    .selectable_label(
+                                        state.new_conn_environment.is_none(),
+                                        "✨ Auto-detect (from name)",
+                                    )
+                                    .clicked()
+                                {
+                                    state.new_conn_environment = None;
+                                }
+                                if ui
+                                    .selectable_label(
+                                        state.new_conn_environment == Some(EnvironmentTag::Dev),
+                                        "🟢 DEV",
+                                    )
+                                    .clicked()
+                                {
+                                    state.new_conn_environment = Some(EnvironmentTag::Dev);
+                                }
+                                if ui
+                                    .selectable_label(
+                                        state.new_conn_environment == Some(EnvironmentTag::Test),
+                                        "🟡 TEST",
+                                    )
+                                    .clicked()
+                                {
+                                    state.new_conn_environment = Some(EnvironmentTag::Test);
+                                }
+                                if ui
+                                    .selectable_label(
+                                        state.new_conn_environment == Some(EnvironmentTag::Prod),
+                                        "🔴 PROD",
+                                    )
+                                    .clicked()
+                                {
+                                    state.new_conn_environment = Some(EnvironmentTag::Prod);
+                                }
+                                if ui
+                                    .selectable_label(
+                                        state.new_conn_environment == Some(EnvironmentTag::None),
+                                        "⚪ None (No Tag)",
+                                    )
+                                    .clicked()
+                                {
+                                    state.new_conn_environment = Some(EnvironmentTag::None);
+                                }
+                                let is_custom = matches!(
+                                    state.new_conn_environment,
+                                    Some(EnvironmentTag::Other(_))
+                                );
+                                if ui.selectable_label(is_custom, "✏️ Custom...").clicked() {
+                                    let custom_val = if state.new_conn_custom_env.trim().is_empty()
+                                    {
+                                        "STAGING".to_string()
+                                    } else {
+                                        state.new_conn_custom_env.trim().to_uppercase()
+                                    };
+                                    state.new_conn_custom_env = custom_val.clone();
+                                    state.new_conn_environment =
+                                        Some(EnvironmentTag::Other(custom_val));
+                                }
+                            });
+
+                        columns[1].label(
+                            RichText::new("Tag Preview")
+                                .strong()
+                                .size(11.5)
+                                .color(palette.muted_text),
+                        );
+                        if let Some(EnvironmentTag::Other(_)) = &state.new_conn_environment {
+                            let mut custom_input = state.new_conn_custom_env.clone();
+                            if columns[1]
+                                .add(
+                                    TextEdit::singleline(&mut custom_input)
+                                        .hint_text("e.g. STAGING, UAT")
+                                        .margin(Margin::symmetric(6.0, 4.0))
+                                        .desired_width(f32::INFINITY),
+                                )
+                                .changed()
+                            {
+                                state.new_conn_custom_env = custom_input.trim().to_uppercase();
+                                state.new_conn_environment =
+                                    Some(EnvironmentTag::Other(state.new_conn_custom_env.clone()));
+                            }
+                        } else {
+                            let detected = match &state.new_conn_environment {
+                                Some(EnvironmentTag::None) => None,
+                                Some(env) => Some(env.clone()),
+                                None => EnvironmentTag::detect_from_name(&state.new_conn_name),
+                            };
+                            columns[1].horizontal(|ui| {
+                                if let Some(env) = detected {
+                                    let is_dark = palette.is_dark();
+                                    ui.label(
+                                        RichText::new(format!(" [{}]", env.label()))
+                                            .monospace()
+                                            .size(12.0)
+                                            .color(env.color(is_dark)),
+                                    );
+                                } else {
+                                    ui.label(
+                                        RichText::new("(No tag)")
+                                            .size(11.5)
+                                            .color(palette.muted_text),
+                                    );
+                                }
+                            });
+                        }
+                    });
+                    ui.add_space(6.0);
+
                     ui.label(
                         RichText::new("Host or MongoDB Connection URI")
                             .strong()
@@ -868,6 +1000,7 @@ fn render_modals(
                                         ssh_secret,
                                         workspace: state.new_conn_workspace.clone(),
                                         folder: state.new_conn_folder.clone(),
+                                        environment: state.new_conn_environment.clone(),
                                     });
                                 } else {
                                     events.push(AppEvent::AddConnection {
@@ -877,6 +1010,7 @@ fn render_modals(
                                         ssh_secret,
                                         workspace: state.new_conn_workspace.clone(),
                                         folder: state.new_conn_folder.clone(),
+                                        environment: state.new_conn_environment.clone(),
                                     });
                                 }
                                 state.show_new_connection_modal = false;
