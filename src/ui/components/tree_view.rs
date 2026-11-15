@@ -472,11 +472,6 @@ fn render_connection_row(
 
     let maybe_env = conn.effective_environment();
     let is_dark = palette.is_dark();
-    let name_color = if let Some(env) = &maybe_env {
-        env.color(is_dark)
-    } else {
-        palette.text_primary
-    };
 
     let mut hover_details = if let Some(err) = &conn.last_error {
         format!("{} ({})\nError: {err}", conn.status.label(), conn.host)
@@ -527,26 +522,26 @@ fn render_connection_row(
             ..Default::default()
         },
     );
-    if let Some(env) = &maybe_env {
-        profile_job.append(
-            "● ",
-            0.0,
-            TextFormat {
-                font_id: FontId::new(9.5, FontFamily::Proportional),
-                color: env.color(is_dark),
-                ..Default::default()
-            },
-        );
-    }
     profile_job.append(
         &display_name,
         0.0,
         TextFormat {
             font_id: FontId::new(12.5, FontFamily::Proportional),
-            color: name_color,
+            color: palette.text_primary,
             ..Default::default()
         },
     );
+    if let Some(env) = &maybe_env {
+        profile_job.append(
+            &format!(" [{}]", env.label()),
+            0.0,
+            TextFormat {
+                font_id: FontId::new(10.5, FontFamily::Monospace),
+                color: env.color(is_dark),
+                ..Default::default()
+            },
+        );
+    }
     if conn.ssh_tunnel.enabled {
         profile_job.append(
             " [SSH]",
