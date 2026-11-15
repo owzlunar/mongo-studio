@@ -7,7 +7,7 @@ use egui_phosphor::regular;
 use crate::core::events::AppEvent;
 use crate::core::state::AppState;
 use crate::database::ConnectionManager;
-use crate::models::{QueryStore, QuickAccessFilter, WorkspaceTree};
+use crate::models::{QueryStore, QuickAccessFilter};
 use crate::query::AggregationStage;
 use crate::theme::{ThemeMode, ThemePalette};
 use crate::ui::activity_bar::ActivityView;
@@ -720,7 +720,7 @@ fn render_connection_sidebar(
                         workspace_name: None,
                     });
                 }
-                let all_workspaces = WorkspaceTree::extract_all_workspaces(&state.connections);
+                let all_workspaces = state.all_known_workspaces();
                 for ws_name in all_workspaces {
                     let is_sel = state.active_workspace_filter.as_deref() == Some(&ws_name);
                     if ui

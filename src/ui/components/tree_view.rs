@@ -470,6 +470,14 @@ fn render_connection_row(
         regular::CARET_RIGHT
     };
 
+    let maybe_env = conn.effective_environment();
+    let is_dark = palette.is_dark();
+    let name_color = if let Some(env) = &maybe_env {
+        env.color(is_dark)
+    } else {
+        palette.text_primary
+    };
+
     let mut hover_details = if let Some(err) = &conn.last_error {
         format!("{} ({})\nError: {err}", conn.status.label(), conn.host)
     } else if conn.status.is_connected() {
@@ -485,6 +493,9 @@ fn render_connection_row(
             conn.host
         )
     };
+    if let Some(env) = &maybe_env {
+        let _ = write!(hover_details, "\nEnvironment: {}", env.label());
+    }
     if conn.ssh_tunnel.enabled {
         let _ = write!(
             hover_details,
@@ -516,12 +527,23 @@ fn render_connection_row(
             ..Default::default()
         },
     );
+    if let Some(env) = &maybe_env {
+        profile_job.append(
+            "● ",
+            0.0,
+            TextFormat {
+                font_id: FontId::new(9.5, FontFamily::Proportional),
+                color: env.color(is_dark),
+                ..Default::default()
+            },
+        );
+    }
     profile_job.append(
         &display_name,
         0.0,
         TextFormat {
             font_id: FontId::new(12.5, FontFamily::Proportional),
-            color: palette.text_primary,
+            color: name_color,
             ..Default::default()
         },
     );
@@ -548,7 +570,6 @@ fn render_connection_row(
         );
     }
 
-    let is_dark = palette.is_dark();
     let bg_fill = if is_active_tab {
         if is_dark {
             egui::Color32::from_rgba_unmultiplied(30, 58, 102, 140)
@@ -581,26 +602,6 @@ fn render_connection_row(
         .inner_margin(Margin::symmetric(4.0, 2.0))
         .show(ui, |ui| {
             ui.horizontal(|ui| {
-                // Environment Badge
-                if let Some(env) = conn.effective_environment() {
-                    let (bg, text_c, border_c) = env.badge_colors(is_dark);
-                    Frame::none()
-                        .fill(bg)
-                        .stroke(Stroke::new(1.0_f32, border_c))
-                        .rounding(Rounding::same(3.0))
-                        .inner_margin(Margin::symmetric(4.0, 1.0))
-                        .show(ui, |ui| {
-                            ui.label(
-                                RichText::new(env.label())
-                                    .monospace()
-                                    .size(9.5)
-                                    .strong()
-                                    .color(text_c),
-                            );
-                        });
-                    ui.add_space(2.0);
-                }
-
                 let toggle_resp = ui
                     .selectable_label(false, profile_job)
                     .on_hover_cursor(CursorIcon::PointingHand)
@@ -726,12 +727,14 @@ pub fn render_connection_tree(
     palette: &ThemePalette,
     events: &mut Vec<AppEvent>,
 ) {
-    let tree = WorkspaceTree::build_filtered(
+    let tree = WorkspaceTree::build_with_custom(
         &state.connections,
         &state.sidebar_search,
         state.active_workspace_filter.as_deref(),
         state.quick_access_filter,
         &state.recent_connections,
+        &state.custom_workspaces,
+        &state.custom_folders,
     );
 
     if tree.is_empty() {
@@ -761,21 +764,66 @@ pub fn render_connection_tree(
             let resp = ui
                 .selectable_label(false, header_label)
                 .on_hover_cursor(CursorIcon::PointingHand)
-                .on_hover_text(format!("Workspace: {}\nClick to expand/collapse", ws.name));
+                .on_hover_text(format!(
+                    "Workspace: {}\nClick to expand/collapse, right-click for actions",
+                    ws.name
+                ));
             if resp.clicked() {
                 ws_expanded = !ws_expanded;
                 ui.data_mut(|d| d.insert_temp(ws_id, ws_expanded));
             }
+
+            resp.context_menu(|ui| {
+                if ui
+                    .button(format!("{} Add Connection...", regular::PLUS))
+                    .clicked()
+                {
+                    events.push(AppEvent::OpenNewConnectionModalForTarget {
+                        workspace: Some(ws.name.clone()),
+                        folder: None,
+                    });
+                    ui.close_menu();
+                }
+                if ui
+                    .button(format!("{} New Folder...", regular::FOLDER_PLUS))
+                    .clicked()
+                {
+                    state.quick_new_folder_dialog = Some(ws.name.clone());
+                    state.quick_new_folder_input.clear();
+                    ui.close_menu();
+                }
+                ui.separator();
+                if ui
+                    .button(format!("{} Rename Workspace...", regular::PENCIL_SIMPLE))
+                    .clicked()
+                {
+                    state.rename_workspace_dialog = Some(ws.name.clone());
+                    state.rename_workspace_input = ws.name.clone();
+                    ui.close_menu();
+                }
+                if ui
+                    .button(
+                        RichText::new(format!("{} Delete Workspace", regular::TRASH))
+                            .color(palette.error_color),
+                    )
+                    .clicked()
+                {
+                    state.delete_workspace_dialog = Some(ws.name.clone());
+                    ui.close_menu();
+                }
+            });
 
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 ui.add_space(2.0);
                 let add_btn = ui
                     .small_button(RichText::new(regular::PLUS).size(10.5))
                     .on_hover_cursor(CursorIcon::PointingHand)
-                    .on_hover_text("Add Folder to this Workspace");
+                    .on_hover_text("Add Connection to this Workspace");
                 if add_btn.clicked() {
-                    state.new_folder_workspace_target = ws.name.clone();
-                    events.push(AppEvent::OpenManageWorkspacesModal);
+                    events.push(AppEvent::OpenNewConnectionModalForTarget {
+                        workspace: Some(ws.name.clone()),
+                        folder: None,
+                    });
                 }
                 ui.label(
                     RichText::new(format!("({})", ws.total_connections()))
@@ -811,13 +859,47 @@ pub fn render_connection_tree(
                             .selectable_label(false, header_label)
                             .on_hover_cursor(CursorIcon::PointingHand)
                             .on_hover_text(format!(
-                                "Folder: {}\nClick to expand/collapse",
+                                "Folder: {}\nClick to expand/collapse, right-click for actions",
                                 folder.name
                             ));
                         if resp.clicked() {
                             folder_expanded = !folder_expanded;
                             ui.data_mut(|d| d.insert_temp(folder_id, folder_expanded));
                         }
+
+                        resp.context_menu(|ui| {
+                            if ui
+                                .button(format!("{} Add Connection...", regular::PLUS))
+                                .clicked()
+                            {
+                                events.push(AppEvent::OpenNewConnectionModalForTarget {
+                                    workspace: Some(ws.name.clone()),
+                                    folder: Some(folder.name.clone()),
+                                });
+                                ui.close_menu();
+                            }
+                            ui.separator();
+                            if ui
+                                .button(format!("{} Rename Folder...", regular::PENCIL_SIMPLE))
+                                .clicked()
+                            {
+                                state.rename_folder_dialog =
+                                    Some((ws.name.clone(), folder.name.clone()));
+                                state.rename_folder_input = folder.name.clone();
+                                ui.close_menu();
+                            }
+                            if ui
+                                .button(
+                                    RichText::new(format!("{} Delete Folder", regular::TRASH))
+                                        .color(palette.error_color),
+                                )
+                                .clicked()
+                            {
+                                state.delete_folder_dialog =
+                                    Some((ws.name.clone(), folder.name.clone()));
+                                ui.close_menu();
+                            }
+                        });
 
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             ui.add_space(2.0);
@@ -826,7 +908,10 @@ pub fn render_connection_tree(
                                 .on_hover_cursor(CursorIcon::PointingHand)
                                 .on_hover_text("Add Connection to this Folder");
                             if add_btn.clicked() {
-                                events.push(AppEvent::OpenNewConnectionModal);
+                                events.push(AppEvent::OpenNewConnectionModalForTarget {
+                                    workspace: Some(ws.name.clone()),
+                                    folder: Some(folder.name.clone()),
+                                });
                             }
                             ui.label(
                                 RichText::new(format!("({})", folder.connection_ids.len()))

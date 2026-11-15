@@ -17,6 +17,10 @@ pub struct WorkspacePersistence {
     pub bottom_panel_height: f32,
     pub active_activity: ActivityView,
     pub open_tabs: Vec<CollectionTab>,
+    #[serde(default)]
+    pub custom_workspaces: Vec<String>,
+    #[serde(default)]
+    pub custom_folders: Vec<(String, String)>,
 }
 
 impl Default for WorkspacePersistence {
@@ -37,6 +41,8 @@ impl Default for WorkspacePersistence {
             bottom_panel_height: 170.0,
             active_activity: ActivityView::Connections,
             open_tabs,
+            custom_workspaces: Vec::new(),
+            custom_folders: Vec::new(),
         }
     }
 }

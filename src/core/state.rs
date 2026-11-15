@@ -4,7 +4,7 @@ use uuid::Uuid;
 
 use crate::models::{
     CollectionInfo, ConnectionConfig, MongoUser, QueryStore, QuickAccessFilter, SavedQuery,
-    SshAuthMethod, SshTunnelConfig, UserRole,
+    SshAuthMethod, SshTunnelConfig, UserRole, WorkspaceTree,
 };
 use crate::theme::ThemeMode;
 use crate::ui::activity_bar::ActivityView;
@@ -121,6 +121,18 @@ pub struct AppState {
     pub new_workspace_input: String,
     pub new_folder_input: String,
     pub new_folder_workspace_target: String,
+    pub custom_workspaces: Vec<String>,
+    pub custom_folders: Vec<(String, String)>,
+    pub new_conn_workspace: Option<String>,
+    pub new_conn_folder: Option<String>,
+    pub rename_workspace_dialog: Option<String>,
+    pub rename_workspace_input: String,
+    pub rename_folder_dialog: Option<(String, String)>,
+    pub rename_folder_input: String,
+    pub delete_workspace_dialog: Option<String>,
+    pub delete_folder_dialog: Option<(String, String)>,
+    pub quick_new_folder_dialog: Option<String>,
+    pub quick_new_folder_input: String,
 }
 
 impl Default for AppState {
@@ -255,6 +267,18 @@ impl AppState {
             new_workspace_input: String::new(),
             new_folder_input: String::new(),
             new_folder_workspace_target: String::new(),
+            custom_workspaces: persisted.custom_workspaces,
+            custom_folders: persisted.custom_folders,
+            new_conn_workspace: None,
+            new_conn_folder: None,
+            rename_workspace_dialog: None,
+            rename_workspace_input: String::new(),
+            rename_folder_dialog: None,
+            rename_folder_input: String::new(),
+            delete_workspace_dialog: None,
+            delete_folder_dialog: None,
+            quick_new_folder_dialog: None,
+            quick_new_folder_input: String::new(),
         }
     }
 
@@ -273,6 +297,8 @@ impl AppState {
         self.new_conn_ssh_key_path = SshTunnelConfig::DEFAULT_PRIVATE_KEY_PATH.to_string();
         self.new_conn_ssh_secret.clear();
         self.new_conn_ssh_save_secret = false;
+        self.new_conn_workspace = None;
+        self.new_conn_folder = None;
         self.test_conn_status = None;
         self.is_testing_connection = false;
     }
@@ -290,6 +316,9 @@ impl AppState {
         };
         self.new_conn_password = uri_pass;
         self.new_conn_save_password = conn.has_saved_password;
+
+        self.new_conn_workspace = conn.workspace.clone();
+        self.new_conn_folder = conn.folder.clone();
 
         self.new_conn_ssh_enabled = conn.ssh_tunnel.enabled;
         self.new_conn_ssh_endpoint = conn.ssh_tunnel.endpoint.clone();
@@ -365,6 +394,8 @@ impl AppState {
             bottom_panel_height: 170.0,
             active_activity: self.active_activity,
             open_tabs,
+            custom_workspaces: self.custom_workspaces.clone(),
+            custom_folders: self.custom_folders.clone(),
         }
     }
 
@@ -398,6 +429,18 @@ impl AppState {
         state.new_workspace_input.clear();
         state.new_folder_input.clear();
         state.new_folder_workspace_target.clear();
+        state.custom_workspaces.clear();
+        state.custom_folders.clear();
+        state.new_conn_workspace = None;
+        state.new_conn_folder = None;
+        state.rename_workspace_dialog = None;
+        state.rename_workspace_input.clear();
+        state.rename_folder_dialog = None;
+        state.rename_folder_input.clear();
+        state.delete_workspace_dialog = None;
+        state.delete_folder_dialog = None;
+        state.quick_new_folder_dialog = None;
+        state.quick_new_folder_input.clear();
         state
     }
 
@@ -535,32 +578,182 @@ impl AppState {
         }
     }
 
-    /// Deletes a workspace by clearing workspace/folder fields on all matching connections.
+    /// Returns all known workspaces combining connections and custom workspaces.
+    #[must_use]
+    pub fn all_known_workspaces(&self) -> Vec<String> {
+        WorkspaceTree::extract_all_workspaces_with_custom(
+            &self.connections,
+            &self.custom_workspaces,
+        )
+    }
+
+    /// Returns all known folders for a workspace combining connections and custom folders.
+    #[must_use]
+    pub fn all_known_folders_for_workspace(&self, workspace: &str) -> Vec<String> {
+        WorkspaceTree::extract_folders_for_workspace_with_custom(
+            &self.connections,
+            &self.custom_folders,
+            workspace,
+        )
+    }
+
+    /// Creates a custom workspace. Returns `true` if added, `false` if already exists or empty.
+    pub fn create_workspace(&mut self, name: &str) -> bool {
+        let trimmed = name.trim();
+        if trimmed.is_empty() {
+            return false;
+        }
+        let all = self.all_known_workspaces();
+        if all.iter().any(|w| w.eq_ignore_ascii_case(trimmed)) {
+            return false;
+        }
+        self.custom_workspaces.push(trimmed.to_string());
+        true
+    }
+
+    /// Creates a custom project folder in a workspace. Returns `true` if added.
+    pub fn create_project_folder(&mut self, workspace: &str, folder: &str) -> bool {
+        let ws_trimmed = workspace.trim();
+        let folder_trimmed = folder.trim();
+        if ws_trimmed.is_empty() || folder_trimmed.is_empty() {
+            return false;
+        }
+        self.create_workspace(ws_trimmed);
+        let existing = self.all_known_folders_for_workspace(ws_trimmed);
+        if existing
+            .iter()
+            .any(|f| f.eq_ignore_ascii_case(folder_trimmed))
+        {
+            return false;
+        }
+        self.custom_folders
+            .push((ws_trimmed.to_string(), folder_trimmed.to_string()));
+        true
+    }
+
+    /// Renames a workspace across all connections, custom workspaces, and custom folders.
+    pub fn rename_workspace(&mut self, old_name: &str, new_name: &str) -> bool {
+        let old_trimmed = old_name.trim();
+        let new_trimmed = new_name.trim();
+        if old_trimmed.is_empty()
+            || new_trimmed.is_empty()
+            || old_trimmed.eq_ignore_ascii_case(new_trimmed)
+        {
+            return false;
+        }
+        for conn in &mut self.connections {
+            if conn
+                .workspace_name()
+                .is_some_and(|w| w.eq_ignore_ascii_case(old_trimmed))
+            {
+                conn.workspace = Some(new_trimmed.to_string());
+            }
+        }
+        for ws in &mut self.custom_workspaces {
+            if ws.eq_ignore_ascii_case(old_trimmed) {
+                *ws = new_trimmed.to_string();
+            }
+        }
+        for (ws, _) in &mut self.custom_folders {
+            if ws.eq_ignore_ascii_case(old_trimmed) {
+                *ws = new_trimmed.to_string();
+            }
+        }
+        if self
+            .active_workspace_filter
+            .as_deref()
+            .map(str::trim)
+            .is_some_and(|w| w.eq_ignore_ascii_case(old_trimmed))
+        {
+            self.active_workspace_filter = Some(new_trimmed.to_string());
+        }
+        true
+    }
+
+    /// Renames a project folder within a workspace across all connections and custom folders.
+    pub fn rename_project_folder(
+        &mut self,
+        workspace: &str,
+        old_folder: &str,
+        new_folder: &str,
+    ) -> bool {
+        let ws_trimmed = workspace.trim();
+        let old_trimmed = old_folder.trim();
+        let new_trimmed = new_folder.trim();
+        if ws_trimmed.is_empty()
+            || old_trimmed.is_empty()
+            || new_trimmed.is_empty()
+            || old_trimmed.eq_ignore_ascii_case(new_trimmed)
+        {
+            return false;
+        }
+        for conn in &mut self.connections {
+            if conn
+                .workspace_name()
+                .is_some_and(|w| w.eq_ignore_ascii_case(ws_trimmed))
+                && conn
+                    .folder_name()
+                    .is_some_and(|f| f.eq_ignore_ascii_case(old_trimmed))
+            {
+                conn.folder = Some(new_trimmed.to_string());
+            }
+        }
+        for (ws, f) in &mut self.custom_folders {
+            if ws.eq_ignore_ascii_case(ws_trimmed) && f.eq_ignore_ascii_case(old_trimmed) {
+                *f = new_trimmed.to_string();
+            }
+        }
+        true
+    }
+
+    /// Deletes a workspace by clearing workspace/folder fields on all matching connections,
+    /// removing it from custom workspaces and custom folders.
     /// Also resets the active workspace filter if it was set to this workspace.
     pub fn delete_workspace(&mut self, name: &str) {
         let trimmed = name.trim();
         for conn in &mut self.connections {
-            if conn.workspace_name() == Some(trimmed) {
+            if conn
+                .workspace_name()
+                .is_some_and(|w| w.eq_ignore_ascii_case(trimmed))
+            {
                 conn.workspace = None;
                 conn.folder = None;
             }
         }
-        if self.active_workspace_filter.as_deref().map(str::trim) == Some(trimmed) {
+        self.custom_workspaces
+            .retain(|w| !w.trim().eq_ignore_ascii_case(trimmed));
+        self.custom_folders
+            .retain(|(w, _)| !w.trim().eq_ignore_ascii_case(trimmed));
+        if self
+            .active_workspace_filter
+            .as_deref()
+            .map(str::trim)
+            .is_some_and(|w| w.eq_ignore_ascii_case(trimmed))
+        {
             self.active_workspace_filter = None;
         }
     }
 
-    /// Deletes a folder within a workspace by clearing the folder field on all matching connections.
+    /// Deletes a folder within a workspace by clearing the folder field on all matching connections
+    /// and removing it from custom folders.
     pub fn delete_project_folder(&mut self, workspace: &str, folder_name: &str) {
         let trimmed_ws = workspace.trim();
         let trimmed_folder = folder_name.trim();
         for conn in &mut self.connections {
-            if conn.workspace_name() == Some(trimmed_ws)
-                && conn.folder_name() == Some(trimmed_folder)
+            if conn
+                .workspace_name()
+                .is_some_and(|w| w.eq_ignore_ascii_case(trimmed_ws))
+                && conn
+                    .folder_name()
+                    .is_some_and(|f| f.eq_ignore_ascii_case(trimmed_folder))
             {
                 conn.folder = None;
             }
         }
+        self.custom_folders.retain(|(w, f)| {
+            !(w.trim().eq_ignore_ascii_case(trimmed_ws)
+                && f.trim().eq_ignore_ascii_case(trimmed_folder))
+        });
     }
 
     /// Returns the number of favorite connections.

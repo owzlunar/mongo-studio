@@ -28,6 +28,10 @@ pub enum AppEvent {
     ToggleCommandPalette,
     SwitchTheme(ThemeMode),
     OpenNewConnectionModal,
+    OpenNewConnectionModalForTarget {
+        workspace: Option<String>,
+        folder: Option<String>,
+    },
     OpenEditConnectionModal {
         index: usize,
     },
@@ -46,6 +50,8 @@ pub enum AppEvent {
         uri: String,
         ssh_tunnel: SshTunnelConfig,
         ssh_secret: String,
+        workspace: Option<String>,
+        folder: Option<String>,
     },
     UpdateConnection {
         index: usize,
@@ -53,6 +59,8 @@ pub enum AppEvent {
         uri: String,
         ssh_tunnel: SshTunnelConfig,
         ssh_secret: String,
+        workspace: Option<String>,
+        folder: Option<String>,
     },
     TestConnection {
         name: String,
@@ -434,9 +442,18 @@ pub enum AppEvent {
     CreateWorkspace {
         name: String,
     },
+    RenameWorkspace {
+        old_name: String,
+        new_name: String,
+    },
     CreateProjectFolder {
         workspace: String,
         folder_name: String,
+    },
+    RenameProjectFolder {
+        workspace: String,
+        old_name: String,
+        new_name: String,
     },
     MoveConnectionToFolder {
         connection_id: Uuid,

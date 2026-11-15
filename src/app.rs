@@ -3772,6 +3772,12 @@ impl MongoStudioApp {
                     self.state.reset_connection_modal_fields();
                     self.state.show_new_connection_modal = true;
                 }
+                AppEvent::OpenNewConnectionModalForTarget { workspace, folder } => {
+                    self.state.reset_connection_modal_fields();
+                    self.state.new_conn_workspace = workspace;
+                    self.state.new_conn_folder = folder;
+                    self.state.show_new_connection_modal = true;
+                }
                 AppEvent::OpenEditConnectionModal { index } => {
                     if let Some(conn) = self.state.connections.get(index).cloned() {
                         let (_base_uri, _uri_user, uri_pass) =
@@ -4052,8 +4058,17 @@ impl MongoStudioApp {
                     uri,
                     ssh_tunnel,
                     ssh_secret,
+                    workspace,
+                    folder,
                 } => match ConnectionConfig::new_profile(&name, &uri) {
                     Ok(mut conn) => {
+                        conn.workspace = workspace
+                            .map(|s| s.trim().to_string())
+                            .filter(|s| !s.is_empty());
+                        conn.folder = folder
+                            .map(|s| s.trim().to_string())
+                            .filter(|s| !s.is_empty());
+
                         let password_to_save = if self.state.new_conn_save_password
                             && !self.state.new_conn_password.is_empty()
                         {
@@ -4135,6 +4150,8 @@ impl MongoStudioApp {
                     uri,
                     ssh_tunnel,
                     ssh_secret,
+                    workspace,
+                    folder,
                 } => {
                     let clamped_name = ConnectionConfig::clamp_profile_name(&name);
                     let trimmed_uri = uri.trim();
@@ -4158,6 +4175,12 @@ impl MongoStudioApp {
                         conn.status = ConnectionStatus::Connecting;
                         conn.expanded = false;
                         conn.last_error = None;
+                        conn.workspace = workspace
+                            .map(|s| s.trim().to_string())
+                            .filter(|s| !s.is_empty());
+                        conn.folder = folder
+                            .map(|s| s.trim().to_string())
+                            .filter(|s| !s.is_empty());
 
                         let keyring_op = if self.state.new_conn_save_password
                             && !self.state.new_conn_password.is_empty()
@@ -4488,6 +4511,10 @@ impl MongoStudioApp {
                 AppEvent::CreateWorkspace { name } => {
                     let trimmed = name.trim();
                     if !trimmed.is_empty() {
+                        let created = self.state.create_workspace(trimmed);
+                        if created {
+                            let _ = self.state.to_persistence().save_to_disk();
+                        }
                         self.state.bottom_panel.push_log(
                             LogLevel::Info,
                             "Workspace",
@@ -4502,10 +4529,43 @@ impl MongoStudioApp {
                     let ws_trimmed = workspace.trim();
                     let f_trimmed = folder_name.trim();
                     if !ws_trimmed.is_empty() && !f_trimmed.is_empty() {
+                        let created = self.state.create_project_folder(ws_trimmed, f_trimmed);
+                        if created {
+                            let _ = self.state.to_persistence().save_to_disk();
+                        }
                         self.state.bottom_panel.push_log(
                             LogLevel::Info,
                             "Workspace",
                             format!("Created folder '{f_trimmed}' in workspace '{ws_trimmed}'"),
+                        );
+                    }
+                }
+                AppEvent::RenameWorkspace { old_name, new_name } => {
+                    if self.state.rename_workspace(&old_name, &new_name) {
+                        let _ = self.state.to_persistence().save_to_disk();
+                        self.spawn_save_profiles_task(ctx);
+                        self.state.bottom_panel.push_log(
+                            LogLevel::Info,
+                            "Workspace",
+                            format!("Renamed workspace '{old_name}' to '{new_name}'"),
+                        );
+                    }
+                }
+                AppEvent::RenameProjectFolder {
+                    workspace,
+                    old_name,
+                    new_name,
+                } => {
+                    if self
+                        .state
+                        .rename_project_folder(&workspace, &old_name, &new_name)
+                    {
+                        let _ = self.state.to_persistence().save_to_disk();
+                        self.spawn_save_profiles_task(ctx);
+                        self.state.bottom_panel.push_log(
+                            LogLevel::Info,
+                            "Workspace",
+                            format!("Renamed folder '{old_name}' to '{new_name}' in '{workspace}'"),
                         );
                     }
                 }
@@ -4520,6 +4580,7 @@ impl MongoStudioApp {
                 }
                 AppEvent::DeleteWorkspace { name } => {
                     self.state.delete_workspace(&name);
+                    let _ = self.state.to_persistence().save_to_disk();
                     self.spawn_save_profiles_task(ctx);
                 }
                 AppEvent::DeleteProjectFolder {
@@ -4527,6 +4588,7 @@ impl MongoStudioApp {
                     folder_name,
                 } => {
                     self.state.delete_project_folder(&workspace, &folder_name);
+                    let _ = self.state.to_persistence().save_to_disk();
                     self.spawn_save_profiles_task(ctx);
                 }
                 AppEvent::OpenManageWorkspacesModal => {

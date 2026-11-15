@@ -1196,6 +1196,8 @@ fn connection_config_legacy_deserialization_and_secret_free_profile_json_roundtr
         uri: "mongodb://10.0.0.2:27017".to_string(),
         ssh_tunnel: profile.ssh_tunnel.clone(),
         ssh_secret: "ephemeral-passphrase".to_string(),
+        workspace: Some("Infra".to_string()),
+        folder: Some("Bastion".to_string()),
     };
     let secret_evt = AppEvent::SshSecretLoaded {
         index: 0,
@@ -1485,4 +1487,192 @@ fn test_workspace_tree_grouping_and_filtering_lifecycle() {
         &recent_ids,
     );
     assert_eq!(recent_tree.total_connections(), 2); // c2, c5
+}
+
+#[test]
+fn test_environment_tag_color_and_detection() {
+    let dev = EnvironmentTag::Dev;
+    let test = EnvironmentTag::Test;
+    let prod = EnvironmentTag::Prod;
+    let custom = EnvironmentTag::Other("QA-Custom".to_string());
+
+    assert_eq!(dev.color(true), egui::Color32::from_rgb(52, 211, 153));
+    assert_eq!(test.color(true), egui::Color32::from_rgb(251, 191, 36));
+    assert_eq!(prod.color(true), egui::Color32::from_rgb(248, 113, 113));
+    assert_eq!(custom.color(true), egui::Color32::from_rgb(203, 213, 225));
+
+    assert_eq!(dev.color(false), egui::Color32::from_rgb(6, 95, 70));
+    assert_eq!(test.color(false), egui::Color32::from_rgb(146, 64, 14));
+    assert_eq!(prod.color(false), egui::Color32::from_rgb(153, 27, 27));
+
+    assert_eq!(
+        EnvironmentTag::detect_from_name("billing-prod"),
+        Some(EnvironmentTag::Prod)
+    );
+    assert_eq!(
+        EnvironmentTag::detect_from_name("orders-staging"),
+        Some(EnvironmentTag::Test)
+    );
+    assert_eq!(
+        EnvironmentTag::detect_from_name("local-dev"),
+        Some(EnvironmentTag::Dev)
+    );
+    assert_eq!(EnvironmentTag::detect_from_name("standalone-db"), None);
+}
+
+#[test]
+fn test_workspace_tree_build_with_custom_and_zero_connections() {
+    let custom_workspaces = vec!["Client Alpha".to_string(), "Client Beta".to_string()];
+    let custom_folders = vec![
+        ("Client Alpha".to_string(), "Payments".to_string()),
+        ("Client Alpha".to_string(), "Inventory".to_string()),
+        ("Client Beta".to_string(), "Core".to_string()),
+    ];
+
+    let tree = WorkspaceTree::build_with_custom(
+        &[],
+        "",
+        None,
+        QuickAccessFilter::All,
+        &[],
+        &custom_workspaces,
+        &custom_folders,
+    );
+
+    assert_eq!(tree.workspaces.len(), 2);
+    assert_eq!(tree.workspaces[0].name, "Client Alpha");
+    assert_eq!(tree.workspaces[0].folders.len(), 2);
+    assert_eq!(tree.workspaces[0].folders[0].name, "Inventory");
+    assert_eq!(tree.workspaces[0].folders[1].name, "Payments");
+    assert_eq!(tree.workspaces[0].total_connections(), 0);
+
+    assert_eq!(tree.workspaces[1].name, "Client Beta");
+    assert_eq!(tree.workspaces[1].folders.len(), 1);
+    assert_eq!(tree.workspaces[1].folders[0].name, "Core");
+    assert_eq!(tree.workspaces[1].total_connections(), 0);
+
+    let all_ws = WorkspaceTree::extract_all_workspaces_with_custom(&[], &custom_workspaces);
+    assert_eq!(all_ws, vec!["Client Alpha", "Client Beta"]);
+
+    let alpha_folders = WorkspaceTree::extract_folders_for_workspace_with_custom(
+        &[],
+        &custom_folders,
+        "Client Alpha",
+    );
+    assert_eq!(alpha_folders, vec!["Inventory", "Payments"]);
+}
+
+#[test]
+fn test_app_state_workspace_folder_crud_rename_delete() {
+    let mut state = AppState::new_empty();
+
+    // 1. Create Workspaces & Folders
+    assert!(state.create_workspace("Customer Alpha"));
+    assert!(!state.create_workspace("Customer Alpha")); // duplicate rejected
+    assert!(state.create_workspace("Customer Beta"));
+
+    assert!(state.create_project_folder("Customer Alpha", "Billing"));
+    assert!(state.create_project_folder("Customer Alpha", "Auth"));
+    assert!(!state.create_project_folder("Customer Alpha", "Billing")); // duplicate folder rejected
+
+    assert_eq!(
+        state.all_known_workspaces(),
+        vec!["Customer Alpha", "Customer Beta"]
+    );
+    assert_eq!(
+        state.all_known_folders_for_workspace("Customer Alpha"),
+        vec!["Auth", "Billing"]
+    );
+
+    // 2. Add connection in folder
+    let mut conn = ConnectionConfig::new_profile("alpha-auth-prod", "mongodb://localhost:27017")
+        .expect("profile");
+    conn.workspace = Some("Customer Alpha".to_string());
+    conn.folder = Some("Auth".to_string());
+    state.connections.push(conn);
+
+    // 3. Rename Folder
+    assert!(state.rename_project_folder("Customer Alpha", "Auth", "Authentication"));
+    assert_eq!(
+        state.connections[0].folder,
+        Some("Authentication".to_string())
+    );
+    assert_eq!(
+        state.all_known_folders_for_workspace("Customer Alpha"),
+        vec!["Authentication", "Billing"]
+    );
+
+    // 4. Rename Workspace
+    assert!(state.rename_workspace("Customer Alpha", "Customer Prime"));
+    assert_eq!(
+        state.connections[0].workspace,
+        Some("Customer Prime".to_string())
+    );
+    assert_eq!(
+        state.all_known_workspaces(),
+        vec!["Customer Beta", "Customer Prime"]
+    );
+    assert_eq!(
+        state.all_known_folders_for_workspace("Customer Prime"),
+        vec!["Authentication", "Billing"]
+    );
+
+    // 5. Delete Folder
+    state.delete_project_folder("Customer Prime", "Authentication");
+    assert_eq!(state.connections[0].folder, None); // becomes standalone in workspace
+    assert_eq!(
+        state.all_known_folders_for_workspace("Customer Prime"),
+        vec!["Billing"]
+    );
+
+    // 6. Delete Workspace
+    state.delete_workspace("Customer Prime");
+    assert_eq!(state.connections[0].workspace, None); // becomes ungrouped
+    assert_eq!(state.all_known_workspaces(), vec!["Customer Beta"]);
+}
+
+#[test]
+fn test_connection_modal_workspace_folder_prepopulation() {
+    let mut state = AppState::new_empty();
+
+    let mut conn =
+        ConnectionConfig::new_profile("app-db", "mongodb://127.0.0.1:27017").expect("profile");
+    conn.workspace = Some("Internal".to_string());
+    conn.folder = Some("DevOps".to_string());
+
+    state.populate_connection_modal(0, &conn);
+    assert_eq!(state.new_conn_workspace, Some("Internal".to_string()));
+    assert_eq!(state.new_conn_folder, Some("DevOps".to_string()));
+
+    state.reset_connection_modal_fields();
+    assert_eq!(state.new_conn_workspace, None);
+    assert_eq!(state.new_conn_folder, None);
+}
+
+#[test]
+fn test_app_event_workspace_variants() {
+    let open_target = AppEvent::OpenNewConnectionModalForTarget {
+        workspace: Some("Client1".to_string()),
+        folder: Some("API".to_string()),
+    };
+    assert!(matches!(
+        open_target,
+        AppEvent::OpenNewConnectionModalForTarget {
+            workspace: Some(_),
+            folder: Some(_)
+        }
+    ));
+
+    let rename_ws = AppEvent::RenameWorkspace {
+        old_name: "A".to_string(),
+        new_name: "B".to_string(),
+    };
+    assert!(matches!(rename_ws, AppEvent::RenameWorkspace { .. }));
+
+    let rename_f = AppEvent::RenameProjectFolder {
+        workspace: "W".to_string(),
+        old_name: "F1".to_string(),
+        new_name: "F2".to_string(),
+    };
+    assert!(matches!(rename_f, AppEvent::RenameProjectFolder { .. }));
 }

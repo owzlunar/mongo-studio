@@ -17,6 +17,7 @@
 | **Feature+** | Clean State on Release Build (Exclude Mock DB) | ✅ เสร็จสิ้น | เอา mock DB และ mock tabs ออกจาก Release build เริ่มต้นแบบ clean state, 90/90 tests ผ่าน |
 | **Feature+** | User Auth DB Identity & Multi-DB Disambiguation | ✅ เสร็จสิ้น | แยก user ตาม `(username, auth_db)` แก้ปัญหา collision 9 ตัว, 98/98 tests ผ่าน |
 | **Feature+** | Workspace & Project Organization (Left Panel) | ✅ เสร็จสิ้น | Customer 🏢 -> Folder 📁 -> Connection (Tag) ตามภาพอ้างอิง, 115/115 tests ผ่าน |
+| **Feature+** | Workspace Management Polish & Connection Env Colors | ✅ เสร็จสิ้น | Manage modal ใช้ได้จริง, Dropdown ใน Add/Edit Modal, Context menu คลิกขวา, Env text colors, 123/123 tests ผ่าน |
 
 ---
 
@@ -207,4 +208,26 @@
   - ทดสอบการจัดกลุ่มโครงสร้าง Tree และการค้นหากรอง
 - [x] ตรวจสอบ Contrast และขนาด Component ทั้ง Light Mode & Dark Mode
 - [x] รัน `cargo test` (115/115 tests ผ่าน), `cargo clippy --all-targets -- -D warnings` (0 warnings) และ `cargo fmt --check`
+
+### Step 6: Full Workspace Management Polish & Connection Environment Coloring (`ui-dev` & `core-dev`) ✅
+- [x] แก้ไขหน้า Manage Workspaces Modal ให้ทำงานได้สมบูรณ์ 100%:
+  - รองรับการสร้าง Workspace และ Project Folder เปล่า และ persist เก็บใน `workspace_layout.json`
+  - มี Section แสดงรายการ Workspaces & Project Folders พร้อมปุ่ม Rename และ Delete
+  - รายการ Dropdown สำหรับ Assign Connection ดึงจาก Workspaces & Folders ทั้งหมดแบบ real-time
+  - เพิ่ม Modals ยืนยัน/เปลี่ยนชื่อ: `RenameWorkspace`, `RenameProjectFolder`, `DeleteWorkspace`, `DeleteProjectFolder`, `QuickNewFolder`
+- [x] เพิ่มช่อง Dropdown เลือก Workspace / Folder ในหน้าต่าง Add / Edit Connection Modal โดยตรง:
+  - สลับเลือก Workspace (หรือ Standalone) และเลือก Folder ใน Workspace นั้นได้ทันทีตั้งแต่ตอนสร้าง Connection ใหม่
+  - Pre-populate ข้อมูลเดิมเมื่อเปิด Edit Connection Modal
+  - กำหนด Workspace & Folder อัตโนมัติเมื่อกดสร้าง Connection จาก Context menu
+- [x] เพิ่ม Context Menu ตอนคลิกขวาที่ Workspace และ Folder ใน Left Panel:
+  - Right-click Workspace: `Add Connection...` (fixed workspace), `New Folder...`, `Rename Workspace...`, `Delete Workspace...`
+  - Right-click Folder: `Add Connection...` (fixed workspace & folder), `Rename Folder...`, `Delete Folder...`
+- [x] เปลี่ยน Tag Env ให้เป็นสีที่ Connection แทน:
+  - ยกเลิก Badge กล่องสี่เหลี่ยม text `[DEV]` / `[TEST]` / `[PROD]` ที่กินพื้นที่ Sidebar แนวนอน
+  - แสดงเป็นสีที่ตัวชื่อ Connection โดยตรง (DEV = เขียว, TEST = ส้ม/เหลือง, PROD = แดง) พร้อมสัญลักษณ์จุดสี `● `
+  - แสดงชื่อ Environment Tag ใน Tooltip เมื่อ Hover อย่างชัดเจน
+- [x] QA Verification:
+  - เพิ่ม Unit Tests ใน `tests/core_workspace_tests.rs` ครบ 123/123 tests ผ่าน (48 lib + 26 core workspace + 31 database + 11 query + 7 ui theme)
+  - `cargo clippy --all-targets -- -D warnings` (0 warnings)
+  - `cargo fmt --check` (สะอาด 100%)
 

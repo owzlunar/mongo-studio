@@ -10,7 +10,6 @@ use crate::core::state::AppState;
 use crate::database::{CreateIndexRequest, IndexService};
 use crate::models::{
     ConnectionConfig, DocumentRow, SavedQuery, SshAuthMethod, SshTunnelConfig, UserRole,
-    WorkspaceTree,
 };
 use crate::theme::{ThemeMode, ThemePalette};
 use crate::ui::activity_bar::render_activity_bar;
@@ -632,9 +631,9 @@ fn render_modals(
         .resizable(false)
         .frame(modal_frame)
         .fixed_size(if state.new_conn_ssh_enabled {
-            [480.0, 490.0]
+            [480.0, 560.0]
         } else {
-            [460.0, 345.0]
+            [480.0, 420.0]
         })
         .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
         .show(ctx, |ui| {
@@ -660,6 +659,98 @@ fn render_modals(
                         state.new_conn_name =
                             ConnectionConfig::clamp_profile_name(&state.new_conn_name);
                     }
+                    ui.add_space(6.0);
+
+                    // Workspace & Folder Dropdowns
+                    ui.columns(2, |columns| {
+                        columns[0].label(
+                            RichText::new("🏢 Workspace / Customer")
+                                .strong()
+                                .size(11.5)
+                                .color(palette.text_primary),
+                        );
+                        let all_workspaces = state.all_known_workspaces();
+                        let current_ws = state.new_conn_workspace.clone().unwrap_or_default();
+                        let ws_display = if current_ws.is_empty() {
+                            "(None / Standalone)".to_string()
+                        } else {
+                            format!("🏢 {current_ws}")
+                        };
+
+                        let mut selected_ws = current_ws.clone();
+                        ComboBox::from_id_source("modal_conn_workspace_select")
+                            .selected_text(ws_display)
+                            .width(columns[0].available_width().max(180.0))
+                            .show_ui(&mut columns[0], |ui| {
+                                ui.selectable_value(
+                                    &mut selected_ws,
+                                    String::new(),
+                                    "(None / Standalone)",
+                                );
+                                for ws in &all_workspaces {
+                                    ui.selectable_value(
+                                        &mut selected_ws,
+                                        ws.clone(),
+                                        format!("🏢 {ws}"),
+                                    );
+                                }
+                            });
+                        if selected_ws != current_ws {
+                            state.new_conn_workspace = if selected_ws.is_empty() {
+                                None
+                            } else {
+                                Some(selected_ws)
+                            };
+                            state.new_conn_folder = None;
+                        }
+
+                        columns[1].label(
+                            RichText::new("📁 Project Folder")
+                                .strong()
+                                .size(11.5)
+                                .color(palette.text_primary),
+                        );
+                        let folders = if let Some(ws) = &state.new_conn_workspace {
+                            state.all_known_folders_for_workspace(ws)
+                        } else {
+                            Vec::new()
+                        };
+                        let current_folder = state.new_conn_folder.clone().unwrap_or_default();
+                        let folder_display = if current_folder.is_empty() {
+                            "(No Folder)".to_string()
+                        } else {
+                            format!("📁 {current_folder}")
+                        };
+
+                        let mut selected_folder = current_folder.clone();
+                        let enabled = state.new_conn_workspace.is_some();
+                        columns[1].add_enabled_ui(enabled, |ui| {
+                            ComboBox::from_id_source("modal_conn_folder_select")
+                                .selected_text(folder_display)
+                                .width(ui.available_width().max(180.0))
+                                .show_ui(ui, |ui| {
+                                    ui.selectable_value(
+                                        &mut selected_folder,
+                                        String::new(),
+                                        "(None / Standalone)",
+                                    );
+                                    for f in &folders {
+                                        ui.selectable_value(
+                                            &mut selected_folder,
+                                            f.clone(),
+                                            format!("📁 {f}"),
+                                        );
+                                    }
+                                });
+                        });
+                        if selected_folder != current_folder {
+                            state.new_conn_folder = if selected_folder.is_empty() {
+                                None
+                            } else {
+                                Some(selected_folder)
+                            };
+                        }
+                    });
                     ui.add_space(6.0);
 
                     ui.label(
@@ -775,6 +866,8 @@ fn render_modals(
                                         uri: effective_uri,
                                         ssh_tunnel,
                                         ssh_secret,
+                                        workspace: state.new_conn_workspace.clone(),
+                                        folder: state.new_conn_folder.clone(),
                                     });
                                 } else {
                                     events.push(AppEvent::AddConnection {
@@ -782,6 +875,8 @@ fn render_modals(
                                         uri: effective_uri,
                                         ssh_tunnel,
                                         ssh_secret,
+                                        workspace: state.new_conn_workspace.clone(),
+                                        folder: state.new_conn_folder.clone(),
                                     });
                                 }
                                 state.show_new_connection_modal = false;
@@ -2011,6 +2106,7 @@ fn render_modals(
     }
 
     render_manage_workspaces_modal(ctx, state, palette, events);
+    render_workspace_dialogs(ctx, state, palette, events);
 }
 
 fn render_manage_workspaces_modal(
@@ -2079,7 +2175,7 @@ fn render_manage_workspaces_modal(
                 ui.add_space(6.0);
 
                 // Create Folder row
-                let all_workspaces = WorkspaceTree::extract_all_workspaces(&state.connections);
+                let all_workspaces = state.all_known_workspaces();
                 if state.new_folder_workspace_target.is_empty() {
                     if let Some(first) = all_workspaces.first() {
                         state.new_folder_workspace_target = first.clone();
@@ -2130,9 +2226,168 @@ fn render_manage_workspaces_modal(
                 ui.separator();
                 ui.add_space(8.0);
 
-                // --- Section 2: Reassign Connections ---
+                // --- Section 2: Manage Existing Workspaces & Folders ---
                 ui.label(
-                    RichText::new("2. ASSIGN CONNECTIONS TO WORKSPACE & FOLDER")
+                    RichText::new("2. WORKSPACES & FOLDERS LIST")
+                        .size(11.0)
+                        .strong()
+                        .color(palette.accent_color),
+                );
+                ui.add_space(4.0);
+
+                if all_workspaces.is_empty() {
+                    ui.label(
+                        RichText::new("No workspaces created yet. Use the fields above to create one.")
+                            .size(11.5)
+                            .color(palette.muted_text),
+                    );
+                } else {
+                    for ws in &all_workspaces {
+                        let folders = state.all_known_folders_for_workspace(ws);
+                        let ws_conn_count = state
+                            .connections
+                            .iter()
+                            .filter(|c| c.workspace_name() == Some(ws.as_str()))
+                            .count();
+
+                        Frame::none()
+                            .fill(palette.panel_bg)
+                            .inner_margin(Margin::symmetric(8.0, 6.0))
+                            .rounding(Rounding::same(4.0))
+                            .stroke(Stroke::new(1.0_f32, palette.border_color))
+                            .show(ui, |ui| {
+                                ui.horizontal(|ui| {
+                                    ui.label(
+                                        RichText::new(format!("🏢 {ws}"))
+                                            .strong()
+                                            .size(12.5)
+                                            .color(palette.text_primary),
+                                    );
+                                    ui.label(
+                                        RichText::new(format!(
+                                            "({ws_conn_count} connections, {} folders)",
+                                            folders.len()
+                                        ))
+                                        .size(11.0)
+                                        .color(palette.muted_text),
+                                    );
+
+                                    ui.with_layout(
+                                        egui::Layout::right_to_left(egui::Align::Center),
+                                        |ui| {
+                                            if ui
+                                                .small_button(
+                                                    RichText::new(format!("{} Delete", regular::TRASH))
+                                                        .color(palette.error_color),
+                                                )
+                                                .on_hover_cursor(CursorIcon::PointingHand)
+                                                .on_hover_text("Delete workspace")
+                                                .clicked()
+                                            {
+                                                state.delete_workspace_dialog = Some(ws.clone());
+                                            }
+                                            if ui
+                                                .small_button(RichText::new(format!(
+                                                    "{} Rename",
+                                                    regular::PENCIL_SIMPLE
+                                                )))
+                                                .on_hover_cursor(CursorIcon::PointingHand)
+                                                .on_hover_text("Rename workspace")
+                                                .clicked()
+                                            {
+                                                state.rename_workspace_dialog = Some(ws.clone());
+                                                state.rename_workspace_input = ws.clone();
+                                            }
+                                        },
+                                    );
+                                });
+
+                                if !folders.is_empty() {
+                                    ui.add_space(3.0);
+                                    ui.indent(
+                                        ui.make_persistent_id(("manage_folders_indent", ws)),
+                                        |ui| {
+                                            for f in &folders {
+                                                let folder_conn_count = state
+                                                    .connections
+                                                    .iter()
+                                                    .filter(|c| {
+                                                        c.workspace_name() == Some(ws.as_str())
+                                                            && c.folder_name() == Some(f.as_str())
+                                                    })
+                                                    .count();
+                                                ui.horizontal(|ui| {
+                                                    ui.label(
+                                                        RichText::new(format!("📁 {f}"))
+                                                            .size(11.5)
+                                                            .color(palette.text_primary),
+                                                    );
+                                                    ui.label(
+                                                        RichText::new(format!(
+                                                            "({folder_conn_count} connections)"
+                                                        ))
+                                                        .size(10.5)
+                                                        .color(palette.muted_text),
+                                                    );
+                                                    ui.with_layout(
+                                                        egui::Layout::right_to_left(
+                                                            egui::Align::Center,
+                                                        ),
+                                                        |ui| {
+                                                            if ui
+                                                                .small_button(
+                                                                    RichText::new(format!(
+                                                                        "{} Delete",
+                                                                        regular::TRASH
+                                                                    ))
+                                                                    .color(palette.error_color),
+                                                                )
+                                                                .on_hover_cursor(
+                                                                    CursorIcon::PointingHand,
+                                                                )
+                                                                .on_hover_text("Delete folder")
+                                                                .clicked()
+                                                            {
+                                                                state.delete_folder_dialog =
+                                                                    Some((ws.clone(), f.clone()));
+                                                            }
+                                                            if ui
+                                                                .small_button(RichText::new(
+                                                                    format!(
+                                                                        "{} Rename",
+                                                                        regular::PENCIL_SIMPLE
+                                                                    ),
+                                                                ))
+                                                                .on_hover_cursor(
+                                                                    CursorIcon::PointingHand,
+                                                                )
+                                                                .on_hover_text("Rename folder")
+                                                                .clicked()
+                                                            {
+                                                                state.rename_folder_dialog =
+                                                                    Some((ws.clone(), f.clone()));
+                                                                state.rename_folder_input =
+                                                                    f.clone();
+                                                            }
+                                                        },
+                                                    );
+                                                });
+                                            }
+                                        },
+                                    );
+                                }
+                            });
+                        ui.add_space(3.0);
+                    }
+                }
+
+                ui.add_space(10.0);
+                ui.separator();
+                ui.add_space(8.0);
+
+                // --- Section 3: Reassign Connections ---
+                ui.label(
+                    RichText::new("3. ASSIGN CONNECTIONS TO WORKSPACE & FOLDER")
                         .size(11.0)
                         .strong()
                         .color(palette.accent_color),
@@ -2188,10 +2443,7 @@ fn render_manage_workspaces_modal(
                                             let folders_for_ws = if current_ws.is_empty() {
                                                 Vec::new()
                                             } else {
-                                                WorkspaceTree::extract_folders_for_workspace(
-                                                    &state.connections,
-                                                    &current_ws,
-                                                )
+                                                state.all_known_folders_for_workspace(&current_ws)
                                             };
 
                                             let mut sel_folder = current_folder.clone();
@@ -2296,9 +2548,9 @@ fn render_manage_workspaces_modal(
                 ui.separator();
                 ui.add_space(8.0);
 
-                // --- Section 3: Import & Export Workspaces Configuration ---
+                // --- Section 4: Import & Export Workspaces Configuration ---
                 ui.label(
-                    RichText::new("3. IMPORT / EXPORT WORKSPACE STRUCTURE")
+                    RichText::new("4. IMPORT / EXPORT WORKSPACE STRUCTURE")
                         .size(11.0)
                         .strong()
                         .color(palette.accent_color),
@@ -2423,4 +2675,227 @@ fn render_manage_workspaces_modal(
                 });
             });
     });
+}
+
+fn render_workspace_dialogs(
+    ctx: &Context,
+    state: &mut AppState,
+    palette: &ThemePalette,
+    events: &mut Vec<AppEvent>,
+) {
+    let modal_frame = Frame::window(&ctx.style())
+        .fill(palette.popup_bg)
+        .stroke(Stroke::new(1.5_f32, palette.popup_border))
+        .inner_margin(Margin::same(14.0));
+
+    // 1. Rename Workspace Dialog
+    if let Some(old_ws) = state.rename_workspace_dialog.clone() {
+        Window::new(
+            RichText::new("Rename Workspace")
+                .strong()
+                .color(palette.text_primary),
+        )
+        .collapsible(false)
+        .resizable(false)
+        .frame(modal_frame)
+        .fixed_size([340.0, 130.0])
+        .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+        .show(ctx, |ui| {
+            ui.label(
+                RichText::new(format!("Current Name: {old_ws}"))
+                    .size(12.0)
+                    .color(palette.muted_text),
+            );
+            ui.add_space(4.0);
+            ui.add(
+                TextEdit::singleline(&mut state.rename_workspace_input)
+                    .hint_text("New workspace name...")
+                    .desired_width(f32::INFINITY),
+            );
+            ui.add_space(8.0);
+            ui.horizontal(|ui| {
+                if primary_button(ui, "Rename", palette.accent_color).clicked() {
+                    let new_name = state.rename_workspace_input.trim().to_string();
+                    if !new_name.is_empty() {
+                        events.push(AppEvent::RenameWorkspace {
+                            old_name: old_ws,
+                            new_name,
+                        });
+                    }
+                    state.rename_workspace_dialog = None;
+                }
+                if secondary_button(ui, "Cancel", palette.border_color).clicked() {
+                    state.rename_workspace_dialog = None;
+                }
+            });
+        });
+    }
+
+    // 2. Rename Folder Dialog
+    if let Some((ws, old_f)) = state.rename_folder_dialog.clone() {
+        Window::new(
+            RichText::new("Rename Folder")
+                .strong()
+                .color(palette.text_primary),
+        )
+        .collapsible(false)
+        .resizable(false)
+        .frame(modal_frame)
+        .fixed_size([340.0, 130.0])
+        .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+        .show(ctx, |ui| {
+            ui.label(
+                RichText::new(format!("Workspace: {ws} / Folder: {old_f}"))
+                    .size(12.0)
+                    .color(palette.muted_text),
+            );
+            ui.add_space(4.0);
+            ui.add(
+                TextEdit::singleline(&mut state.rename_folder_input)
+                    .hint_text("New folder name...")
+                    .desired_width(f32::INFINITY),
+            );
+            ui.add_space(8.0);
+            ui.horizontal(|ui| {
+                if primary_button(ui, "Rename", palette.accent_color).clicked() {
+                    let new_name = state.rename_folder_input.trim().to_string();
+                    if !new_name.is_empty() {
+                        events.push(AppEvent::RenameProjectFolder {
+                            workspace: ws,
+                            old_name: old_f,
+                            new_name,
+                        });
+                    }
+                    state.rename_folder_dialog = None;
+                }
+                if secondary_button(ui, "Cancel", palette.border_color).clicked() {
+                    state.rename_folder_dialog = None;
+                }
+            });
+        });
+    }
+
+    // 3. Delete Workspace Dialog
+    if let Some(ws) = state.delete_workspace_dialog.clone() {
+        Window::new(
+            RichText::new("Delete Workspace")
+                .strong()
+                .color(palette.error_color),
+        )
+        .collapsible(false)
+        .resizable(false)
+        .frame(modal_frame)
+        .fixed_size([360.0, 130.0])
+        .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+        .show(ctx, |ui| {
+            ui.label(
+                RichText::new(format!("Are you sure you want to delete workspace '{ws}'?"))
+                    .strong()
+                    .size(12.0)
+                    .color(palette.text_primary),
+            );
+            ui.label(
+                RichText::new("Connections in this workspace will become ungrouped.")
+                    .size(11.0)
+                    .color(palette.muted_text),
+            );
+            ui.add_space(8.0);
+            ui.horizontal(|ui| {
+                if primary_button(ui, "Delete Workspace", palette.error_color).clicked() {
+                    events.push(AppEvent::DeleteWorkspace { name: ws });
+                    state.delete_workspace_dialog = None;
+                }
+                if secondary_button(ui, "Cancel", palette.border_color).clicked() {
+                    state.delete_workspace_dialog = None;
+                }
+            });
+        });
+    }
+
+    // 4. Delete Folder Dialog
+    if let Some((ws, f)) = state.delete_folder_dialog.clone() {
+        Window::new(
+            RichText::new("Delete Folder")
+                .strong()
+                .color(palette.error_color),
+        )
+        .collapsible(false)
+        .resizable(false)
+        .frame(modal_frame)
+        .fixed_size([360.0, 130.0])
+        .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+        .show(ctx, |ui| {
+            ui.label(
+                RichText::new(format!(
+                    "Are you sure you want to delete folder '{f}' in workspace '{ws}'?"
+                ))
+                .strong()
+                .size(12.0)
+                .color(palette.text_primary),
+            );
+            ui.label(
+                RichText::new("Connections will remain in this workspace as standalone.")
+                    .size(11.0)
+                    .color(palette.muted_text),
+            );
+            ui.add_space(8.0);
+            ui.horizontal(|ui| {
+                if primary_button(ui, "Delete Folder", palette.error_color).clicked() {
+                    events.push(AppEvent::DeleteProjectFolder {
+                        workspace: ws,
+                        folder_name: f,
+                    });
+                    state.delete_folder_dialog = None;
+                }
+                if secondary_button(ui, "Cancel", palette.border_color).clicked() {
+                    state.delete_folder_dialog = None;
+                }
+            });
+        });
+    }
+
+    // 5. Quick New Folder Dialog
+    if let Some(ws) = state.quick_new_folder_dialog.clone() {
+        Window::new(
+            RichText::new(format!("New Folder in {ws}"))
+                .strong()
+                .color(palette.text_primary),
+        )
+        .collapsible(false)
+        .resizable(false)
+        .frame(modal_frame)
+        .fixed_size([340.0, 130.0])
+        .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+        .show(ctx, |ui| {
+            ui.label(
+                RichText::new(format!("Create a new folder in workspace '{ws}':"))
+                    .size(12.0)
+                    .color(palette.muted_text),
+            );
+            ui.add_space(4.0);
+            ui.add(
+                TextEdit::singleline(&mut state.quick_new_folder_input)
+                    .hint_text("e.g. ERP, Payments...")
+                    .desired_width(f32::INFINITY),
+            );
+            ui.add_space(8.0);
+            ui.horizontal(|ui| {
+                if primary_button(ui, "+ Create Folder", palette.accent_color).clicked() {
+                    let folder_name = state.quick_new_folder_input.trim().to_string();
+                    if !folder_name.is_empty() {
+                        events.push(AppEvent::CreateProjectFolder {
+                            workspace: ws,
+                            folder_name,
+                        });
+                    }
+                    state.quick_new_folder_dialog = None;
+                    state.quick_new_folder_input.clear();
+                }
+                if secondary_button(ui, "Cancel", palette.border_color).clicked() {
+                    state.quick_new_folder_dialog = None;
+                    state.quick_new_folder_input.clear();
+                }
+            });
+        });
+    }
 }
