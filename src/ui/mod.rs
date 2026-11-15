@@ -1,4 +1,5 @@
 pub mod activity_bar;
+pub mod app_icon;
 pub mod command_palette;
 pub mod components;
 pub mod layout;

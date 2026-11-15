@@ -2683,6 +2683,7 @@ dependencies = [
  "egui-phosphor",
  "egui_dock",
  "egui_extras",
+ "image",
  "keyring",
  "mongodb",
  "rfd",

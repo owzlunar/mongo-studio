@@ -1,4 +1,5 @@
 use mongo_studio::app::MongoStudioApp;
+use mongo_studio::ui::app_icon::load_app_icon_data;
 use mongo_studio::ui::layout::{
     DEFAULT_WINDOW_HEIGHT, DEFAULT_WINDOW_WIDTH, MIN_WINDOW_HEIGHT, MIN_WINDOW_WIDTH,
 };
@@ -11,11 +12,17 @@ fn main() -> eframe::Result<()> {
         )
         .init();
 
+    let mut viewport = egui::ViewportBuilder::default()
+        .with_title("Mongo Studio")
+        .with_inner_size([DEFAULT_WINDOW_WIDTH, DEFAULT_WINDOW_HEIGHT])
+        .with_min_inner_size([MIN_WINDOW_WIDTH, MIN_WINDOW_HEIGHT]);
+
+    if let Some(icon) = load_app_icon_data() {
+        viewport = viewport.with_icon(icon);
+    }
+
     let native_options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_title("Mongo Studio")
-            .with_inner_size([DEFAULT_WINDOW_WIDTH, DEFAULT_WINDOW_HEIGHT])
-            .with_min_inner_size([MIN_WINDOW_WIDTH, MIN_WINDOW_HEIGHT]),
+        viewport,
         ..Default::default()
     };
 

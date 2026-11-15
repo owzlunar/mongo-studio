@@ -756,75 +756,92 @@ fn render_modals(
 
                     // Environment Tag Selection
                     ui.columns(2, |columns| {
+                        let is_dark = palette.is_dark();
                         columns[0].label(
-                            RichText::new("🏷 Environment Tag")
+                            RichText::new(format!("{} Environment Tag", regular::TAG))
                                 .strong()
                                 .size(11.5)
                                 .color(palette.text_primary),
                         );
                         let env_display = match &state.new_conn_environment {
-                            None => "✨ Auto-detect (from name)".to_string(),
-                            Some(EnvironmentTag::Dev) => "🟢 DEV".to_string(),
-                            Some(EnvironmentTag::Test) => "🟡 TEST".to_string(),
-                            Some(EnvironmentTag::Prod) => "🔴 PROD".to_string(),
-                            Some(EnvironmentTag::None) => "⚪ None (No Tag)".to_string(),
-                            Some(EnvironmentTag::Other(s)) => format!("✏️ Custom ({s})"),
+                            None => RichText::new(format!(
+                                "{} Auto-detect (from name)",
+                                regular::SPARKLE
+                            )),
+                            Some(EnvironmentTag::Dev) => {
+                                RichText::new(format!("{} DEV", regular::TAG))
+                                    .color(EnvironmentTag::Dev.color(is_dark))
+                            }
+                            Some(EnvironmentTag::Test) => {
+                                RichText::new(format!("{} TEST", regular::TAG))
+                                    .color(EnvironmentTag::Test.color(is_dark))
+                            }
+                            Some(EnvironmentTag::Prod) => {
+                                RichText::new(format!("{} PROD", regular::TAG))
+                                    .color(EnvironmentTag::Prod.color(is_dark))
+                            }
+                            Some(EnvironmentTag::None) => {
+                                RichText::new(format!("{} None (No Tag)", regular::PROHIBIT))
+                                    .color(palette.muted_text)
+                            }
+                            Some(EnvironmentTag::Other(s)) => {
+                                RichText::new(format!("{} Custom ({s})", regular::PENCIL_SIMPLE))
+                            }
                         };
 
                         ComboBox::from_id_source("modal_conn_env_select")
                             .selected_text(env_display)
                             .width(columns[0].available_width().max(180.0))
                             .show_ui(&mut columns[0], |ui| {
-                                if ui
-                                    .selectable_label(
-                                        state.new_conn_environment.is_none(),
-                                        "✨ Auto-detect (from name)",
-                                    )
-                                    .clicked()
-                                {
+                                let is_auto = state.new_conn_environment.is_none();
+                                let auto_label = RichText::new(format!(
+                                    "{} Auto-detect (from name)",
+                                    regular::SPARKLE
+                                ));
+                                if ui.selectable_label(is_auto, auto_label).clicked() {
                                     state.new_conn_environment = None;
                                 }
-                                if ui
-                                    .selectable_label(
-                                        state.new_conn_environment == Some(EnvironmentTag::Dev),
-                                        "🟢 DEV",
-                                    )
-                                    .clicked()
-                                {
+
+                                let is_dev =
+                                    state.new_conn_environment == Some(EnvironmentTag::Dev);
+                                let dev_label = RichText::new(format!("{} DEV", regular::TAG))
+                                    .color(EnvironmentTag::Dev.color(is_dark));
+                                if ui.selectable_label(is_dev, dev_label).clicked() {
                                     state.new_conn_environment = Some(EnvironmentTag::Dev);
                                 }
-                                if ui
-                                    .selectable_label(
-                                        state.new_conn_environment == Some(EnvironmentTag::Test),
-                                        "🟡 TEST",
-                                    )
-                                    .clicked()
-                                {
+
+                                let is_test =
+                                    state.new_conn_environment == Some(EnvironmentTag::Test);
+                                let test_label = RichText::new(format!("{} TEST", regular::TAG))
+                                    .color(EnvironmentTag::Test.color(is_dark));
+                                if ui.selectable_label(is_test, test_label).clicked() {
                                     state.new_conn_environment = Some(EnvironmentTag::Test);
                                 }
-                                if ui
-                                    .selectable_label(
-                                        state.new_conn_environment == Some(EnvironmentTag::Prod),
-                                        "🔴 PROD",
-                                    )
-                                    .clicked()
-                                {
+
+                                let is_prod =
+                                    state.new_conn_environment == Some(EnvironmentTag::Prod);
+                                let prod_label = RichText::new(format!("{} PROD", regular::TAG))
+                                    .color(EnvironmentTag::Prod.color(is_dark));
+                                if ui.selectable_label(is_prod, prod_label).clicked() {
                                     state.new_conn_environment = Some(EnvironmentTag::Prod);
                                 }
-                                if ui
-                                    .selectable_label(
-                                        state.new_conn_environment == Some(EnvironmentTag::None),
-                                        "⚪ None (No Tag)",
-                                    )
-                                    .clicked()
-                                {
+
+                                let is_none =
+                                    state.new_conn_environment == Some(EnvironmentTag::None);
+                                let none_label =
+                                    RichText::new(format!("{} None (No Tag)", regular::PROHIBIT))
+                                        .color(palette.muted_text);
+                                if ui.selectable_label(is_none, none_label).clicked() {
                                     state.new_conn_environment = Some(EnvironmentTag::None);
                                 }
+
                                 let is_custom = matches!(
                                     state.new_conn_environment,
                                     Some(EnvironmentTag::Other(_))
                                 );
-                                if ui.selectable_label(is_custom, "✏️ Custom...").clicked() {
+                                let custom_label =
+                                    RichText::new(format!("{} Custom...", regular::PENCIL_SIMPLE));
+                                if ui.selectable_label(is_custom, custom_label).clicked() {
                                     let custom_val = if state.new_conn_custom_env.trim().is_empty()
                                     {
                                         "STAGING".to_string()

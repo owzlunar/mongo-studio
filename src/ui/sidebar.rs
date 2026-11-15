@@ -571,10 +571,10 @@ fn render_connection_sidebar(
     // 1. Sidebar Top Header
     ui.horizontal(|ui| {
         ui.label(
-            RichText::new(format!("{} MongoDB Client", regular::DATABASE))
-                .size(12.5)
+            RichText::new(format!("{} Mongo Studio", regular::LEAF))
+                .size(13.0)
                 .strong()
-                .color(palette.text_primary),
+                .color(palette.accent_color),
         );
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             let refresh_btn =
